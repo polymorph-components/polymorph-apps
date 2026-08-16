@@ -1,0 +1,9 @@
+{
+  "imports": {
+    "@deltic/runtime/embedder": "jsr:@deltic/runtime@0.1.0-pre.gc4043e6/embedder",
+    "@deltic/translator": "jsr:@deltic/translator@0.1.0-pre.gc4043e6"
+  },
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom", "dom.iterable", "esnext"]
+  }
+}

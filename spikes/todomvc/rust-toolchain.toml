@@ -1,0 +1,6 @@
+[toolchain]
+# What the spike was built and verified with; the guest is a pure reactor
+# (no WASI), so plain wasm32-unknown-unknown + `wasm-tools component new`.
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

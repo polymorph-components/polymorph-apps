@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TodoMVC — polymorph wasm→DOM spike</title>
+  <link rel="stylesheet" href="todomvc-app.css">
+  <style>
+    /* status/error text before the component takes over */
+    #app:empty::before { content: ""; }
+  </style>
+</head>
+<body>
+  <div id="app">loading…</div>
+  <footer class="info">
+    <p>Double-click (or double-tap) to edit a todo</p>
+    <p>
+      App logic is a <strong>wasm component</strong> driving a curated DOM
+      surface — no app JS, no app HTML
+      (<a href="https://github.com/polymorph-components/polymorph-apps/issues/16">design</a>).
+    </p>
+    <p>
+      Runs on <a href="https://github.com/lann/deltic">deltic</a> —
+      <a href="https://github.com/polymorph-components/polymorph-apps/tree/main/spikes/todomvc">source</a>
+    </p>
+  </footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# TodoMVC surface spike: build the demo into ../../docs/spike-todomvc
+# (the repo's GitHub Pages root serves /docs).
+# Requires: Rust (wasm32-unknown-unknown), wasm-tools, Deno.
+
+out := "../../docs/spike-todomvc"
+
+# Full pipeline: guest -> component -> envelope -> host bundle -> demo dir.
+build: guest
+    mkdir -p build {{out}}
+    wasm-tools component new \
+      guest/target/wasm32-unknown-unknown/release/todomvc_guest.wasm \
+      -o build/todomvc.component.wasm
+    wasm-tools validate --features component-model build/todomvc.component.wasm
+    deno run --allow-read --allow-write tools/translate.ts \
+      build/todomvc.component.wasm build/todomvc.plan.json
+    deno check host/boot.ts
+    deno bundle --platform browser --minify -o {{out}}/app.js host/boot.ts
+    cp build/todomvc.component.wasm build/todomvc.plan.json {{out}}/
+    cp web/index.html web/todomvc-app.css {{out}}/
+
+guest:
+    cd guest && cargo build --release --target wasm32-unknown-unknown
+
+# Serve the built demo locally.
+serve: build
+    python3 -m http.server 8931 --directory ../../docs

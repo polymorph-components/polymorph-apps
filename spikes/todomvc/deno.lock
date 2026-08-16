@@ -1,0 +1,35 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@deltic/protocol@0.2": "0.2.0",
+    "jsr:@deltic/runtime@0.1.0-pre.gc4043e6": "0.1.0-pre.gc4043e6",
+    "jsr:@deltic/runtime@~0.1.0-pre.gc4043e6": "0.1.0-pre.gf5e4214",
+    "jsr:@deltic/translator@0.1.0-pre.gc4043e6": "0.1.0-pre.gc4043e6"
+  },
+  "jsr": {
+    "@deltic/protocol@0.2.0": {
+      "integrity": "028be6a3623c5e910598aa7a199209b85e8931ae484ac7f6638d610ddb0e19fa"
+    },
+    "@deltic/runtime@0.1.0-pre.gc4043e6": {
+      "integrity": "743de48a199b32a7ca881c520a72131d2f96bb806a2bb73f16cf66b566852e79",
+      "dependencies": [
+        "jsr:@deltic/protocol"
+      ]
+    },
+    "@deltic/runtime@0.1.0-pre.gf5e4214": {
+      "integrity": "ef7065ff3217c30c36c1816e4f1b381abf5f8802ae3e43ae9a58e54e12673d66"
+    },
+    "@deltic/translator@0.1.0-pre.gc4043e6": {
+      "integrity": "a108a38f34d32e4b0d34e9c5e02af25243abe1dc86de1940e27a83936e4abb8b",
+      "dependencies": [
+        "jsr:@deltic/runtime@~0.1.0-pre.gc4043e6"
+      ]
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "jsr:@deltic/runtime@0.1.0-pre.gc4043e6",
+      "jsr:@deltic/translator@0.1.0-pre.gc4043e6"
+    ]
+  }
+}
