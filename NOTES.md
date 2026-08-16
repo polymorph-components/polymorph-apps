@@ -336,13 +336,114 @@ Design directions:
     readers.
 - **Backup**: encrypted snapshots + incremental chunks to dumb storage
   via provider components; iroh-blobs content addressing beneath;
-  per-document keys; avoid convergent encryption.
+  per-document keys; avoid convergent encryption. Design worked out in
+  [Storage backends and the cryptographic pull layer](#storage-backends-and-the-cryptographic-pull-layer).
 - **Multi-tab**: one sync engine per origin (SharedWorker / Web Locks);
   automerge tolerates the races, the write path shouldn't invite them.
 
 Investigated 2026-08-16 (subduction as the replication layer): findings
 on the [#8 thread](../../issues/8); direction in
 [Provisional plan: group crypto and sync](#provisional-plan-group-crypto-and-sync).
+
+## Storage backends and the cryptographic pull layer
+
+Recorded 2026-08-16 from design discussion. Leaning, not ruling;
+tracked with the storage issue.
+
+**The backend is live + untrusted and its contract collapses.** It
+stores ciphertext and enforces nothing semantic. Because chunks are
+content-addressed and append-only, and each device writes only its own
+signed head manifest (readers merge all manifests), no backend needs
+conditional writes, listing, or ACLs. The required contract is:
+authenticated owner PUT/DELETE, plus GET by unguessable name. That
+admits S3-anything (R2, B2, AWS, MinIO, Garage), consumer drives used
+as dumb stores, static HTTP hosts, CDNs, IPFS. Non-realtime sync falls
+out: a blob store populated this way is a passive replica, and it
+provides the one thing relays do not — asynchronous sharing (the
+recipient fetches while the sharer is offline).
+
+**Sharing needs no backend ACLs: the pull tier is cryptographic.**
+Read access is already keyhive's (BeeKEM epochs). The pull tier —
+who can *fetch bytes* — becomes name secrecy: per (doc × epoch)
+**name-keys**, object name = HMAC(name-key, cref), optionally an outer
+in-guest AEAD hiding keyhive envelope metadata from name-holders.
+Name-keys travel over the E2E contact channel like any capability
+("signed URLs, self-issued"); recipients need no account on any
+backend. Revocation rotates the name-key alongside the BeeKEM epoch —
+future objects are unfindable — and compaction relocates old objects
+(the same job as PCS re-encryption). A mirror/GC service can hold the
+name-key alone: the relay role reconstructed on a backend that has no
+concept of it, keeping keyhive's `Access::Relay` ≈ name-key possession
+uniform across realtime and storage. Read keys keep flowing through
+keyhive's op stream (itself stored as blobs); the pull layer never
+carries them. Lineage: Tahoe-LAFS capability strings, Cryptree/Wuala,
+Peergos.
+
+**Cooperative fetch revocation (the K_p indirection).** Some of the
+fetch-revocation ACLs provided is restored by indirecting pull-key
+pickup through a small deletable object: per recipient device, the
+current name-key wrapped at a location derived from the pairwise
+prekey secret — deleted by any of the owner's devices upon ingesting a
+revocation. The honest-client discipline: **pull-layer keying material
+is never persisted** — fetched per session, held in memory; content
+caching is untouched (local-first requires it). Effect, by adversary:
+an honest-but-uninformed revoked client (offline during revocation, or
+withheld the ops — the normal delivery posture) goes dark on its next
+session rather than polling until rotation; a modified client that
+persisted the name-key keeps fetching already-named objects until
+relocation — rotation + GC remain the only hard boundary; a
+provider-colluding peer voids the pull layer wholesale (out of scope
+by construction, which is also why object-versioning resurrecting a
+deleted K_p is a config note, not a break — the Vanish failure mode
+does not transfer). This is **cooperative revocation** — a
+protocol-honesty assumption about remote clients, categorically weaker
+than every other guarantee here — and the UX must not imply hard
+denial. Revocation is then four layers behind one button: BeeKEM
+rotation (read, hard), name-key rotation (pull-forward, hard), K_p
+deletion (pull-now, cooperative), compaction relocation (pull-past,
+hard, eventual) — plus, for the owner's own devices, **storage
+credential rotation** (see the scenario below).
+
+**Motivating scenario: stolen device, cracked offline later.** Theft
+at T0, revocation at T1, crack at T2 > T1. The thief gets content the
+device had reached by T0 and the persisted keyhive state (BeeKEM
+secrets are in-guest, necessarily), which decrypts already-reached
+history — the irreducible floor. They do not get: post-T1 epochs
+(PCS), any pull-layer material (never persisted — crefs on disk map to
+no fetchable name), a K_p bootstrap (prekey secrets are on the device,
+but the object was deleted at T1), or the owner's bucket (credential
+rotation at T1). Compromise narrows from *everything the device could
+reach* to *everything it had reached* — and the layers act at T1,
+independent of T2: revocation races the crack, not the theft, which is
+what disk encryption and platform key storage buy time for. Caveats:
+a crack or undetected theft before revocation is just an authorized
+device (forward layers only); hardware-held identity keys survive a
+crack (the webcrypto posture), BeeKEM secrets cannot — epoch rotation,
+not key hardware, carries history-forward safety.
+
+**Accepted losses vs backend ACLs** (for the threat model): no
+retroactive fetch-denial against modified clients until relocation;
+harvest-now-decrypt-later exposure widens from provider+members to
+provider+name-holders (bounded by rotation; names leak like URLs —
+logs, history — unlike keys, so prefer *expiring* URL minting as
+hygiene where the backend offers it); egress abuse by name-holders on
+paid-egress backends (default to private buckets + minted URLs there;
+name-secrecy mode where egress is free or flat); provider metadata
+unchanged (sizes, timing, and now recipient *counts* via K_p objects;
+tree-ids in paths pseudonymized by the name-key already).
+
+**Provider order.** First: one **S3-compatible provider component**
+(R2 and B2 as documented defaults — real 10 GB free tiers, R2 free
+egress; MinIO/Garage cover self-host) — no external approval gates,
+SigV4 is HMAC via polymorph:webcrypto (class A), network grant scoped
+to one backend host (the dogfooded confinement). Fast follow: Google
+Drive **as a dumb store** (15 GB, broadest accounts, `drive.file`
+scope, appDataFolder; start the OAuth-verification clock early) — its
+native ACLs are no longer required for sharing. WebDAV/Nextcloud
+later for self-host breadth (CORS is the dragon). The #11 recovery
+bundle is the special case that needs public-fetch mode: its name and
+KEK both derive from the recovery phrase — fetchable with no prior
+keys, by construction.
 
 ## Group crypto
 
