@@ -488,9 +488,21 @@ declared otherwise (see the status note at the top).
   readable. Design finding: epoch membership at *seal* time determines
   readability (a BeeKEM add is not retroactive), so the data layer
   must encode "create → add members → first seal", and late joiners
-  read history only through causal keys via post-join chunks. Phase
-  3b — the `subduction_keyhive` bridge (membership sync over the wire,
-  keyhive-gated pull policy) — remains.
+  read history only through causal keys via post-join chunks. **Phase
+  3b executed 2026-08-16 and passed**: the `subduction_keyhive` bridge
+  wired in — membership travels over a second stream of the same iroh
+  connection, and the keyhive auth graph gates subduction's pull
+  policy. Both tiers demonstrated: pre-membership and post-revocation
+  pulls refused (empty diff, no information leak); crypto exclusion
+  unchanged beneath. Two upstream findings: **subscriptions bypass the
+  pull gate after revocation** (push path does not re-check fetch
+  policy; explicit pulls refuse correctly — upstream-issue candidate),
+  and **the two upstreams version-skew** (the bridge pins released
+  keyhive, which predates the BeeKEM ratcheting change; a
+  `[patch.crates-io]` onto the git rev compiled clean — pin keyhive and
+  subduction as a *pair*). The bridge also assumes the identity
+  unification (peer id = 32-byte verifying key = keyhive identifier),
+  confirming the one-key-per-device design.
 - **Topology leaning: one engine composite, one keyhive instance.**
   `subduction_keyhive` is an in-process wrapper that *holds* the
   `Keyhive` instance, implementing subduction's connection/storage

@@ -5,9 +5,10 @@ package polymorph:skeleton-spike@0.1.0;
 /// component-iroh QUIC wire — one engine composite per peer, one
 /// platform-held identity backing both keyhive and subduction.
 ///
-/// Phase 3a scope: keyhive membership/CGKA events are shuttled by the
-/// host (`kh-events-for-peer` / `kh-ingest-events`); production
-/// membership sync belongs to the subduction_keyhive bridge (3b).
+/// Phase 3b: the subduction_keyhive bridge carries membership/CGKA ops
+/// over a second stream of the same iroh connection, and the keyhive
+/// auth graph gates subduction's pull policy (no host shuttle, no open
+/// policy).
 interface driver {
     /// Result of authoring a change.
     record authored {
@@ -17,9 +18,6 @@ interface driver {
         /// blake3 of the plaintext chunk (32 bytes): the keyhive content
         /// ref and the sedimentree commit head.
         content-ref: list<u8>,
-        /// bincode `Vec<StaticEvent>` carrying the CGKA update from the
-        /// encryption, when one occurred.
-        update-events: option<list<u8>>,
     }
 
     /// What a reader could reconstruct.
@@ -40,14 +38,13 @@ interface driver {
     /// tasks spawned. Returns the shared id, hex.
     init: async func() -> result<string, string>;
 
-    // --- keyhive membership (host-shuttled in 3a) ---
+    // --- keyhive membership (synced by the bridge over the wire) ---
 
-    contact-card: async func() -> result<list<u8>, string>;
-    receive-contact-card: async func(card: list<u8>) -> result<string, string>;
+    /// Whether this instance's keyhive knows the given agent (contact
+    /// cards travel over the bridge's protocol).
+    kh-knows-peer: async func(peer-id: list<u8>) -> result<bool, string>;
     kh-add-member: async func(doc-id: list<u8>, peer-id: list<u8>) -> result<_, string>;
     kh-revoke-member: async func(doc-id: list<u8>, peer-id: list<u8>) -> result<_, string>;
-    kh-events-for-peer: async func(peer-id: list<u8>) -> result<list<u8>, string>;
-    kh-ingest-events: async func(events: list<u8>) -> result<u32, string>;
 
     // --- the iroh wire + subduction sync (from spike 2) ---
 

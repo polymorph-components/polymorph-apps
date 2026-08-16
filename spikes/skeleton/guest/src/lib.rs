@@ -35,8 +35,6 @@ use polymorph_webcrypto_guest::{ed25519, SigningKey, SigningKeyOptions};
 
 use beekem::encrypted::EncryptedContent;
 use keyhive_core::access::Access;
-use keyhive_core::contact_card::ContactCard;
-use keyhive_core::event::static_event::StaticEvent;
 use keyhive_core::keyhive::Keyhive;
 use keyhive_core::listener::no_listener::NoListener;
 use keyhive_core::principal::document::id::DocumentId;
@@ -57,7 +55,6 @@ use subduction_core::{
     handshake::{self, audience::Audience, Handshake},
     nonce_cache::NonceCache,
     peer::id::PeerId,
-    policy::open::OpenPolicy,
     spawn::Spawn,
     storage::{memory::MemoryStorage, traits::Storage},
     subduction::{builder::SubductionBuilder, Subduction},
@@ -66,6 +63,12 @@ use subduction_core::{
     transport::{message::MessageTransport, Transport},
 };
 use subduction_crypto::{nonce::Nonce, signer::Signer};
+use subduction_keyhive::connection::KeyhiveConnection;
+use subduction_keyhive::peer_id::KeyhivePeerId;
+use subduction_keyhive::policy::SubductionKeyhive;
+use subduction_keyhive::protocol::KeyhiveProtocol;
+use subduction_keyhive::signed_message::SignedMessage;
+use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
 use exports::polymorph::skeleton_spike::driver::{Authored, DocView, Guest};
 use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
@@ -82,20 +85,32 @@ type P = Vec<u8>;
 type KhStore = MemoryCiphertextStore<T, P>;
 type Kh = Keyhive<Local, WebcryptoSigner, T, P, KhStore, NoListener, rand::rngs::OsRng>;
 
+type Auth = SubductionKeyhive<Local, WebcryptoSigner, T, P, KhStore, NoListener, rand::rngs::OsRng>;
 type Conn = MessageTransport<QueueTransport>;
-type Hdl = SyncHandler<Local, MemoryStorage, Conn, OpenPolicy, CountLeadingZeroBytes, WitSpawn, 256>;
+type Hdl = SyncHandler<Local, MemoryStorage, Conn, Auth, CountLeadingZeroBytes, WitSpawn, 256>;
 type Sd = Subduction<
     'static,
     Local,
     MemoryStorage,
     Conn,
     Hdl,
-    OpenPolicy,
+    Auth,
     WebcryptoSigner,
     NeverTimeout,
     WitSpawn,
     CountLeadingZeroBytes,
     256,
+>;
+type KhProto = KeyhiveProtocol<
+    WebcryptoSigner,
+    T,
+    P,
+    KhStore,
+    NoListener,
+    rand::rngs::OsRng,
+    KhWire,
+    MemoryKeyhiveStorage,
+    Local,
 >;
 
 // --- one signer, two traits: the same platform-held key backs keyhive and
@@ -265,6 +280,66 @@ impl Transport<Local> for QueueTransport {
     }
 }
 
+#[derive(Debug)]
+struct KhWireError(String);
+
+impl std::fmt::Display for KhWireError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "keyhive wire: {}", self.0)
+    }
+}
+
+impl std::error::Error for KhWireError {}
+
+/// The keyhive protocol's wire: bincode SignedMessages over frame queues
+/// fed by iroh stream pumps (a second stream on the same connection).
+#[derive(Clone, Debug)]
+struct KhWire {
+    peer: KeyhivePeerId,
+    out_tx: async_channel::Sender<Vec<u8>>,
+    in_rx: async_channel::Receiver<Vec<u8>>,
+}
+
+impl KeyhiveConnection<Local> for KhWire {
+    type SendError = KhWireError;
+    type RecvError = KhWireError;
+    type DisconnectError = KhWireError;
+
+    fn peer_id(&self) -> KeyhivePeerId {
+        self.peer.clone()
+    }
+
+    fn send(&self, message: SignedMessage) -> LocalBoxFuture<'_, Result<(), KhWireError>> {
+        Box::pin(async move {
+            let bytes =
+                bincode::serialize(&message).map_err(|e| KhWireError(format!("encode: {e}")))?;
+            self.out_tx
+                .send(bytes)
+                .await
+                .map_err(|_| KhWireError("closed".into()))
+        })
+    }
+
+    fn recv(&self) -> LocalBoxFuture<'_, Result<SignedMessage, KhWireError>> {
+        Box::pin(async move {
+            let bytes = self
+                .in_rx
+                .recv()
+                .await
+                .map_err(|_| KhWireError("closed".into()))?;
+            bincode::deserialize(&bytes).map_err(|e| KhWireError(format!("decode: {e}")))
+        })
+    }
+
+    fn disconnect(&self) -> LocalBoxFuture<'_, Result<(), KhWireError>> {
+        Box::pin(async move {
+            self.out_tx.close();
+            self.in_rx.close();
+            Ok(())
+        })
+    }
+}
+
 struct QueueHandshake(QueueTransport);
 
 impl Handshake<Local> for QueueHandshake {
@@ -294,7 +369,7 @@ struct State {
     signer: WebcryptoSigner,
     my_peer: PeerId,
     nonce_cache: Rc<NonceCache>,
-    peers: HashMap<Vec<u8>, IndividualId>,
+    proto: Rc<KhProto>,
     conn_results: HashMap<u32, Result<String, String>>,
     syncs: HashMap<u32, Result<String, String>>,
     endpoint: Option<Rc<Endpoint>>,
@@ -339,6 +414,12 @@ fn kh_doc_id(bytes: &[u8]) -> Result<DocumentId, String> {
     let arr = arr32(bytes, "doc id")?;
     let vk = DalekVerifyingKey::from_bytes(&arr).map_err(|e| format!("bad doc id: {e:?}"))?;
     Ok(DocumentId::from(Identifier::from(vk)))
+}
+
+fn individual_id(bytes: &[u8]) -> Result<IndividualId, String> {
+    let arr = arr32(bytes, "peer id")?;
+    let vk = DalekVerifyingKey::from_bytes(&arr).map_err(|e| format!("bad peer id: {e:?}"))?;
+    Ok(Identifier::from(vk).into())
 }
 
 fn tree_id(bytes: &[u8]) -> Result<SedimentreeId, String> {
@@ -416,9 +497,20 @@ async fn iroh_writer(out_rx: async_channel::Receiver<Vec<u8>>, send: SendStream)
     let _ = send.finish();
 }
 
-async fn iroh_reader(in_tx: async_channel::Sender<Vec<u8>>, recv: RecvStream) {
-    let mut buf: Vec<u8> = Vec::new();
+async fn iroh_reader(in_tx: async_channel::Sender<Vec<u8>>, recv: RecvStream, seed: Vec<u8>) {
+    let mut buf: Vec<u8> = seed;
     loop {
+        while buf.len() >= 4 {
+            let len = u32::from_le_bytes(buf[0..4].try_into().expect("4 bytes")) as usize;
+            if buf.len() < 4 + len {
+                break;
+            }
+            let frame: Vec<u8> = buf[4..4 + len].to_vec();
+            buf.drain(0..4 + len);
+            if in_tx.send(frame).await.is_err() {
+                return;
+            }
+        }
         match recv.read(64 * 1024).await {
             Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
             Ok(None) | Err(_) => break,
@@ -440,15 +532,15 @@ async fn iroh_reader(in_tx: async_channel::Sender<Vec<u8>>, recv: RecvStream) {
 // --- content helpers ---
 
 /// Encrypt one plaintext chunk for the doc and commit its envelope to the
-/// sedimentree. Returns the update events (if the encryption rotated the
-/// CGKA tree), bincode-framed for the host shuttle.
+/// sedimentree. Any CGKA update the encryption produced is synced to peers
+/// over the bridge.
 async fn encrypt_and_commit(
     id: &[u8],
     chunk: Vec<u8>,
     preds: Vec<[u8; 32]>,
     cref: [u8; 32],
-) -> Result<Option<Vec<u8>>, String> {
-    let (kh, sd) = with_state(|s| (s.kh.clone(), s.sd.clone()))?;
+) -> Result<(), String> {
+    let (kh, sd, proto) = with_state(|s| (s.kh.clone(), s.sd.clone(), s.proto.clone()))?;
     let did = kh_doc_id(id)?;
     let doc = kh
         .get_document(did)
@@ -460,20 +552,20 @@ async fn encrypt_and_commit(
         .map_err(|e| format!("encrypt: {e:?}"))?;
     let envelope =
         bincode::serialize(out.encrypted_content()).map_err(|e| format!("serialize: {e}"))?;
-    let update_events = match out.update_op() {
-        Some(op) => {
-            let events: Vec<StaticEvent<T>> = vec![StaticEvent::from(Box::new(op.clone()))];
-            Some(bincode::serialize(&events).map_err(|e| format!("serialize update: {e}"))?)
-        }
-        None => None,
-    };
+    let had_update = out.update_op().is_some();
     let tree = tree_id(id)?;
     let parents: BTreeSet<CommitId> = preds.into_iter().map(CommitId::new).collect();
     sd.add_commit(tree, CommitId::new(cref), parents, Blob::new(envelope))
         .await
         .map_err(|e| format!("add_commit: {e:?}"))?;
+    if had_update {
+        proto
+            .sync_keyhive(None)
+            .await
+            .map_err(|e| format!("sync keyhive: {e:?}"))?;
+    }
     breathe().await;
-    Ok(update_events)
+    Ok(())
 }
 
 /// Causal order for the spike's commit DAGs: parents before children,
@@ -543,10 +635,24 @@ impl Guest for Component {
         .await
         .map_err(|e| format!("keyhive generate: {e:?}"))?;
 
+        let card = kh
+            .contact_card()
+            .await
+            .map_err(|e| format!("contact card: {e:?}"))?;
+        #[allow(clippy::arc_with_non_send_sync)] // upstream APIs take Arc; single-threaded wasm
+        let proto: Rc<KhProto> = Rc::new(KeyhiveProtocol::new(
+            Arc::new(async_lock::Mutex::new(kh.clone())),
+            MemoryKeyhiveStorage::new(),
+            KeyhivePeerId::from_bytes(verifying.to_bytes()),
+            card,
+        ));
+
         let sd_storage = MemoryStorage::new();
+        #[allow(clippy::arc_with_non_send_sync)] // upstream APIs take Arc; single-threaded wasm
+        let policy = Arc::new(SubductionKeyhive::new(kh.clone()));
         let (sd, _handler, listener, manager) = SubductionBuilder::new()
             .signer(signer.clone())
-            .storage(sd_storage.clone(), Arc::new(OpenPolicy))
+            .storage(sd_storage.clone(), policy)
             .spawner(WitSpawn)
             .timer(NeverTimeout)
             .build::<Local, Conn>();
@@ -565,7 +671,7 @@ impl Guest for Component {
                 signer,
                 my_peer,
                 nonce_cache: Rc::new(NonceCache::default()),
-                peers: HashMap::new(),
+                proto,
                 conn_results: HashMap::new(),
                 syncs: HashMap::new(),
                 endpoint: None,
@@ -580,37 +686,23 @@ impl Guest for Component {
         Ok(hex::encode(verifying.to_bytes()))
     }
 
-    // --- keyhive membership (spike 1) ---
+    // --- keyhive membership (synced by the bridge over the wire) ---
 
-    async fn contact_card() -> Result<Vec<u8>, String> {
+    async fn kh_knows_peer(peer: Vec<u8>) -> Result<bool, String> {
+        breathe().await;
         let kh = with_state(|s| s.kh.clone())?;
-        let card = kh
-            .contact_card()
-            .await
-            .map_err(|e| format!("contact card: {e:?}"))?;
-        bincode::serialize(&card).map_err(|e| format!("serialize contact card: {e}"))
-    }
-
-    async fn receive_contact_card(card: Vec<u8>) -> Result<String, String> {
-        let kh = with_state(|s| s.kh.clone())?;
-        let card: ContactCard =
-            bincode::deserialize(&card).map_err(|e| format!("bad contact card: {e}"))?;
-        kh.receive_contact_card(&card)
-            .await
-            .map_err(|e| format!("receive contact card: {e:?}"))?;
-        let id = card.id();
-        with_state(|s| s.peers.insert(id.as_slice().to_vec(), id))?;
-        Ok(hex::encode(id.as_slice()))
+        let iid = individual_id(&peer)?;
+        Ok(kh.get_agent(iid.into()).await.is_some())
     }
 
     async fn kh_add_member(doc_id: Vec<u8>, peer: Vec<u8>) -> Result<(), String> {
-        let kh = with_state(|s| s.kh.clone())?;
+        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
         let did = kh_doc_id(&doc_id)?;
-        let iid = with_state(|s| s.peers.get(&peer).copied())?.ok_or("unknown peer")?;
+        let iid = individual_id(&peer)?;
         let agent = kh
             .get_agent(iid.into())
             .await
-            .ok_or("agent not found".to_string())?;
+            .ok_or("agent not found (bridge has not synced its contact card yet)".to_string())?;
         let doc = kh
             .get_document(did)
             .await
@@ -618,13 +710,17 @@ impl Guest for Component {
         kh.add_member(agent, &Membered::Document(did, doc), Access::Read, &[])
             .await
             .map_err(|e| format!("add member: {e:?}"))?;
+        proto
+            .sync_keyhive(None)
+            .await
+            .map_err(|e| format!("sync keyhive: {e:?}"))?;
         Ok(())
     }
 
     async fn kh_revoke_member(doc_id: Vec<u8>, peer: Vec<u8>) -> Result<(), String> {
-        let kh = with_state(|s| s.kh.clone())?;
+        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
         let did = kh_doc_id(&doc_id)?;
-        let iid = with_state(|s| s.peers.get(&peer).copied())?.ok_or("unknown peer")?;
+        let iid = individual_id(&peer)?;
         let doc = kh
             .get_document(did)
             .await
@@ -632,27 +728,11 @@ impl Guest for Component {
         kh.revoke_member(iid.into(), true, &Membered::Document(did, doc))
             .await
             .map_err(|e| format!("revoke member: {e:?}"))?;
-        Ok(())
-    }
-
-    async fn kh_events_for_peer(peer: Vec<u8>) -> Result<Vec<u8>, String> {
-        let kh = with_state(|s| s.kh.clone())?;
-        let iid = with_state(|s| s.peers.get(&peer).copied())?.ok_or("unknown peer")?;
-        let agent = kh
-            .get_agent(iid.into())
+        proto
+            .sync_keyhive(None)
             .await
-            .ok_or("agent not found".to_string())?;
-        let events = kh.static_events_for_agent(&agent).await;
-        let events: Vec<StaticEvent<T>> = events.into_values().collect();
-        bincode::serialize(&events).map_err(|e| format!("serialize events: {e}"))
-    }
-
-    async fn kh_ingest_events(events: Vec<u8>) -> Result<u32, String> {
-        let kh = with_state(|s| s.kh.clone())?;
-        let events: Vec<StaticEvent<T>> =
-            bincode::deserialize(&events).map_err(|e| format!("bad events: {e}"))?;
-        let stuck = kh.ingest_unsorted_static_events(events).await;
-        Ok(stuck.len() as u32)
+            .map_err(|e| format!("sync keyhive: {e:?}"))?;
+        Ok(())
     }
 
     // --- the iroh wire (spike 2) ---
@@ -695,34 +775,68 @@ impl Guest for Component {
         })?;
         let endpoint = endpoint.ok_or("iroh-bind first")?;
 
+        let proto = with_state(|s| s.proto.clone())?;
+
         wit_bindgen::spawn_local(async move {
-            let wire = if initiator {
-                match endpoint
-                    .connect(
-                        EndpointAddr {
-                            endpoint_id: peer_endpoint_id,
-                            addrs: vec![TransportAddr::Relay(relay_url)],
-                        },
-                        ALPN.to_vec(),
-                    )
-                    .await
-                {
-                    Ok(conn) => match conn.open_bi().await {
-                        Ok((send, recv)) => Ok((conn, send, recv)),
-                        Err(e) => Err(format!("open-bi: {e:?}")),
-                    },
-                    Err(e) => Err(format!("connect: {e:?}")),
+            // Establish the connection and two streams: 'S' carries the
+            // subduction frames, 'K' the keyhive bridge protocol. The
+            // initiator opens and tags both; the acceptor classifies by
+            // the first byte (which may arrive coalesced with frames).
+            let wire = async {
+                if initiator {
+                    let conn = endpoint
+                        .connect(
+                            EndpointAddr {
+                                endpoint_id: peer_endpoint_id,
+                                addrs: vec![TransportAddr::Relay(relay_url)],
+                            },
+                            ALPN.to_vec(),
+                        )
+                        .await
+                        .map_err(|e| format!("connect: {e:?}"))?;
+                    let (s_send, s_recv) =
+                        conn.open_bi().await.map_err(|e| format!("open-bi S: {e:?}"))?;
+                    s_send
+                        .write(vec![b'S'])
+                        .await
+                        .map_err(|e| format!("tag S: {e:?}"))?;
+                    let (k_send, k_recv) =
+                        conn.open_bi().await.map_err(|e| format!("open-bi K: {e:?}"))?;
+                    k_send
+                        .write(vec![b'K'])
+                        .await
+                        .map_err(|e| format!("tag K: {e:?}"))?;
+                    Ok::<_, String>((conn, (s_send, s_recv, Vec::new()), (k_send, k_recv, Vec::new())))
+                } else {
+                    let conn = endpoint.accept().await.map_err(|e| format!("accept: {e:?}"))?;
+                    let mut s_stream = None;
+                    let mut k_stream = None;
+                    for _ in 0..2 {
+                        let (send, recv) = conn
+                            .accept_bi()
+                            .await
+                            .map_err(|e| format!("accept-bi: {e:?}"))?;
+                        let first = recv
+                            .read(64 * 1024)
+                            .await
+                            .map_err(|e| format!("read tag: {e:?}"))?
+                            .ok_or("stream closed before tag".to_string())?;
+                        let (tag, seed) = (first[0], first[1..].to_vec());
+                        match tag {
+                            b'S' => s_stream = Some((send, recv, seed)),
+                            b'K' => k_stream = Some((send, recv, seed)),
+                            other => return Err(format!("unknown stream tag {other}")),
+                        }
+                    }
+                    Ok((
+                        conn,
+                        s_stream.ok_or("no S stream".to_string())?,
+                        k_stream.ok_or("no K stream".to_string())?,
+                    ))
                 }
-            } else {
-                match endpoint.accept().await {
-                    Ok(conn) => match conn.accept_bi().await {
-                        Ok((send, recv)) => Ok((conn, send, recv)),
-                        Err(e) => Err(format!("accept-bi: {e:?}")),
-                    },
-                    Err(e) => Err(format!("accept: {e:?}")),
-                }
-            };
-            let (conn, send, recv) = match wire {
+            }
+            .await;
+            let (conn, (s_send, s_recv, s_seed), (k_send, k_recv, k_seed)) = match wire {
                 Ok(t) => t,
                 Err(e) => {
                     let _ = with_state(|s| s.conn_results.insert(id, Err(e)));
@@ -731,8 +845,8 @@ impl Guest for Component {
             };
 
             let transport = QueueTransport::new(id);
-            wit_bindgen::spawn_local(iroh_writer(transport.out_rx.clone(), send));
-            wit_bindgen::spawn_local(iroh_reader(transport.in_tx.clone(), recv));
+            wit_bindgen::spawn_local(iroh_writer(transport.out_rx.clone(), s_send));
+            wit_bindgen::spawn_local(iroh_reader(transport.in_tx.clone(), s_recv, s_seed));
             let _ = with_state(|s| s.iroh_conns.insert(id, Rc::new(conn)));
 
             let outcome = subduction_handshake(
@@ -745,6 +859,49 @@ impl Guest for Component {
                 nonce_cache,
             )
             .await;
+
+            // The subduction handshake authenticated the peer; the keyhive
+            // bridge runs against the same identity on the K stream.
+            if let Ok(peer_hex) = &outcome {
+                match hex::decode(peer_hex)
+                    .ok()
+                    .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+                {
+                    Some(peer32) => {
+                        let (kh_out_tx, kh_out_rx) = async_channel::unbounded();
+                        let (kh_in_tx, kh_in_rx) = async_channel::unbounded();
+                        wit_bindgen::spawn_local(iroh_writer(kh_out_rx, k_send));
+                        wit_bindgen::spawn_local(iroh_reader(kh_in_tx, k_recv, k_seed));
+                        let kh_peer = KeyhivePeerId::from_bytes(peer32);
+                        let kh_wire = KhWire {
+                            peer: kh_peer.clone(),
+                            out_tx: kh_out_tx,
+                            in_rx: kh_in_rx,
+                        };
+                        proto.add_peer(kh_peer.clone(), kh_wire.clone()).await;
+                        let recv_proto = proto.clone();
+                        let recv_wire = kh_wire.clone();
+                        let recv_peer = kh_peer.clone();
+                        wit_bindgen::spawn_local(async move {
+                            while let Ok(msg) = recv_wire.recv().await {
+                                // Spike posture: a failed round is dropped,
+                                // not fatal.
+                                let _ = recv_proto
+                                    .handle_message(&recv_peer, msg, Some(recv_wire.clone()))
+                                    .await;
+                            }
+                        });
+                        let _ = proto.sync_keyhive(Some(&kh_peer)).await;
+                    }
+                    None => {
+                        let _ = with_state(|s| {
+                            s.conn_results
+                                .insert(id, Err("bad peer id from handshake".into()))
+                        });
+                        return;
+                    }
+                }
+            }
             let _ = with_state(|s| s.conn_results.insert(id, outcome));
         });
 
@@ -832,18 +989,16 @@ impl Guest for Component {
         Ok(Authored {
             id,
             content_ref: cref.to_vec(),
-            update_events: None,
         })
     }
 
     async fn seal_initial(id: Vec<u8>) -> Result<Authored, String> {
         let (chunk, cref) =
             with_state(|s| s.pending.remove(&id))?.ok_or("no pending initial chunk")?;
-        let update_events = encrypt_and_commit(&id, chunk, vec![], cref).await?;
+        encrypt_and_commit(&id, chunk, vec![], cref).await?;
         Ok(Authored {
             id,
             content_ref: cref.to_vec(),
-            update_events,
         })
     }
 
@@ -856,7 +1011,7 @@ impl Guest for Component {
         let chunk = am.save_incremental();
         let cref: [u8; 32] = blake3::hash(&chunk).into();
 
-        let update_events = encrypt_and_commit(&id, chunk, vec![pred], cref).await?;
+        encrypt_and_commit(&id, chunk, vec![pred], cref).await?;
         with_state(|s| {
             s.docs.insert(id.clone(), am);
             s.last_ref.insert(id.clone(), cref);
@@ -864,7 +1019,6 @@ impl Guest for Component {
         Ok(Authored {
             id,
             content_ref: cref.to_vec(),
-            update_events,
         })
     }
 

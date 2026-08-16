@@ -17,6 +17,7 @@ beekem = { git = "https://github.com/inkandswitch/keyhive", rev = "efe6ccf3ad679
 subduction_core = { git = "https://github.com/inkandswitch/subduction", rev = "2401102882b97d6b13c559fbbcfc2257e3a46dd3", features = ["std"] }
 subduction_crypto = { git = "https://github.com/inkandswitch/subduction", rev = "2401102882b97d6b13c559fbbcfc2257e3a46dd3", features = ["std"] }
 sedimentree_core = { git = "https://github.com/inkandswitch/subduction", rev = "2401102882b97d6b13c559fbbcfc2257e3a46dd3", features = ["std"] }
+subduction_keyhive = { git = "https://github.com/inkandswitch/subduction", rev = "2401102882b97d6b13c559fbbcfc2257e3a46dd3", features = ["serde", "handler"] }
 
 # The content layer, at the version subduction's own workspace pins.
 automerge = "0.11.0"
@@ -32,6 +33,7 @@ wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-tas
 future_form = "0.3.1"
 futures = { version = "0.3", default-features = false, features = ["async-await", "std"] }
 async-channel = "2"
+async-lock = "3"
 ed25519-dalek = "2.1"
 rand = "0.8.5"
 bincode = "1.3"

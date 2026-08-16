@@ -1,14 +1,16 @@
-//! Skeleton host: two engine instances (keyhive + subduction + automerge in
-//! one composite), the iroh wire between them, the host shuttling only
-//! keyhive membership events (phase 3a scope).
+//! Skeleton host, phase 3b: two engine instances (keyhive + subduction +
+//! automerge + the subduction_keyhive bridge in one composite), the iroh
+//! wire between them carrying BOTH protocols (an 'S' stream for
+//! sedimentree sync, a 'K' stream for keyhive membership), and the pull
+//! policy gated by the keyhive auth graph. The host shuttles nothing.
 //!
-//! Scenario: contact exchange; iroh wire + subduction handshake; Alice
-//! creates a shared automerge doc (encrypted under the keyhive doc group)
-//! and adds Bob; Bob syncs ciphertext and reads v1; Alice authors v2, the
-//! subscription pushes it, Bob reads v2; Alice revokes Bob and authors v3 —
-//! Bob still RECEIVES the v3 ciphertext (pull) but cannot READ it
-//! (KeyNotFound), while Alice reads all three. Pull and read, separated by
-//! cryptography rather than delivery.
+//! Scenario: iroh wire up; contact cards travel over the bridge; Bob's
+//! pull is REFUSED pre-membership; Alice adds Bob (Read) — membership
+//! travels over the wire — Bob pulls and reads v1, then v2 via the
+//! subscription; Alice revokes Bob and authors v3 — the pull gate closes
+//! (does the ciphertext still reach a pre-existing subscriber? observed
+//! and reported), the crypto layer stays closed regardless, and Alice
+//! reads all three.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -146,32 +148,18 @@ macro_rules! step {
     }};
 }
 
-/// Shuttle Alice's keyhive events to Bob (host-mediated in 3a), plus any
-/// CGKA update events an encryption produced.
-async fn shuttle_kh(
-    acc: &Accessor<Ctx>,
-    a: &Driver,
-    b: &Driver,
-    bob_id: &[u8],
-    update: &Option<Vec<u8>>,
-    label: &str,
-) -> Result<()> {
-    let events = a
-        .call_kh_events_for_peer(acc, bob_id.to_vec())
-        .await?
-        .map_err(|e| format_err!("kh-events-for-peer: {e}"))?;
-    let stuck = b
-        .call_kh_ingest_events(acc, events)
-        .await?
-        .map_err(|e| format_err!("kh-ingest: {e}"))?;
-    if let Some(update) = update {
-        let _ = b
-            .call_kh_ingest_events(acc, update.clone())
-            .await?
-            .map_err(|e| format_err!("kh-ingest(update): {e}"))?;
+/// Wait for a sync task; the outcome (success or refusal) is scenario
+/// data, not a host failure.
+async fn wait_sync(acc: &Accessor<Ctx>, d: &Driver, handle: u32) -> Result<String> {
+    for _ in 0..2000 {
+        match d.call_sync_status(acc, handle).await? {
+            Ok(Some(summary)) => return Ok(summary),
+            Ok(None) => {}
+            Err(e) => return Ok(format!("refused: {e}")),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
     }
-    println!("            kh events shuttled ({label}), stuck={stuck}");
-    Ok(())
+    bail!("sync task did not finish");
 }
 
 async fn wait_commits(
@@ -213,17 +201,7 @@ async fn scenario(
     let alice_id_bytes = hex::decode(&alice_id).map_err(|e| format_err!("{e}"))?;
     let bob_id_bytes = hex::decode(&bob_id).map_err(|e| format_err!("{e}"))?;
 
-    // 2. Keyhive contact exchange (host-shuttled, 3a scope).
-    let bob_card = step!("bob.contact-card", b.call_contact_card(acc));
-    let seen = step!(
-        "alice.receive-contact-card(bob)",
-        a.call_receive_contact_card(acc, bob_card)
-    );
-    if seen != bob_id {
-        bail!("contact card mismatch");
-    }
-
-    // 3. The iroh wire + subduction handshake.
+    // 2. The iroh wire: both protocols ride it; no host shuttling.
     let _a_ep = step!("alice.iroh-bind", a.call_iroh_bind(acc, relay.clone()));
     let b_ep = step!("bob.iroh-bind", b.call_iroh_bind(acc, relay.clone()));
     let b_ep_bytes = hex::decode(&b_ep).map_err(|e| format_err!("{e}"))?;
@@ -259,71 +237,124 @@ async fn scenario(
         bail!("subduction handshake over iroh did not complete");
     };
     if a_peer != bob_id || b_peer != alice_id {
-        bail!("authenticated peer mismatch: alice saw {a_peer}, bob saw {b_peer}");
+        bail!("authenticated peer mismatch");
     }
     println!("[{:>9.2?}] subduction handshake over iroh complete", t.elapsed());
 
-    // 4. Alice creates the shared doc and adds Bob.
+    // 3. Contact cards travel over the bridge's K stream.
+    let t = Instant::now();
+    let mut known = false;
+    for _ in 0..2000 {
+        let a_knows = a
+            .call_kh_knows_peer(acc, bob_id_bytes.clone())
+            .await?
+            .map_err(|e| format_err!("kh-knows-peer: {e}"))?;
+        let b_knows = b
+            .call_kh_knows_peer(acc, alice_id_bytes.clone())
+            .await?
+            .map_err(|e| format_err!("kh-knows-peer: {e}"))?;
+        if a_knows && b_knows {
+            known = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    }
+    if !known {
+        bail!("contact cards did not propagate over the bridge");
+    }
+    println!(
+        "[{:>9.2?}] contact cards exchanged over the keyhive bridge (no host shuttle)",
+        t.elapsed()
+    );
+
+    // 4. Alice creates the shared doc — and Bob's pull is refused while he
+    // is not a member.
     let created = step!(
         "alice.create-shared(v1, unsealed)",
         a.call_create_shared(acc, "hello from alice".into())
     );
     let doc_id = created.id.clone();
+
+    let sync = step!(
+        "bob.sync-start(alice, PRE-membership)",
+        b.call_sync_start(acc, alice_id_bytes.clone(), doc_id.clone(), true)
+    );
+    let summary = wait_sync(acc, b, sync).await?;
+    println!("            pre-membership sync outcome: {summary}");
+    let commits_b = b
+        .call_commits(acc, doc_id.clone())
+        .await?
+        .map_err(|e| format_err!("commits: {e}"))?;
+    if !commits_b.is_empty() {
+        bail!("PULL GATE FAILURE: bob obtained commits before membership");
+    }
+    println!("            bob has 0 commits: pull refused before membership");
+
+    // 5. Alice adds Bob (Read) — membership travels over the wire — and
+    // seals v1. Bob pulls and reads it.
     step!(
         "alice.kh-add-member(bob, Read)",
         a.call_kh_add_member(acc, doc_id.clone(), bob_id_bytes.clone())
     );
-    shuttle_kh(acc, a, b, &bob_id_bytes, &None, "membership").await?;
-    let v1 = step!(
+    let _v1 = step!(
         "alice.seal-initial(v1)",
         a.call_seal_initial(acc, doc_id.clone())
     );
-    shuttle_kh(acc, a, b, &bob_id_bytes, &v1.update_events, "v1 epoch").await?;
 
-    // 5. Bob syncs the ciphertext and reads v1.
-    let sync = step!(
-        "bob.sync-start(alice, subscribe)",
-        b.call_sync_start(acc, alice_id_bytes.clone(), doc_id.clone(), true)
-    );
     let t = Instant::now();
-    let mut summary = None;
-    for _ in 0..2000 {
-        summary = b
-            .call_sync_status(acc, sync)
+    let mut view = None;
+    for _ in 0..600 {
+        let sync = b
+            .call_sync_start(acc, alice_id_bytes.clone(), doc_id.clone(), true)
             .await?
-            .map_err(|e| format_err!("bob sync: {e}"))?;
-        if summary.is_some() {
-            break;
+            .map_err(|e| format_err!("sync-start: {e}"))?;
+        let _ = wait_sync(acc, b, sync).await?;
+        match b.call_read_doc(acc, doc_id.clone()).await? {
+            Ok(v) if v.chunks_read >= 1 && v.chunks_failed == 0 => {
+                view = Some(v);
+                break;
+            }
+            _ => {}
         }
-        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    let Some(summary) = summary else {
-        bail!("bob's sync did not complete");
+    let Some(view) = view else {
+        bail!("bob never became able to read v1");
     };
-    println!("[{:>9.2?}] bob sync complete: {summary}", t.elapsed());
-
-    let view = step!("bob.read-doc(v1)", b.call_read_doc(acc, doc_id.clone()));
-    if view.text != "hello from alice" || view.chunks_read != 1 || view.chunks_failed != 0 {
+    if view.text != "hello from alice" {
         bail!("bob's v1 view is wrong: {view:?}");
     }
-    println!("            bob reads: {:?}", view.text);
+    println!(
+        "[{:>9.2?}] bob pulls and reads v1 (membership + epoch over the wire): {:?}",
+        t.elapsed(),
+        view.text
+    );
 
-    // 6. Alice authors v2; the subscription pushes it; Bob reads it.
+    // 6. v2 via the live subscription.
     let v2 = step!(
         "alice.author-change(v2)",
         a.call_author_change(acc, doc_id.clone(), "hello again".into())
     );
-    shuttle_kh(acc, a, b, &bob_id_bytes, &v2.update_events, "v2 epoch").await?;
     wait_commits(acc, b, &doc_id, &v2.content_ref, "v2 ciphertext reached bob via subscription").await?;
-    let view = step!("bob.read-doc(v2)", b.call_read_doc(acc, doc_id.clone()));
-    if view.text != "hello again" || view.chunks_read != 2 || view.chunks_failed != 0 {
-        bail!("bob's v2 view is wrong: {view:?}");
+    let t = Instant::now();
+    let mut ok = false;
+    for _ in 0..600 {
+        match b.call_read_doc(acc, doc_id.clone()).await? {
+            Ok(v) if v.chunks_read == 2 && v.chunks_failed == 0 && v.text == "hello again" => {
+                ok = true;
+                break;
+            }
+            _ => {}
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    println!("            bob reads: {:?}", view.text);
+    if !ok {
+        bail!("bob never read v2");
+    }
+    println!("[{:>9.2?}] bob reads v2: \"hello again\"", t.elapsed());
 
-    // 7. Revoke Bob; Alice authors v3. Bob gets the BYTES (pull) but not
-    // the CONTENT (read) — adversarial full delivery of the keyhive events
-    // included.
+    // 7. Revocation closes the pull gate; the crypto layer stays closed
+    // regardless of delivery.
     step!(
         "alice.kh-revoke-member(bob)",
         a.call_kh_revoke_member(acc, doc_id.clone(), bob_id_bytes.clone())
@@ -332,23 +363,48 @@ async fn scenario(
         "alice.author-change(v3, post-revocation)",
         a.call_author_change(acc, doc_id.clone(), "secret v3 (bob must not read)".into())
     );
-    shuttle_kh(acc, a, b, &bob_id_bytes, &v3.update_events, "revocation + v3 epoch").await?;
-    wait_commits(acc, b, &doc_id, &v3.content_ref, "v3 CIPHERTEXT reached bob (pull still works)").await?;
+
+    // Does the pre-existing subscription still deliver? Observe.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let commits_b = b
+        .call_commits(acc, doc_id.clone())
+        .await?
+        .map_err(|e| format_err!("commits: {e}"))?;
+    let pushed = commits_b.iter().any(|c| c == &v3.content_ref);
+    if pushed {
+        println!("            OBSERVED: v3 ciphertext still pushed to the revoked subscriber");
+    } else {
+        println!("            v3 ciphertext NOT pushed to the revoked subscriber");
+    }
+
+    // An explicit pull attempt must not obtain it either.
+    let sync = step!(
+        "bob.sync-start(alice, POST-revocation)",
+        b.call_sync_start(acc, alice_id_bytes.clone(), doc_id.clone(), false)
+    );
+    let summary = wait_sync(acc, b, sync).await?;
+    println!("            post-revocation sync outcome: {summary}");
+    let commits_b = b
+        .call_commits(acc, doc_id.clone())
+        .await?
+        .map_err(|e| format_err!("commits: {e}"))?;
+    let has_v3 = commits_b.iter().any(|c| c == &v3.content_ref);
 
     let view = step!("bob.read-doc(post-revocation)", b.call_read_doc(acc, doc_id.clone()));
-    if view.chunks_read != 2 || view.chunks_failed != 1 {
-        bail!("bob's post-revocation view is wrong: {view:?}");
-    }
     if view.text != "hello again" {
         bail!("bob's readable text changed after revocation: {view:?}");
     }
-    let err = view.last_error.clone().unwrap_or_default();
-    println!(
-        "            bob: read {} chunks, {} refused ({}), text still {:?}",
-        view.chunks_read, view.chunks_failed, err, view.text
-    );
-    if !err.contains("KeyNotFound") {
-        bail!("expected KeyNotFound, got: {err}");
+    match (has_v3, view.chunks_failed) {
+        (false, 0) => println!(
+            "            pull gate held: no v3 bytes at bob; text still {:?}",
+            view.text
+        ),
+        (true, 1) if view.chunks_read == 2 => println!(
+            "            v3 bytes reached bob but decrypt refused ({}); text still {:?}",
+            view.last_error.clone().unwrap_or_default(),
+            view.text
+        ),
+        _ => bail!("unexpected post-revocation state: has_v3={has_v3}, view={view:?}"),
     }
 
     // 8. Alice reads everything.
