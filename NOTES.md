@@ -2,11 +2,14 @@
 
 Consolidated from the founding design discussion (2026-08-16).
 
-**Status: nothing in this document is decided.** It records the design
-sketch, the analysis, and the current leanings that the tracking issues
-start from. Open questions live in the issue tracker, not here; when a
-topic is resolved, the ruling and its rationale land in this document
-(or a dedicated doc it links) and the issue closes.
+**Status: nothing in this document is finally decided.** It records the
+design sketch, the analysis, and the current leanings that the tracking
+issues start from. Open questions live in the issue tracker, not here;
+when a topic is resolved, the ruling and its rationale land in this
+document (or a dedicated doc it links) and the issue closes. Sections
+marked **provisional plan** sit between leaning and ruling: adopted as
+the working plan, `@unstable`-gated in anything shipped, converted only
+by their named checkpoints.
 
 ## What this is
 
@@ -334,6 +337,10 @@ Design directions:
 - **Multi-tab**: one sync engine per origin (SharedWorker / Web Locks);
   automerge tolerates the races, the write path shouldn't invite them.
 
+Investigated 2026-08-16 (subduction as the replication layer): findings
+on the [#8 thread](../../issues/8); direction in
+[Provisional plan: group crypto and sync](#provisional-plan-group-crypto-and-sync).
+
 ## Group crypto
 
 The MLS question, structurally: MLS assumes a delivery service imposing
@@ -367,6 +374,87 @@ Evaluation criteria: concurrency tolerance, spec/implementation
 maturity, wasm-portability (must run in-guest or over
 polymorph:webcrypto), and the FS/PCS actually delivered on a
 sync-history workload rather than on paper.
+
+Investigated 2026-08-16 (Keyhive code + design docs): findings on the
+[#9 thread](../../issues/9); direction in
+[Provisional plan: group crypto and sync](#provisional-plan-group-crypto-and-sync).
+
+## Provisional plan: group crypto and sync
+
+Recorded 2026-08-16 from the Keyhive/subduction investigation
+([#9](../../issues/9), [#8](../../issues/8) carry the detailed
+findings). Provisional: adopted as the working plan, `@unstable`-gated
+in any shipped surface, converted to a ruling only by the checkpoints
+at the end of this section.
+
+- **Group crypto (#9): Keyhive primary, DCGKA the named fallback, raw
+  MLS eliminated.** MLS's delivery-service sequencing assumption is
+  disqualifying for a partition-tolerant P2P system, and BeeKEM now has
+  formal analysis for the decentralized case (cross-fork security;
+  eprint 2026/1434) that DCGKA-era designs lacked. `keyhive_core`
+  wraps behind a `polymorph:groups`-shaped WIT surface so the
+  implementation stays swappable; identity signing routes through
+  `polymorph:webcrypto` via keyhive's `AsyncSigner` seam (upstream
+  already ships a WebCrypto signer holding a non-extractable platform
+  Ed25519 key). Verified: `keyhive_core` + `beekem` + `keyhive_crypto`
+  compile clean for wasm32-wasip2.
+- **Sync (#8): v1 provisionally matches subduction — at three distinct
+  layers.** The *domain model* is matched (sedimentree
+  commits/fragments/summaries, pull policy, subscriptions: the
+  vocabulary carries two paid design iterations — Beelay was scrapped
+  wholesale, and the current tracker previews the mistakes a
+  from-scratch design would repeat). The *WIT API* is ours, with
+  subduction as the first provider behind it — mirroring its Rust API
+  would export upstream churn to every consumer; the adapter absorbs
+  it. The *wire and storage formats* are provisionally subduction's,
+  pinned and tagged: upstream framing carries per-type schema-version
+  bytes with reject-on-unknown — tagged, not negotiated. Verified:
+  `subduction_core` + `sedimentree_core` + `subduction_crypto` compile
+  clean for wasm32-wasip2; transports are thin (upstream's iroh 1.0
+  adapter is ~1k LOC, so a `polymorph:iroh` transport is a small
+  seam).
+- **Cross-version compat is a day-one seam requirement.** The
+  "framework ships both endpoints" mitigator holds within one user's
+  devices under one origin, not across origins: release skew across
+  the P2P graph is structural (origin A at release N syncs with origin
+  B at N−3). The seam speaks N and accepts a defined window back;
+  format generations are recorded; re-chunking/migration is a
+  framework job.
+- **Vocabulary adopted: pull / read / mutate / manage** (keyhive's
+  access tiers). *Pull* — may fetch ciphertext, cannot decrypt — is
+  the missing name for the untrusted-relay tier the trust-model
+  invariant implies: it is precisely what a live-and-untrusted party
+  checks.
+- **Co-evolution posture.** Pin by exact version/rev; upstream
+  protocol changes are migrations, not bumps (keyhive #213 — a BeeKEM
+  change altering what trees mean, merged the day before the
+  investigation — is the template). Track both repos and the
+  keyhive-beelay Discord channel; upstream filings are individual
+  decisions.
+- **Recorded properties for the threat model (#1).** No forward
+  secrecy, by design (causal keys: a chunk key discloses predecessor
+  keys; the read-back window is a policy knob). The actual guarantees
+  are PCS plus cross-fork security. Keyhive's bespoke content envelope
+  (XChaCha20-Poly1305 with a keyed-BLAKE3 synthetic-nonce /
+  key-commitment scheme, flagged CAUTION in their own design doc)
+  requires independent review before polymorph data ships under it.
+- **Spike sequence.** (1) `keyhive_core` as a wasip2 component,
+  `AsyncSigner` over `polymorph:webcrypto`, membership/CGKA ops
+  exchanged between two component instances over component-iroh
+  streams. (2) Subduction with a `polymorph:iroh` Transport
+  implementation. (3) The walking skeleton — automerge ↔ subduction ↔
+  keyhive over component-iroh, all components — as the #8/#9
+  validation artifact.
+- **Conversion checkpoints (provisional → ruling).** The spikes prove
+  component embeddability; convergence/partition gates expressed in
+  polymorph-test go green; scaling is measured against our doc-count
+  profile — doc-as-ACL-unit multiplies document count, and upstream
+  subduction #268 (collections freezing at ~2,400 documents) sits on
+  exactly that path. Risk facts that stay visible while provisional:
+  subduction's bus factor (one primary contributor) and open semantic
+  bugs (wasm memory corruption on reconnect, transient false heads);
+  keyhive's empty upstream threat-model doc and open zeroization
+  audit.
 
 ## Identity and devices
 
