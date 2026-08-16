@@ -448,7 +448,14 @@ declared otherwise (see the status note at the top).
   the transport here is throwaway scaffolding, because production op
   sync belongs to the subduction bridge; the spike validates signing,
   embedding, persistence, and op semantics, and must not grow its own
-  sync protocol. (2) Subduction with a `polymorph:iroh` Transport
+  sync protocol. **Executed 2026-08-16 and passed**
+  ([spikes/keyhive/](spikes/keyhive/README.md)): unpatched keyhive at
+  pinned main runs as a component; cryptographic exclusion after
+  revocation held under adversarial full delivery; the causal-keys
+  no-FS trade observed; archive/restore works with the platform-held
+  signer, and surfaced the dependency that durable browser state needs
+  **platform key persistence** (feeds #11 and the webcrypto keystore
+  design). (2) Subduction with a `polymorph:iroh` Transport
   implementation. (3) The walking skeleton — automerge ↔ subduction ↔
   keyhive over component-iroh, all components — as the #8/#9
   validation artifact, which also measures the topology question
