@@ -1,0 +1,49 @@
+package polymorph:subduction-spike@0.1.0;
+
+/// Spike scaffolding: one subduction peer per component instance. The host
+/// is the dumb wire — it drains each instance's outbox and delivers frames
+/// to the other instance's inbox, then asserts sync convergence. The real
+/// handshake runs (challenge/response over the shuttled frames); only the
+/// wire is fake. Phase 2b replaces the wire with polymorph:iroh streams.
+interface driver {
+    /// Generate the webcrypto-held identity (non-extractable signing key),
+    /// build the Subduction instance (memory storage, open policy), and
+    /// spawn its listener/manager tasks. Returns the peer id, hex.
+    init: async func() -> result<string, string>;
+
+    /// Create a shuttle connection and spawn its handshake task
+    /// (initiate toward `expected-peer`, or respond). Returns a handle.
+    open-conn: async func(initiator: bool, expected-peer: list<u8>) -> result<u32, string>;
+
+    /// Drain this connection's pending outbound frames.
+    outbox: async func(conn: u32) -> result<list<list<u8>>, string>;
+
+    /// Deliver inbound frames to this connection.
+    deliver: async func(conn: u32, frames: list<list<u8>>) -> result<_, string>;
+
+    /// The handshake/registration outcome: none while pending, the
+    /// authenticated peer id (hex) once the connection is registered.
+    conn-status: async func(conn: u32) -> result<option<string>, string>;
+
+    /// Add a local commit: head = blake3(payload). Returns the head id.
+    add-commit: async func(tree: list<u8>, parents: list<list<u8>>, payload: list<u8>) -> result<list<u8>, string>;
+
+    /// Start a sync round with a peer; returns a handle to poll.
+    sync-start: async func(peer: list<u8>, tree: list<u8>, subscribe: bool) -> result<u32, string>;
+
+    /// None while running; a human-readable summary once finished.
+    sync-status: async func(handle: u32) -> result<option<string>, string>;
+
+    /// Commit head ids currently held for a tree (sorted).
+    commits: async func(tree: list<u8>) -> result<list<list<u8>>, string>;
+
+    /// The blob payload stored for a commit.
+    blob-of: async func(tree: list<u8>, head: list<u8>) -> result<list<u8>, string>;
+
+    /// Counters (webcrypto sign calls, open connections).
+    stats: async func() -> string;
+}
+
+world spike {
+    export driver;
+}

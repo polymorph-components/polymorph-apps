@@ -456,7 +456,20 @@ declared otherwise (see the status note at the top).
   signer, and surfaced the dependency that durable browser state needs
   **platform key persistence** (feeds #11 and the webcrypto keystore
   design). (2) Subduction with a `polymorph:iroh` Transport
-  implementation. (3) The walking skeleton — automerge ↔ subduction ↔
+  implementation. **Phase 2a executed 2026-08-16 and passed**
+  ([spikes/subduction/](spikes/subduction/README.md)): unpatched
+  subduction at pinned main runs as a component — real handshake, sync
+  convergence, and live subscription push between two instances over a
+  host-shuttled wire; identity signing via `polymorph:webcrypto`. Two
+  findings: wit-bindgen's `inter-task-wakeup` feature is load-bearing
+  for the engine composite (without it, channel-sleeping tasks panic;
+  with it, wasmtime serves them — the polymorph-iroh-era wakeup
+  uncertainty resolves for the wasmtime leg), and
+  `subduction_crypto::Signer::sign` is infallible, so platform-signer
+  failures can only trap (keyhive's fallible `AsyncSigner` is the
+  better shape; upstream-issue candidate). Phase 2b — the
+  `polymorph:iroh` Transport over the endpoint component — remains.
+  (3) The walking skeleton — automerge ↔ subduction ↔
   keyhive over component-iroh, all components — as the #8/#9
   validation artifact, which also measures the topology question
   below.
