@@ -8,8 +8,11 @@ issues start from. Open questions live in the issue tracker, not here;
 when a topic is resolved, the ruling and its rationale land in this
 document (or a dedicated doc it links) and the issue closes. Sections
 marked **provisional plan** sit between leaning and ruling: adopted as
-the working plan, `@unstable`-gated in anything shipped, converted only
-by their named checkpoints.
+the working plan, converted only by their named checkpoints. There are
+no per-surface `@unstable` gates: **the entire framework is unstable
+until declared otherwise**, so a stability annotation would state
+nothing — a gate that does not bind produces the wart without buying
+the compatibility.
 
 ## What this is
 
@@ -383,9 +386,10 @@ Investigated 2026-08-16 (Keyhive code + design docs): findings on the
 
 Recorded 2026-08-16 from the Keyhive/subduction investigation
 ([#9](../../issues/9), [#8](../../issues/8) carry the detailed
-findings). Provisional: adopted as the working plan, `@unstable`-gated
-in any shipped surface, converted to a ruling only by the checkpoints
-at the end of this section.
+findings). Provisional: adopted as the working plan, converted to a
+ruling only by the checkpoints at the end of this section. No
+`@unstable` gates anywhere — the whole framework is unstable until
+declared otherwise (see the status note at the top).
 
 - **Group crypto (#9): Keyhive primary, DCGKA the named fallback, raw
   MLS eliminated.** MLS's delivery-service sequencing assumption is
