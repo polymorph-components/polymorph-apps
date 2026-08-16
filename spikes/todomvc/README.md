@@ -57,6 +57,50 @@ guest (Rust → wasm component)            trusted host (JS)
   attribute (`a[href]`) admitting fragment routes only. String HTML never
   crosses the boundary anywhere.
 
+## Backends: the semantically-equivalent fast paths
+
+Per the fast-path plan recorded on [#15], the surface front-end owns all
+guest-facing validation and drives one of three **backends** implementing
+the same ordering spec (written in `wit/todomvc.wit` on the `lab` world):
+ops apply in call order; a flush boundary falls at the end of each export
+invocation and at each guest suspension point; ops emitted before a trap
+are applied; within a boundary, application is atomic w.r.t. paint.
+
+| backend | what | role |
+|---|---|---|
+| `direct` | validate → mutate the Node held as the resource rep; no ops, no clone, no id map | same-realm production path — the shape of a future native WebIDL binding |
+| `queued` | serializable op batches + `structuredClone` + re-validating applier | debug/canary configuration; proves the seam every batch |
+| `channel` | the queued protocol over a real `MessageChannel` (postMessage clones; events round-trip) | faithful stand-in for the worker/frame split |
+
+The demo takes `?backend=` (default `direct`).
+
+**The equivalence harness** ([harness.html](https://polymorph-components.github.io/polymorph-apps/spike-todomvc/harness.html))
+makes "semantically equivalent" a checked property: the same guests run the
+same scripts on every backend — 15 TodoMVC steps (synthetic event records
+plus real DOM clicks) with full-DOM serialization compared stepwise
+(attributes, input value/checked props, focus marker), and 8 probe cases
+from a violation guest (`lab/`) compared as trap vectors, including the
+flush-on-trap rule (a visible legal mutation before the violating call must
+land on every backend). Status: **PASS**, 3 backends.
+
+**The churn bench** ([bench.html](https://polymorph-components.github.io/polymorph-apps/spike-todomvc/bench.html),
+`?n=` rows; li+span per row ≈ 6 surface calls) — Chromium, aarch64 linux,
+2026-08-16, n=5000 (30k surface calls in one invocation):
+
+| backend | create 5000 (ms) | µs/call | update med (ms) | clear (ms) |
+|---|---|---|---|---|
+| direct | 31.7 | 1.06 | 1.0 | 1.1 |
+| channel | 32.8 | 1.09 | 1.3 | 2.5 |
+| queued | 46.8 | 1.56 | 1.5 | 2.7 |
+
+Readings: the postMessage hop costs ~3% at batch sizes UI code never
+reaches; the explicit-clone canary costs ~47% and stays a debug
+configuration; a heavy real frame (hundreds of ops) is ~0.1 ms of
+boundary+DOM cost on any backend. The #15 expectation holds — the glue tax
+is a VDOM-op-rate problem, not a UI-rate problem, so the contract-level
+accel option stays shelved and the bridge position is "delete scaffolding
+when native bindings arrive".
+
 ## What the artifact itself shows
 
 `wasm-tools component wit build/todomvc.component.wasm` prints the world the
@@ -85,11 +129,25 @@ page is exactly what its binary imports.
   `free` op → applier table entry released, while DOM nodes live or die
   with the tree. Skeleton handles are retained for the app's lifetime;
   per-render `li` handles are dropped on each rebuild.
+- **`autofocus` is not expressible on the surface** (2026-08-16, found by
+  the harness on its first run): UA-initiated focus is processed at
+  rendering opportunities and only when nothing else holds focus, so it
+  diverges across backends by timing, not semantics. The attribute is
+  rejected; focus is the explicit `focus()` op. General rule: attributes
+  that *trigger UA behaviors* (autofocus and friends) are outside the
+  equivalence envelope until specced op-like.
+- **Backend equivalence is cheap to hold**: the three backends share the
+  validation tables and the event-record builder, differ only in
+  application strategy, and the harness pinned them identical on the first
+  honest run (after the autofocus fix). Trap messages surface deltic's
+  unbranded-throw guidance — expected: surface violations are deliberate
+  traps, not WIT errors, per #16.
 
 ## Deliberately out of scope (the framework wires up here)
 
-- The worker/frame split itself (the seam is in place; ops and events are
-  already serializable data).
+- The real worker/frame split (the `channel` backend proves the protocol
+  over a genuine MessageChannel; moving its two halves into a worker and a
+  sandboxed frame is placement, not design).
 - The permission linker (#16: imports satisfied/stubbed per grant) — here
   the boot script links everything unconditionally.
 - Asset pipeline (this app has no images/fonts; CSS is a *host* asset).
@@ -105,9 +163,9 @@ just build    # → ../../docs/spike-todomvc (the Pages root)
 just serve    # build + serve docs/ on :8931
 ```
 
-Pipeline: `cargo build` → `wasm-tools component new` + `validate` →
-build-time translate (envelope) → `deno bundle` the host → assemble the
-demo dir.
+Pipeline: `cargo build` (todomvc + lab guests) → `wasm-tools component new`
++ `validate` → build-time translate (envelopes) → `deno bundle` the host
+(one bundle, three pages: demo / harness / bench) → assemble the demo dir.
 
 ## Pins
 

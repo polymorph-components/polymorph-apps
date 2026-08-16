@@ -85,3 +85,25 @@ world todomvc {
   /// Deliver a route change.
   export on-route: func(route: string);
 }
+
+/// Instrumentation world for the backend differential harness and the
+/// churn benchmark. Same imports as the app world; the exports drive
+/// violation and load scenarios instead of a UI.
+///
+/// Ordering spec shared by every backend (and by any future native
+/// binding): ops apply in call order; a flush boundary falls at the end
+/// of each export invocation AND at each guest suspension point; within
+/// one boundary, application is atomic with respect to paint. Ops emitted
+/// before a trap are applied; the instance is then dead.
+world lab {
+  import dom;
+  import events;
+  import shell;
+
+  /// Attempt one violation case (or the legal baseline, id 0). Illegal
+  /// cases must trap — at the same call site on every backend.
+  export probe: func(id: u32);
+  /// Churn scenarios: 1 = create n rows, 2 = update every 10th row,
+  /// 3 = clear.
+  export bench: func(scenario: u32, n: u32);
+}

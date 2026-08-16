@@ -133,7 +133,6 @@ fn build_skeleton(app: &mut App) {
     h1.set_text_content("todos");
     let new_input = el("input", "new-todo");
     new_input.set_attribute("placeholder", "What needs to be done?");
-    new_input.set_attribute("autofocus", "");
     listen(&new_input, EventKind::Keydown, TOK_NEW);
     header.append_child(&h1);
     header.append_child(&new_input);

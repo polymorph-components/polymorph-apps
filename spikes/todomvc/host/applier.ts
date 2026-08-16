@@ -1,24 +1,15 @@
-// The frame-side half of the seam: consumes serializable ops and applies
-// them to the real DOM. Re-validates independently of the surface front-end
-// (defense in depth — in the full framework this code runs in the sandboxed
-// UI frame and cannot assume anything about what reached it).
+// The frame-side half of the seam: decodes serializable ops and applies
+// them to the real DOM. Re-validates independently of the surface
+// front-end — this code stands where the sandboxed UI frame will stand,
+// so it assumes nothing about what reached it.
 
 import { checkAttr, checkEventKind, checkTag } from "./validate.ts";
-import type { Op } from "./surface.ts";
-
-export interface UiEvent {
-  token: number;
-  kind: string;
-  key?: string;
-  value?: string;
-  checked?: boolean;
-}
+import { attachListener, type UiEvent } from "./events.ts";
+import { ROOT_ID, type Op } from "./backend-queued.ts";
 
 export interface Applier {
   apply(ops: Op[]): void;
 }
-
-const ROOT_ID = 0;
 
 export function createApplier(
   container: HTMLElement,
@@ -31,23 +22,6 @@ export function createApplier(
     if (!n) throw new Error(`applier: unknown node ${id}`);
     return n;
   };
-
-  function listen(id: number, kind: string, token: number): void {
-    checkEventKind(kind);
-    const node = get(id);
-    node.addEventListener(kind, (e) => {
-      const ev: UiEvent = { token, kind };
-      if (kind === "keydown") {
-        const key = (e as KeyboardEvent).key;
-        ev.key = key;
-        if (key === "Enter") e.preventDefault();
-      }
-      const target = e.currentTarget as HTMLInputElement;
-      if (target && typeof target.value === "string") ev.value = target.value;
-      if (target && target.type === "checkbox") ev.checked = target.checked;
-      dispatch(ev);
-    });
-  }
 
   function apply(ops: Op[]): void {
     for (const op of ops) {
@@ -86,9 +60,11 @@ export function createApplier(
         case "focus":
           (get(op[1]) as HTMLElement).focus();
           break;
-        case "listen":
-          listen(op[1], op[2], op[3]);
+        case "listen": {
+          checkEventKind(op[2]);
+          attachListener(get(op[1]), op[2], op[3], dispatch);
           break;
+        }
         case "free":
           if (op[1] !== ROOT_ID) nodes.delete(op[1]);
           break;

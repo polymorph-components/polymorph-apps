@@ -22,7 +22,10 @@ export const TAGS: ReadonlySet<string> = new Set([
 const GLOBAL_ATTRS: ReadonlySet<string> = new Set(["class", "id"]);
 
 const TAG_ATTRS: Record<string, ReadonlySet<string>> = {
-  input: new Set(["type", "placeholder", "autofocus"]),
+  // No `autofocus`: UA-initiated focus is timing-dependent (rendering
+  // opportunities, global focus state) and sits outside the surface's
+  // ordering guarantees. Focus is the explicit, deterministic focus() op.
+  input: new Set(["type", "placeholder"]),
   label: new Set(["for"]),
   a: new Set(["href"]),
 };
@@ -56,11 +59,6 @@ export function checkAttr(tag: string, name: string, value: string): void {
     case "input type":
       if (value !== "text" && value !== "checkbox") {
         throw new Error(`surface: input type '${value}' is not allowed`);
-      }
-      return;
-    case "input autofocus":
-      if (value !== "") {
-        throw new Error("surface: autofocus takes no value");
       }
       return;
     case "a href":
