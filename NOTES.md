@@ -477,7 +477,20 @@ declared otherwise (see the status note at the top).
   the plan bet on. (3) The walking skeleton — automerge ↔ subduction ↔
   keyhive over component-iroh, all components — as the #8/#9
   validation artifact, which also measures the topology question
-  below.
+  below. **Phase 3a executed 2026-08-16 and passed**
+  ([spikes/skeleton/](spikes/skeleton/README.md)): the full content
+  path in one engine composite per peer — automerge chunks encrypted
+  under BeeKEM epochs, ciphertext envelopes as sedimentree blobs,
+  synced over the iroh wire — with **one platform-held identity
+  backing both layers**, and the **pull/read separation enforced by
+  cryptography**: a revoked member keeps receiving ciphertext over the
+  live subscription and cannot read it, while readable history stays
+  readable. Design finding: epoch membership at *seal* time determines
+  readability (a BeeKEM add is not retroactive), so the data layer
+  must encode "create → add members → first seal", and late joiners
+  read history only through causal keys via post-join chunks. Phase
+  3b — the `subduction_keyhive` bridge (membership sync over the wire,
+  keyhive-gated pull policy) — remains.
 - **Topology leaning: one engine composite, one keyhive instance.**
   `subduction_keyhive` is an in-process wrapper that *holds* the
   `Keyhive` instance, implementing subduction's connection/storage
