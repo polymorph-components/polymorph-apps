@@ -467,9 +467,14 @@ declared otherwise (see the status note at the top).
   uncertainty resolves for the wasmtime leg), and
   `subduction_crypto::Signer::sign` is infallible, so platform-signer
   failures can only trap (keyhive's fallible `AsyncSigner` is the
-  better shape; upstream-issue candidate). Phase 2b — the
-  `polymorph:iroh` Transport over the endpoint component — remains.
-  (3) The walking skeleton — automerge ↔ subduction ↔
+  better shape; upstream-issue candidate). **Phase 2b executed
+  2026-08-16 and passed**: the same guest composed with the
+  component-iroh endpoint via `wac plug` runs the identical scenario —
+  subduction handshake, sync convergence, live subscription push — over
+  a length-framed bidirectional QUIC stream through a stock iroh relay.
+  Swapping wires touched zero subduction code (two ~30-line stream-pump
+  tasks feed the same frame queues), which validates the transport seam
+  the plan bet on. (3) The walking skeleton — automerge ↔ subduction ↔
   keyhive over component-iroh, all components — as the #8/#9
   validation artifact, which also measures the topology question
   below.

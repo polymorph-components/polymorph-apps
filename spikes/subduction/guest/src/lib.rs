@@ -11,6 +11,7 @@
 wit_bindgen::generate!({
     path: "wit",
     world: "spike",
+    generate_all,
 });
 
 use std::cell::{Cell, RefCell};
@@ -43,6 +44,12 @@ use subduction_core::{
 use subduction_crypto::{nonce::Nonce, signer::Signer};
 
 use exports::polymorph::subduction_spike::driver::Guest;
+use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
+use polymorph::iroh::identity_generate;
+use polymorph::iroh::types::{EndpointAddr, TransportAddr};
+
+/// The iroh ALPN for the spike's subduction wire.
+const ALPN: &[u8] = b"subduction-spike/0";
 
 // --- types ---
 
@@ -244,6 +251,9 @@ struct State {
     conn_results: HashMap<u32, Result<String, String>>,
     syncs: HashMap<u32, Result<String, String>>,
     next_id: u32,
+    endpoint: Option<Rc<Endpoint>>,
+    iroh_identity: Option<Rc<polymorph::iroh::identity::Identity>>,
+    iroh_conns: HashMap<u32, Rc<polymorph::iroh::endpoint::Connection>>,
 }
 
 thread_local! {
@@ -281,6 +291,96 @@ fn tree_id(bytes: &[u8]) -> Result<SedimentreeId, String> {
 async fn breathe() {
     wit_bindgen::yield_async().await;
     wit_bindgen::yield_async().await;
+}
+
+/// Run the subduction handshake over a queue transport and register the
+/// authenticated connection. Shared by the shuttle wire (host pumps the
+/// queues) and the iroh wire (stream pump tasks feed the same queues).
+#[allow(clippy::too_many_arguments)]
+async fn subduction_handshake(
+    transport: ShuttleTransport,
+    initiator: bool,
+    expected_peer: Vec<u8>,
+    sd: Arc<Sd>,
+    signer: WebcryptoSigner,
+    my_peer: PeerId,
+    nonce_cache: Rc<NonceCache>,
+) -> Result<String, String> {
+    let now = now_ts();
+    let result = if initiator {
+        let expected = arr32(&expected_peer, "expected peer")?;
+        let audience = Audience::known(PeerId::new(expected));
+        let nonce = Nonce::from_bytes(rand::random::<[u8; 16]>());
+        handshake::initiate::<Local, _, _, _, _>(
+            ShuttleHandshake(transport),
+            |h, _peer| (MessageTransport::new(h.0), ()),
+            &signer,
+            audience,
+            now,
+            nonce,
+        )
+        .await
+        .map_err(|e| format!("initiate: {e:?}"))
+    } else {
+        handshake::respond::<Local, _, _, _, _>(
+            ShuttleHandshake(transport),
+            |h, _peer| (MessageTransport::new(h.0), ()),
+            &signer,
+            &nonce_cache,
+            my_peer,
+            None,
+            now,
+            Duration::from_secs(300),
+        )
+        .await
+        .map_err(|e| format!("respond: {e:?}"))
+    };
+
+    match result {
+        Ok((authenticated, ())) => {
+            let peer_hex = authenticated.peer_id().to_string();
+            match sd.add_connection(authenticated).await {
+                Ok(_) => Ok(peer_hex),
+                Err(e) => Err(format!("add_connection: {e:?}")),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Pump outbound frames onto the QUIC stream with u32-LE length framing.
+async fn iroh_writer(out_rx: async_channel::Receiver<Vec<u8>>, send: SendStream) {
+    while let Ok(frame) = out_rx.recv().await {
+        let mut buf = Vec::with_capacity(4 + frame.len());
+        buf.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&frame);
+        if send.write(buf).await.is_err() {
+            break;
+        }
+    }
+    let _ = send.finish();
+}
+
+/// Pump inbound stream bytes into frames (u32-LE length prefix).
+async fn iroh_reader(in_tx: async_channel::Sender<Vec<u8>>, recv: RecvStream) {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        match recv.read(64 * 1024).await {
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+            Ok(None) | Err(_) => break,
+        }
+        while buf.len() >= 4 {
+            let len = u32::from_le_bytes(buf[0..4].try_into().expect("4 bytes")) as usize;
+            if buf.len() < 4 + len {
+                break;
+            }
+            let frame: Vec<u8> = buf[4..4 + len].to_vec();
+            buf.drain(0..4 + len);
+            if in_tx.send(frame).await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 // --- the exported driver ---
@@ -335,6 +435,9 @@ impl Guest for Component {
                 conn_results: HashMap::new(),
                 syncs: HashMap::new(),
                 next_id: 0,
+                endpoint: None,
+                iroh_identity: None,
+                iroh_conns: HashMap::new(),
             })
         });
         Ok(hex::encode(verifying.to_bytes()))
@@ -357,52 +460,16 @@ impl Guest for Component {
         })?;
 
         wit_bindgen::spawn_local(async move {
-            let now = now_ts();
-            let result = if initiator {
-                let expected = match arr32(&expected_peer, "expected peer") {
-                    Ok(a) => a,
-                    Err(e) => {
-                        let _ = with_state(|s| s.conn_results.insert(id, Err(e)));
-                        return;
-                    }
-                };
-                let audience = Audience::known(PeerId::new(expected));
-                let nonce = Nonce::from_bytes(rand::random::<[u8; 16]>());
-                handshake::initiate::<Local, _, _, _, _>(
-                    ShuttleHandshake(transport),
-                    |h, _peer| (MessageTransport::new(h.0), ()),
-                    &signer,
-                    audience,
-                    now,
-                    nonce,
-                )
-                .await
-                .map_err(|e| format!("initiate: {e:?}"))
-            } else {
-                handshake::respond::<Local, _, _, _, _>(
-                    ShuttleHandshake(transport),
-                    |h, _peer| (MessageTransport::new(h.0), ()),
-                    &signer,
-                    &nonce_cache,
-                    my_peer,
-                    None,
-                    now,
-                    Duration::from_secs(300),
-                )
-                .await
-                .map_err(|e| format!("respond: {e:?}"))
-            };
-
-            let outcome = match result {
-                Ok((authenticated, ())) => {
-                    let peer_hex = authenticated.peer_id().to_string();
-                    match sd.add_connection(authenticated).await {
-                        Ok(_) => Ok(peer_hex),
-                        Err(e) => Err(format!("add_connection: {e:?}")),
-                    }
-                }
-                Err(e) => Err(e),
-            };
+            let outcome = subduction_handshake(
+                transport,
+                initiator,
+                expected_peer,
+                sd,
+                signer,
+                my_peer,
+                nonce_cache,
+            )
+            .await;
             let _ = with_state(|s| s.conn_results.insert(id, outcome));
         });
 
@@ -519,12 +586,107 @@ impl Guest for Component {
         Ok(verified.blob().as_slice().to_vec())
     }
 
+    async fn iroh_bind(relay_url: String) -> Result<String, String> {
+        let identity = identity_generate::generate()
+            .await
+            .map_err(|e| format!("identity-generate: {e:?}"))?;
+        let options = EndpointOptions::new(&identity);
+        options.add_alpn(ALPN);
+        options.relay_url(&relay_url);
+        let endpoint = Endpoint::bind(options)
+            .await
+            .map_err(|e| format!("bind: {e:?}"))?;
+        let id = endpoint.id();
+        with_state(|s| {
+            s.endpoint = Some(Rc::new(endpoint));
+            s.iroh_identity = Some(Rc::new(identity));
+        })?;
+        Ok(hex::encode(id))
+    }
+
+    async fn iroh_start(
+        initiator: bool,
+        peer_endpoint_id: Vec<u8>,
+        relay_url: String,
+        expected_peer: Vec<u8>,
+    ) -> Result<u32, String> {
+        let (id, sd, signer, my_peer, nonce_cache, endpoint) = with_state(|s| {
+            let id = s.next_id;
+            s.next_id += 1;
+            (
+                id,
+                s.sd.clone(),
+                s.signer.clone(),
+                s.my_peer,
+                s.nonce_cache.clone(),
+                s.endpoint.clone(),
+            )
+        })?;
+        let endpoint = endpoint.ok_or("iroh-bind first")?;
+
+        wit_bindgen::spawn_local(async move {
+            let wire = if initiator {
+                match endpoint
+                    .connect(
+                        EndpointAddr {
+                            endpoint_id: peer_endpoint_id,
+                            addrs: vec![TransportAddr::Relay(relay_url)],
+                        },
+                        ALPN.to_vec(),
+                    )
+                    .await
+                {
+                    Ok(conn) => match conn.open_bi().await {
+                        Ok((send, recv)) => Ok((conn, send, recv)),
+                        Err(e) => Err(format!("open-bi: {e:?}")),
+                    },
+                    Err(e) => Err(format!("connect: {e:?}")),
+                }
+            } else {
+                match endpoint.accept().await {
+                    Ok(conn) => match conn.accept_bi().await {
+                        Ok((send, recv)) => Ok((conn, send, recv)),
+                        Err(e) => Err(format!("accept-bi: {e:?}")),
+                    },
+                    Err(e) => Err(format!("accept: {e:?}")),
+                }
+            };
+            let (conn, send, recv) = match wire {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = with_state(|s| s.conn_results.insert(id, Err(e)));
+                    return;
+                }
+            };
+
+            let transport = ShuttleTransport::new(id);
+            wit_bindgen::spawn_local(iroh_writer(transport.out_rx.clone(), send));
+            wit_bindgen::spawn_local(iroh_reader(transport.in_tx.clone(), recv));
+            let _ = with_state(|s| s.iroh_conns.insert(id, Rc::new(conn)));
+
+            let outcome = subduction_handshake(
+                transport,
+                initiator,
+                expected_peer,
+                sd,
+                signer,
+                my_peer,
+                nonce_cache,
+            )
+            .await;
+            let _ = with_state(|s| s.conn_results.insert(id, outcome));
+        });
+
+        Ok(id)
+    }
+
     async fn stats() -> String {
         with_state(|s| {
             format!(
-                "webcrypto sign calls: {}; open conns: {}",
+                "webcrypto sign calls: {}; shuttle conns: {}; iroh conns: {}",
                 s.signer.0.sign_count.get(),
-                s.conns.len()
+                s.conns.len(),
+                s.iroh_conns.len()
             )
         })
         .unwrap_or_else(|e| e)

@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use polymorph_webcrypto_wasmtime::{WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView};
+use wasmtime_webrtc_datachannels::{self as webrtc_host, WebrtcCtx, WebrtcCtxView, WebrtcView};
+use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
 use wasmtime::component::{Accessor, Component, HasData, Linker, ResourceTable};
 use wasmtime::error::Context as _;
 use wasmtime::{bail, format_err, Config, Engine, Result, Store};
@@ -32,6 +34,8 @@ use bindings::exports::polymorph::subduction_spike::driver::Guest as Driver;
 struct Ctx {
     wasi: WasiCtx,
     webcrypto: WasiWebcryptoCtx,
+    websocket: WasiWebsocketCtx,
+    webrtc: WebrtcCtx,
     table: ResourceTable,
 }
 
@@ -57,12 +61,46 @@ impl WasiWebcryptoView for Ctx {
     }
 }
 
+impl WasiWebsocketView for Ctx {
+    fn websocket(&mut self) -> WasiWebsocketCtxView<'_> {
+        WasiWebsocketCtxView {
+            ctx: &mut self.websocket,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WebrtcView for Ctx {
+    fn webrtc(&mut self) -> WebrtcCtxView<'_> {
+        WebrtcCtxView {
+            ctx: &mut self.webrtc,
+            table: &mut self.table,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let path = std::env::args()
-        .nth(1)
+    let mut args = std::env::args().skip(1);
+    let path = args
+        .next()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/wasm32-wasip2/release/spike_guest.wasm"));
+        .unwrap_or_else(|| PathBuf::from("target/composed.wasm"));
+    let mut wire_kind = WireKind::Shuttle;
+    let mut relay = "http://127.0.0.1:3340".to_string();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--wire" => {
+                wire_kind = match args.next().as_deref() {
+                    Some("shuttle") => WireKind::Shuttle,
+                    Some("iroh") => WireKind::Iroh,
+                    other => bail!("unknown wire {other:?}"),
+                }
+            }
+            "--relay" => relay = args.next().ok_or_else(|| format_err!("--relay needs a URL"))?,
+            other => bail!("unknown argument {other}"),
+        }
+    }
 
     let mut config = Config::new();
     config.wasm_component_model(true);
@@ -74,13 +112,18 @@ async fn main() -> Result<()> {
 
     let mut linker: Linker<Ctx> = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
     polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
+    wasmtime_websocket::add_to_linker(&mut linker)?;
+    webrtc_host::add_to_linker(&mut linker)?;
 
     let mut store = Store::new(
         &engine,
         Ctx {
             wasi: WasiCtxBuilder::new().inherit_stdout().inherit_stderr().build(),
             webcrypto: WasiWebcryptoCtx::new(),
+            websocket: WasiWebsocketCtx::new(),
+            webrtc: WebrtcCtx::new(),
             table: ResourceTable::new(),
         },
     );
@@ -91,9 +134,16 @@ async fn main() -> Result<()> {
     println!("[{:>9.2?}] instantiated Alice + Bob", t0.elapsed());
 
     store
-        .run_concurrent(async move |acc| scenario(acc, alice, bob).await)
+        .run_concurrent(async move |acc| scenario(acc, alice, bob, wire_kind, relay).await)
         .await?
 }
+
+#[derive(Clone, Copy, PartialEq)]
+enum WireKind {
+    Shuttle,
+    Iroh,
+}
+
 
 /// Await a guest call, unwrap its `result<_, string>`, print a timing row.
 macro_rules! step {
@@ -139,7 +189,33 @@ async fn pump(
     Ok(moved)
 }
 
-async fn scenario(acc: &Accessor<Ctx>, alice: bindings::Spike, bob: bindings::Spike) -> Result<()> {
+/// One wait-loop tick: pump the shuttle wire, or let the iroh wire breathe.
+async fn tick(
+    acc: &Accessor<Ctx>,
+    a: &Driver,
+    b: &Driver,
+    wire: WireKind,
+    ca: u32,
+    cb: u32,
+) -> Result<()> {
+    match wire {
+        WireKind::Shuttle => {
+            pump(acc, a, b, ca, cb).await?;
+        }
+        WireKind::Iroh => {
+            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+        }
+    }
+    Ok(())
+}
+
+async fn scenario(
+    acc: &Accessor<Ctx>,
+    alice: bindings::Spike,
+    bob: bindings::Spike,
+    wire: WireKind,
+    relay: String,
+) -> Result<()> {
     let a: &Driver = alice.polymorph_subduction_spike_driver();
     let b: &Driver = bob.polymorph_subduction_spike_driver();
 
@@ -151,24 +227,43 @@ async fn scenario(acc: &Accessor<Ctx>, alice: bindings::Spike, bob: bindings::Sp
     let alice_id_bytes = hex::decode(&alice_id).map_err(|e| format_err!("{e}"))?;
     let bob_id_bytes = hex::decode(&bob_id).map_err(|e| format_err!("{e}"))?;
 
-    // 2. Handshake over the shuttle (real challenge/response frames).
-    let ca = step!(
-        "alice.open-conn(initiator)",
-        a.call_open_conn(acc, true, bob_id_bytes.clone())
-    );
-    let cb = step!(
-        "bob.open-conn(responder)",
-        b.call_open_conn(acc, false, alice_id_bytes.clone())
-    );
+    // 2. Establish the wire and run the subduction handshake over it.
+    let (ca, cb) = match wire {
+        WireKind::Shuttle => {
+            let ca = step!(
+                "alice.open-conn(initiator)",
+                a.call_open_conn(acc, true, bob_id_bytes.clone())
+            );
+            let cb = step!(
+                "bob.open-conn(responder)",
+                b.call_open_conn(acc, false, alice_id_bytes.clone())
+            );
+            (ca, cb)
+        }
+        WireKind::Iroh => {
+            let _a_ep = step!("alice.iroh-bind", a.call_iroh_bind(acc, relay.clone()));
+            let b_ep = step!("bob.iroh-bind", b.call_iroh_bind(acc, relay.clone()));
+            println!("            bob endpoint = {b_ep}");
+            let b_ep_bytes = hex::decode(&b_ep).map_err(|e| format_err!("{e}"))?;
+            let cb = step!(
+                "bob.iroh-start(acceptor)",
+                b.call_iroh_start(acc, false, vec![], relay.clone(), vec![])
+            );
+            let ca = step!(
+                "alice.iroh-start(initiator, via relay)",
+                a.call_iroh_start(acc, true, b_ep_bytes, relay.clone(), bob_id_bytes.clone())
+            );
+            (ca, cb)
+        }
+    };
 
     let t = Instant::now();
     let mut a_peer = None;
     let mut b_peer = None;
     let mut rounds = 0;
-    let mut frames = 0;
-    for _ in 0..200 {
+    for _ in 0..2000 {
         rounds += 1;
-        frames += pump(acc, a, b, ca, cb).await?;
+        tick(acc, a, b, wire, ca, cb).await?;
         if a_peer.is_none() {
             a_peer = a
                 .call_conn_status(acc, ca)
@@ -189,7 +284,7 @@ async fn scenario(acc: &Accessor<Ctx>, alice: bindings::Spike, bob: bindings::Sp
         bail!("handshake did not complete in {rounds} pump rounds");
     };
     println!(
-        "[{:>9.2?}] handshake complete in {rounds} pump rounds ({frames} frames)",
+        "[{:>9.2?}] subduction handshake complete in {rounds} wait rounds",
         t.elapsed()
     );
     if a_peer != bob_id || b_peer != alice_id {
@@ -211,9 +306,9 @@ async fn scenario(acc: &Accessor<Ctx>, alice: bindings::Spike, bob: bindings::Sp
     let t = Instant::now();
     let mut summary = None;
     let mut rounds = 0;
-    for _ in 0..500 {
+    for _ in 0..2000 {
         rounds += 1;
-        pump(acc, a, b, ca, cb).await?;
+        tick(acc, a, b, wire, ca, cb).await?;
         summary = b
             .call_sync_status(acc, sync1)
             .await?
@@ -226,7 +321,7 @@ async fn scenario(acc: &Accessor<Ctx>, alice: bindings::Spike, bob: bindings::Sp
         bail!("sync did not complete in {rounds} pump rounds");
     };
     println!(
-        "[{:>9.2?}] bob sync complete in {rounds} pump rounds: {summary}",
+        "[{:>9.2?}] bob sync complete in {rounds} wait rounds: {summary}",
         t.elapsed()
     );
 
@@ -249,8 +344,8 @@ async fn scenario(acc: &Accessor<Ctx>, alice: bindings::Spike, bob: bindings::Sp
 
     let t = Instant::now();
     let mut pushed = false;
-    for _ in 0..100 {
-        pump(acc, a, b, ca, cb).await?;
+    for _ in 0..300 {
+        tick(acc, a, b, wire, ca, cb).await?;
         let commits_a = a
             .call_commits(acc, tree.clone())
             .await?
@@ -275,8 +370,8 @@ async fn scenario(acc: &Accessor<Ctx>, alice: bindings::Spike, bob: bindings::Sp
             a.call_sync_start(acc, bob_id_bytes.clone(), tree.clone(), false)
         );
         let mut summary = None;
-        for _ in 0..500 {
-            pump(acc, a, b, ca, cb).await?;
+        for _ in 0..2000 {
+            tick(acc, a, b, wire, ca, cb).await?;
             summary = a
                 .call_sync_status(acc, sync2)
                 .await?

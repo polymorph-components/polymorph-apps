@@ -42,8 +42,22 @@ interface driver {
 
     /// Counters (webcrypto sign calls, open connections).
     stats: async func() -> string;
+
+    /// Bind an iroh endpoint (identity minted via the endpoint's own
+    /// webcrypto import, non-extractable). Returns the endpoint id, hex.
+    iroh-bind: async func(relay-url: string) -> result<string, string>;
+
+    /// Spawn a task that establishes an iroh wire and runs the
+    /// subduction handshake over it: the initiator connects to
+    /// `peer-endpoint-id` via the relay, opens a bidi stream, and
+    /// authenticates the subduction peer `expected-peer` (32 bytes);
+    /// the acceptor takes the next inbound connection and stream and
+    /// responds. Poll the outcome with `conn-status`.
+    iroh-start: async func(initiator: bool, peer-endpoint-id: list<u8>, relay-url: string, expected-peer: list<u8>) -> result<u32, string>;
 }
 
 world spike {
+    import polymorph:iroh/endpoint@0.1.0;
+    import polymorph:iroh/identity-generate@0.1.0;
     export driver;
 }
