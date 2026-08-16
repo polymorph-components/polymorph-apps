@@ -444,11 +444,32 @@ declared otherwise (see the status note at the top).
   requires independent review before polymorph data ships under it.
 - **Spike sequence.** (1) `keyhive_core` as a wasip2 component,
   `AsyncSigner` over `polymorph:webcrypto`, membership/CGKA ops
-  exchanged between two component instances over component-iroh
-  streams. (2) Subduction with a `polymorph:iroh` Transport
+  exchanged between two component instances over any dumb channel —
+  the transport here is throwaway scaffolding, because production op
+  sync belongs to the subduction bridge; the spike validates signing,
+  embedding, persistence, and op semantics, and must not grow its own
+  sync protocol. (2) Subduction with a `polymorph:iroh` Transport
   implementation. (3) The walking skeleton — automerge ↔ subduction ↔
   keyhive over component-iroh, all components — as the #8/#9
-  validation artifact.
+  validation artifact, which also measures the topology question
+  below.
+- **Topology leaning: one engine composite, one keyhive instance.**
+  `subduction_keyhive` is an in-process wrapper that *holds* the
+  `Keyhive` instance, implementing subduction's connection/storage
+  policy traits against it and carrying membership-op sync. Keyhive
+  therefore instantiates once, inside the same component as
+  subduction; the framework-facing groups surface
+  (`polymorph:groups`) and the sync surface are separate WIT exports
+  of that composite — consumers cannot tell it is one component.
+  Splitting groups and sync into separate components would either
+  duplicate keyhive state or rebuild the ~9.7k-LOC bridge across a
+  component boundary that sits on per-request policy hot paths.
+  Failure asymmetry, named: dropping subduction leaves the groups
+  surface untouched (op transport gets rebuilt or forked); dropping
+  keyhive drops the bridge too, so the DCGKA fallback includes
+  rebuilding op-sync and policy enforcement — the fallback's true
+  cost. One more consequence: a relay is the same composite in a
+  second role — membership view plus pull policy, no content keys.
 - **Conversion checkpoints (provisional → ruling).** The spikes prove
   component embeddability; convergence/partition gates expressed in
   polymorph-test go green; scaling is measured against our doc-count
