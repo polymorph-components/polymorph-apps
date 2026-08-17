@@ -23,8 +23,11 @@ export async function runDemo(): Promise<void> {
     const params = new URLSearchParams(location.search);
     const param = params.get("backend");
     const kind: BackendKind = isBackendKind(param) ? param : "direct";
-    const guest = params.get("guest") === "dioxus" ? "dioxus" : "hand";
-    const artifact = guest === "dioxus" ? "todomvc-dioxus" : "todomvc";
+    const guestParam = params.get("guest");
+    const guest = guestParam === "dioxus" || guestParam === "preact"
+      ? guestParam
+      : "hand";
+    const artifact = guest === "hand" ? "todomvc" : `todomvc-${guest}`;
 
     const route = () => location.hash.replace(/^#\/?/, "");
     container.textContent = "";

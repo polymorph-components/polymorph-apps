@@ -101,9 +101,17 @@ is a VDOM-op-rate problem, not a UI-rate problem, so the contract-level
 accel option stays shelved and the bridge position is "delete scaffolding
 when native bindings arrive".
 
-## Two guests, one world: the dioxus guest
+## Three guests, one world
 
-`guest-dioxus/` implements the **same WIT world** with the app written in
+| guest | tech | size (raw / gz) | notes |
+|---|---|---|---|
+| `guest/` | hand-written Rust | 37 KB / 14 KB | baseline; naive rebuild |
+| `guest-dioxus/` | dioxus 0.7 rsx (VDOM) | 352 KB / 130 KB | `?guest=dioxus`; JS boundary severed at build |
+| `guest-preact/` | **unmodified Preact 10.27** in StarlingMonkey (componentize-js) | 12.7 MB / 4.1 MB | `?guest=preact`; JS-as-userland proof |
+
+### The dioxus guest
+
+`guest-dioxus/` implements the same WIT world with the app written in
 [dioxus](https://dioxuslabs.com) 0.7 `rsx!` — a real framework's VDOM
 diffing running in-guest, its patch stream applied through the surface
 (demo: [`?guest=dioxus`](https://polymorph-components.github.io/polymorph-apps/spike-todomvc/?guest=dioxus)).
@@ -146,6 +154,44 @@ The framework-support research and decision (2026-08-16):
   `stopPropagation` from handlers don't cross the record boundary
   (bubbling is delegated to the real DOM; dioxus is told `bubbles=false`),
   and only the six surface event families convert.
+
+### The preact guest (JS as userland)
+
+`guest-preact/` runs **unmodified Preact + htm** inside a StarlingMonkey
+component (`jco componentize`, `--disable all`), proving the #16 claim
+that JS is a userland choice: the interpreter ships inside the app's own
+capability boundary. With all WASI features disabled the emitted world
+imports **only the three surface interfaces** — a 12.7 MB component with
+zero ambient authority, translated by deltic in ~200 ms.
+
+The glue is `src/shim.js` (~230 lines, undom-inspired): a guest-side DOM
+shim whose structure reads (`parentNode`/`childNodes`/`nextSibling`) are
+answered from shadow bookkeeping, whose mutations write through to
+surface handles, and whose input `value`/`checked` are mirrored from
+event records *before* dispatch so `e.target.value` works with no host
+reads. Findings:
+
+- **Preact renders exclusively via `document.createElementNS`** (threading
+  `parent.namespaceURI`) — a shim must supply both, not just
+  `createElement`.
+- **Event-name casing is capability-probed**: Preact lowercases `onKeyDown`
+  only if `'onkeydown' in dom`, and keys its internal handler map with
+  whatever survives — the shim declares the six `on*` properties so names
+  normalize. Exactly the "framework probes the DOM's shape" behavior a
+  shim must anticipate.
+- **Deterministic edit focus works** (`useLayoutEffect` + ref →
+  `focus()` op, synchronously inside the commit) — closing the gap the
+  dioxus guest still has, and validating the surface's focus-as-explicit-op
+  ruling from the framework side.
+- **Debugging without stderr**: with stdio disabled, uncaught guest
+  exceptions are opaque traps. The exports wrap handlers to smuggle
+  `error.stack` out through a surface op (a `guest-error:` class value)
+  before rethrowing — a pattern worth keeping until the framework has a
+  real diagnostics channel. `tools/diag-preact.ts` drives any guest
+  headlessly under Deno.
+- **Preact's diff emits targeted ops** (`["text", id, "1"]` on the counter
+  text node) — fine-grained updates, no rebuilds, straight through the
+  seam.
 
 
 ## What the artifact itself shows
@@ -221,6 +267,7 @@ Pipeline: `cargo build` (todomvc + lab guests) → `wasm-tools component new`
 | deltic (`@deltic/runtime`, `@deltic/translator`) | `0.1.0-pre.gc4043e6` (JSR) |
 | wit-bindgen (Rust crate) | `=0.60.0` |
 | dioxus (`dioxus`, `dioxus-core`, `dioxus-html`) | `=0.7.10` (JS boundary severed at build, see `../no-js-bindgen`) |
+| preact / htm / componentize-js / jco | `10.27.2` / `3.1.1` / `0.18.4` / `1.29.0` (npm, `guest-preact/package.json`) |
 | Rust | 1.96.0, `wasm32-unknown-unknown` |
 
 `web/todomvc-app.css` is vendored from
