@@ -127,7 +127,7 @@ async function runBehavior(kind: BackendKind, host: HTMLElement) {
   return steps;
 }
 
-const PROBE_CASES = 8;
+const PROBE_CASES = 10;
 
 async function runTraps(kind: BackendKind, host: HTMLElement) {
   const traps: string[] = [];

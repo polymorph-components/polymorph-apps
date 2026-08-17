@@ -18,18 +18,20 @@ export function createDirectBackend(
   return {
     root: container,
     create: (tag) => document.createElement(tag),
+    textNode: (data) => document.createTextNode(data),
     attr: (rep, name, value) => {
       const el = rep as Element;
       if (value === null) el.removeAttribute(name);
       else el.setAttribute(name, value);
     },
-    append: (parent, child) =>
-      (parent as Element).appendChild(child as Element),
+    append: (parent, child) => (parent as Element).appendChild(child as Node),
+    before: (ref, node) => (ref as ChildNode).before(node as Node),
+    after: (ref, node) => (ref as ChildNode).after(node as Node),
     remove: (rep) => {
-      if (rep !== container) (rep as Element).remove();
+      if (rep !== container) (rep as ChildNode).remove();
     },
     text: (rep, text) => {
-      (rep as Element).textContent = text;
+      (rep as Node).textContent = text;
     },
     value: (rep, value) => {
       (rep as HTMLInputElement).value = value;

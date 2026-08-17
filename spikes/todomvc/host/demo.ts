@@ -20,18 +20,21 @@ export async function runDemo(): Promise<void> {
   };
 
   try {
-    const param = new URLSearchParams(location.search).get("backend");
+    const params = new URLSearchParams(location.search);
+    const param = params.get("backend");
     const kind: BackendKind = isBackendKind(param) ? param : "direct";
+    const guest = params.get("guest") === "dioxus" ? "dioxus" : "hand";
+    const artifact = guest === "dioxus" ? "todomvc-dioxus" : "todomvc";
 
     const route = () => location.hash.replace(/^#\/?/, "");
     container.textContent = "";
-    const app = await startTodoApp(kind, container, route, showError);
+    const app = await startTodoApp(kind, container, route, showError, artifact);
     addEventListener("hashchange", () => {
       app.sendRoute(route()).catch(showError);
     });
 
     const note = document.querySelector("#backend-note");
-    if (note) note.textContent = `backend: ${kind}`;
+    if (note) note.textContent = `backend: ${kind} · guest: ${guest}`;
   } catch (e) {
     showError(e);
   }

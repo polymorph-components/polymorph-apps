@@ -9,8 +9,11 @@ import type { Backend, Rep } from "./backend.ts";
 
 export type Op =
   | ["create", number, string]
+  | ["textnode", number, string]
   | ["attr", number, string, string | null]
   | ["append", number, number]
+  | ["before", number, number]
+  | ["after", number, number]
   | ["remove", number]
   | ["text", number, string]
   | ["value", number, string]
@@ -36,8 +39,15 @@ export function createQueuedBackend(sink: (ops: Op[]) => void): Backend {
       push(["create", rep, tag]);
       return rep;
     },
+    textNode: (data) => {
+      const rep = nextId++;
+      push(["textnode", rep, data]);
+      return rep;
+    },
     attr: (rep, name, value) => push(["attr", id(rep), name, value]),
     append: (parent, child) => push(["append", id(parent), id(child)]),
+    before: (ref, node) => push(["before", id(ref), id(node)]),
+    after: (ref, node) => push(["after", id(ref), id(node)]),
     remove: (rep) => push(["remove", id(rep)]),
     text: (rep, text) => push(["text", id(rep), text]),
     value: (rep, value) => push(["value", id(rep), value]),

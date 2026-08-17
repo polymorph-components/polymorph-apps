@@ -25,6 +25,11 @@ interface dom {
     remove-attribute: func(name: string);
     append-child: func(child: borrow<element>);
     remove: func();
+    /// ChildNode.before / ChildNode.after mirrors — insert `node` as a
+    /// sibling immediately before/after this node. One node per call;
+    /// n-node inserts iterate (reversed, for `after`).
+    before: func(node: borrow<element>);
+    after: func(node: borrow<element>);
     /// IDL attributes (not content attributes) use get-x/set-x (#15 r5).
     set-text-content: func(text: string);
     set-value: func(value: string);
@@ -33,6 +38,13 @@ interface dom {
   }
 
   create-element: func(tag: string) -> element;
+
+  /// Document.createTextNode mirror. The returned handle is a NODE with
+  /// restricted ops: text content, structural moves, remove. Attributes,
+  /// listeners, focus, and appending children INTO it are surface
+  /// violations (framework prerequisite: mixed content needs first-class
+  /// text nodes).
+  create-text-node: func(data: string) -> element;
 }
 
 /// Framework-shaped: event subscription and delivery. Events cross the

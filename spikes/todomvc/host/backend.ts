@@ -15,8 +15,11 @@ export type Rep = unknown;
 export interface Backend {
   readonly root: Rep;
   create(tag: string): Rep;
+  textNode(data: string): Rep;
   attr(rep: Rep, name: string, value: string | null): void;
   append(parent: Rep, child: Rep): void;
+  before(ref: Rep, node: Rep): void;
+  after(ref: Rep, node: Rep): void;
   remove(rep: Rep): void;
   text(rep: Rep, text: string): void;
   value(rep: Rep, value: string): void;

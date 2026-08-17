@@ -13,7 +13,7 @@ wit_bindgen::generate!({
     world: "lab",
 });
 
-use crate::polymorph::todomvc_spike::dom::{create_element, Element};
+use crate::polymorph::todomvc_spike::dom::{create_element, create_text_node, Element};
 use crate::polymorph::todomvc_spike::shell;
 
 thread_local! {
@@ -82,6 +82,16 @@ impl Guest for Component {
                 shell::root().append_child(&d);
                 let a = create_element("a");
                 a.set_attribute("href", "http://attacker.example/y");
+            }
+            // Text-node op restrictions.
+            8 => {
+                let t = create_text_node("x");
+                t.set_attribute("class", "nope");
+            }
+            9 => {
+                let t = create_text_node("x");
+                let d = create_element("div");
+                t.append_child(&d);
             }
             _ => {}
         }

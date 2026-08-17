@@ -1,0 +1,36 @@
+[package]
+name = "todomvc-dioxus-guest"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "=0.60.0"
+# Renderer-agnostic core + markup/event vocabulary; no web renderer, no
+# wasm-bindgen anywhere in this graph.
+dioxus = { version = "=0.7.10", default-features = false, features = [
+  "macro",
+  "html",
+  "signals",
+  "hooks",
+] }
+dioxus-core = "=0.7.10"
+dioxus-html = { version = "=0.7.10", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+
+# The real subsecond (dioxus's hot-patch runtime) links js-sys/wasm-bindgen
+# on all wasm32 targets, which poisons a pure component build. The vendored
+# stub is API-identical and inert (release semantics: call directly).
+[patch.crates-io]
+subsecond = { path = "../vendor/subsecond" }
+
+[workspace]

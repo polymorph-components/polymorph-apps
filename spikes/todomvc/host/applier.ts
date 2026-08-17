@@ -15,11 +15,19 @@ export function createApplier(
   container: HTMLElement,
   dispatch: (ev: UiEvent) => void,
 ): Applier {
-  const nodes = new Map<number, Element>([[ROOT_ID, container]]);
+  const nodes = new Map<number, Node>([[ROOT_ID, container]]);
 
-  const get = (id: number): Element => {
+  const get = (id: number): Node => {
     const n = nodes.get(id);
     if (!n) throw new Error(`applier: unknown node ${id}`);
+    return n;
+  };
+
+  const getEl = (id: number): Element => {
+    const n = get(id);
+    if (!(n instanceof Element)) {
+      throw new Error(`applier: node ${id} is not an element`);
+    }
     return n;
   };
 
@@ -31,9 +39,12 @@ export function createApplier(
           nodes.set(op[1], document.createElement(op[2]));
           break;
         }
+        case "textnode":
+          nodes.set(op[1], document.createTextNode(op[2]));
+          break;
         case "attr": {
           const [, id, name, value] = op;
-          const node = get(id);
+          const node = getEl(id);
           if (value === null) {
             node.removeAttribute(name);
           } else {
@@ -43,26 +54,32 @@ export function createApplier(
           break;
         }
         case "append":
-          get(op[1]).appendChild(get(op[2]));
+          getEl(op[1]).appendChild(get(op[2]));
+          break;
+        case "before":
+          (get(op[1]) as ChildNode).before(get(op[2]));
+          break;
+        case "after":
+          (get(op[1]) as ChildNode).after(get(op[2]));
           break;
         case "remove":
-          if (op[1] !== ROOT_ID) get(op[1]).remove();
+          if (op[1] !== ROOT_ID) (get(op[1]) as ChildNode).remove();
           break;
         case "text":
           get(op[1]).textContent = op[2];
           break;
         case "value":
-          (get(op[1]) as HTMLInputElement).value = op[2];
+          (getEl(op[1]) as HTMLInputElement).value = op[2];
           break;
         case "checked":
-          (get(op[1]) as HTMLInputElement).checked = op[2];
+          (getEl(op[1]) as HTMLInputElement).checked = op[2];
           break;
         case "focus":
-          (get(op[1]) as HTMLElement).focus();
+          (getEl(op[1]) as HTMLElement).focus();
           break;
         case "listen": {
           checkEventKind(op[2]);
-          attachListener(get(op[1]), op[2], op[3], dispatch);
+          attachListener(getEl(op[1]), op[2], op[3], dispatch);
           break;
         }
         case "free":

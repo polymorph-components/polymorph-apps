@@ -101,6 +101,49 @@ is a VDOM-op-rate problem, not a UI-rate problem, so the contract-level
 accel option stays shelved and the bridge position is "delete scaffolding
 when native bindings arrive".
 
+## Two guests, one world: the dioxus guest
+
+`guest-dioxus/` implements the **same WIT world** with the app written in
+[dioxus](https://dioxuslabs.com) 0.7 `rsx!` — a real framework's VDOM
+diffing running in-guest, its patch stream applied through the surface
+(demo: [`?guest=dioxus`](https://polymorph-components.github.io/polymorph-apps/spike-todomvc/?guest=dioxus)).
+The framework-support research and decision (2026-08-16):
+
+- **Dioxus chosen.** `dioxus-core` is renderer-agnostic in practice, not
+  just in theory: `WriteMutations` is a public seam (Blitz/dioxus-native
+  ship on it), the crate graph is wasm-bindgen-free, and the VirtualDom
+  drives synchronously (`handle_event` → `process_events` →
+  `render_immediate`) — a perfect fit for a reactor guest. The glue is
+  ~450 lines: a `WriteMutations` impl over surface imports (stack machine
+  with guest-side shadow children for template paths, cribbed from
+  dioxus-native-dom), an `HtmlEventConverter` mapping surface event
+  records to dioxus event data, and listener tokens = dioxus `ElementId`s.
+- **Leptos rejected for now.** tachys 0.2 (leptos 0.8) hardcodes
+  `pub type Rndr = dom::Dom` — the 0.7-era generic renderer was
+  monomorphized away for compile times, and the alternate renderers are
+  commented out in the source. Supporting it means forking its view
+  layer. Its standalone `reactive_graph` remains attractive for a future
+  hand-rolled fine-grained renderer.
+- **One dependency lie needed patching**: dioxus-core's mandatory
+  `subsecond` (hot-patch runtime) links js-sys/wasm-bindgen on *all*
+  wasm32 targets — "wasm32 implies browser" strikes again — which poisons
+  componentization. `vendor/subsecond/` is an API-identical inert stub
+  (release semantics: call directly), applied via `[patch.crates-io]`.
+- **Surface additions the framework forced** (the exact prerequisite list
+  predicted): `create-text-node` (mixed content like the
+  `<strong>{n}</strong> items left` counter), and `before`/`after`
+  (ChildNode mirrors) for positional insertion — all structural, all
+  validator-checked, two new probe cases pin text-node restrictions.
+- **Sizes**: dioxus component 366 KB raw / **130 KB gz** vs 37 KB / 14 KB
+  hand-written — the framework tax, paid once per app.
+- **Known gaps** (documented, not hidden): no `onmounted`/focus bridging
+  (the edit field doesn't auto-focus in the dioxus guest — needs a
+  mounted-data story over the surface), `preventDefault`/
+  `stopPropagation` from handlers don't cross the record boundary
+  (bubbling is delegated to the real DOM; dioxus is told `bubbles=false`),
+  and only the six surface event families convert.
+
+
 ## What the artifact itself shows
 
 `wasm-tools component wit build/todomvc.component.wasm` prints the world the
@@ -173,6 +216,7 @@ Pipeline: `cargo build` (todomvc + lab guests) → `wasm-tools component new`
 |---|---|
 | deltic (`@deltic/runtime`, `@deltic/translator`) | `0.1.0-pre.gc4043e6` (JSR) |
 | wit-bindgen (Rust crate) | `=0.60.0` |
+| dioxus (`dioxus`, `dioxus-core`, `dioxus-html`) | `=0.7.10` (subsecond stubbed, see `vendor/`) |
 | Rust | 1.96.0, `wasm32-unknown-unknown` |
 
 `web/todomvc-app.css` is vendored from

@@ -136,6 +136,7 @@ export async function startTodoApp(
   container: HTMLElement,
   route: () => string,
   onEventError: (e: unknown) => void,
+  artifact = "todomvc",
 ): Promise<TodoApp> {
   // DOM-originated events land on the same serialized chain as everything
   // else; the exports binding below closes the loop.
@@ -143,7 +144,7 @@ export async function startTodoApp(
   const backend = createBackend(kind, container, (ev) => dispatch(ev));
   const surface = createSurface(backend, route);
   const exports = (await instantiateWorld(
-    "todomvc",
+    artifact,
     surface.imports,
   )) as unknown as TodoExports;
   const runner = createRunner(surface);

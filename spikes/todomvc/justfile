@@ -11,22 +11,30 @@ build: guests
       guest/target/wasm32-unknown-unknown/release/todomvc_guest.wasm \
       -o build/todomvc.component.wasm
     wasm-tools component new \
+      guest-dioxus/target/wasm32-unknown-unknown/release/todomvc_dioxus_guest.wasm \
+      -o build/todomvc-dioxus.component.wasm
+    wasm-tools component new \
       lab/target/wasm32-unknown-unknown/release/lab_guest.wasm \
       -o build/lab.component.wasm
     wasm-tools validate --features component-model build/todomvc.component.wasm
+    wasm-tools validate --features component-model build/todomvc-dioxus.component.wasm
     wasm-tools validate --features component-model build/lab.component.wasm
     deno run --allow-read --allow-write tools/translate.ts \
       build/todomvc.component.wasm build/todomvc.plan.json
+    deno run --allow-read --allow-write tools/translate.ts \
+      build/todomvc-dioxus.component.wasm build/todomvc-dioxus.plan.json
     deno run --allow-read --allow-write tools/translate.ts \
       build/lab.component.wasm build/lab.plan.json
     deno check host/main.ts
     deno bundle --platform browser --minify -o {{out}}/app.js host/main.ts
     cp build/todomvc.component.wasm build/todomvc.plan.json {{out}}/
+    cp build/todomvc-dioxus.component.wasm build/todomvc-dioxus.plan.json {{out}}/
     cp build/lab.component.wasm build/lab.plan.json {{out}}/
     cp web/index.html web/harness.html web/bench.html web/todomvc-app.css {{out}}/
 
 guests:
     cd guest && cargo build --release --target wasm32-unknown-unknown
+    cd guest-dioxus && cargo build --release --target wasm32-unknown-unknown
     cd lab && cargo build --release --target wasm32-unknown-unknown
 
 # Serve the built demo locally.
