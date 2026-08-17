@@ -6,13 +6,29 @@
   <title>TodoMVC — polymorph wasm→DOM spike</title>
   <link rel="stylesheet" href="todomvc-app.css">
   <style>
-    /* Framework chrome (#22): rendered strictly outside the app rectangle. */
+    /* Framework chrome (#22): rendered strictly outside the app rectangle.
+       Interaction-emergence experiment: the strip slides DOWN to reveal the
+       interaction surface above it; controls arm only after the reveal
+       (the timer is the enforcement, the animation its visible form). */
+    #chrome-zone {
+      position: sticky; top: 0; z-index: 10;
+      background: #2b2d42; color: #fff;
+      font: 14px/1.4 -apple-system, system-ui, sans-serif;
+    }
+    #chrome-drawer {
+      display: grid; grid-template-rows: 0fr;
+      transition: grid-template-rows 700ms cubic-bezier(.2, .8, .2, 1);
+    }
+    #chrome-drawer.chrome-open { grid-template-rows: 1fr; }
+    #chrome-drawer > div { overflow: hidden; min-height: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      #chrome-drawer { transition: none; }
+    }
     #chrome {
       display: flex; align-items: center; gap: 10px;
-      padding: 8px 12px; font: 14px/1.4 -apple-system, system-ui, sans-serif;
-      background: #2b2d42; color: #fff;
-      position: sticky; top: 0; z-index: 10;
+      padding: 8px 12px;
       padding-top: max(8px, env(safe-area-inset-top));
+      border-bottom: 1px solid rgba(255,255,255,.15);
     }
     #chrome .chrome-petname { font-weight: 600; }
     #chrome .chrome-caps { opacity: .7; font-size: 12px; }
@@ -21,31 +37,31 @@
       font: inherit; font-size: 12px; color: #fff; background: #4a4e69;
       border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer;
     }
-    #chrome-overlay {
-      position: fixed; inset: 0; z-index: 20;
+    #chrome-dim {
+      position: fixed; inset: 0; z-index: 5;
       background: rgba(0,0,0,.45);
-      display: flex; align-items: flex-end; justify-content: center;
     }
-    #chrome-overlay[hidden] { display: none; }
+    #chrome-dim[hidden] { display: none; }
     .chrome-sheet {
-      background: #fff; color: #333; width: 100%; max-width: 480px;
-      border-radius: 12px 12px 0 0; padding: 20px 24px 28px;
-      font: 15px/1.5 -apple-system, system-ui, sans-serif;
-      box-shadow: 0 -8px 30px rgba(0,0,0,.25);
+      max-width: 480px; margin: 0 auto; padding: 18px 20px 22px;
+      font-size: 15px; line-height: 1.5;
     }
-    .chrome-sheet h2 { margin: 8px 0; font-size: 17px; }
+    .chrome-sheet h2 { margin: 10px 0 6px; font-size: 17px; }
     .chrome-secret {
-      font-size: 20px; background: #f1f0ea; border-radius: 8px;
-      padding: 8px 12px; display: inline-block;
+      font-size: 20px; background: rgba(255,255,255,.12); border-radius: 8px;
+      padding: 6px 12px; display: inline-block;
     }
-    .chrome-foreign { font-style: italic; background: #fff3cd; padding: 0 4px; }
-    .chrome-note { font-size: 12px; color: #666; }
+    .chrome-foreign { font-style: italic; background: #6b5d2f; padding: 0 4px; }
+    .chrome-note { font-size: 12px; opacity: .65; }
     .chrome-row { display: flex; gap: 12px; margin-top: 14px; }
     .chrome-row button {
       flex: 1; font: inherit; padding: 10px; border-radius: 8px;
-      border: 1px solid #ccc; background: #fff; cursor: pointer;
+      border: 1px solid rgba(255,255,255,.35); background: transparent;
+      color: #fff; cursor: pointer;
+      opacity: .35; transition: opacity 200ms;
     }
-    .chrome-row button:first-child { background: #2b2d42; color: #fff; border: none; }
+    .chrome-armed .chrome-row button { opacity: 1; }
+    .chrome-row button:first-child { background: #fff; color: #2b2d42; border: none; }
     .chrome-killed {
       padding: 40px 20px; text-align: center; color: #666;
       font: 14px/1.6 -apple-system, system-ui, sans-serif;
@@ -53,8 +69,11 @@
   </style>
 </head>
 <body data-page="demo">
-  <header id="chrome"></header>
-  <div id="chrome-overlay" hidden></div>
+  <div id="chrome-zone">
+    <div id="chrome-drawer"><div></div></div>
+    <header id="chrome"></header>
+  </div>
+  <div id="chrome-dim" hidden></div>
   <div id="app">loading…</div>
   <footer class="info">
     <p>Double-click (or double-tap) to edit a todo</p>

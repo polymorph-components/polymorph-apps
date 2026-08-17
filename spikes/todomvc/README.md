@@ -202,9 +202,19 @@ guest/backend indicators, kill), and a simulated consent sheet that shows
 the user's **personalization secret** (generated once, kept in shell
 storage no app capability can read) and **pauses the app's event queue**
 while open — events fired at the app during a prompt are queued, not
-delivered, and land only after dismissal. Kill stops delivery permanently
-and removes the app's DOM. Style is deliberately shared-looking: position
-and the secret are the trust anchors, never CSS.
+delivered, and land only after dismissal. Kill (behind its own confirm)
+stops delivery permanently and removes the app's DOM. Style is
+deliberately shared-looking: position and the secret are the trust
+anchors, never CSS.
+
+**Interaction-emergence experiment**: chrome interactions are revealed by
+the strip sliding down, exposing the interaction surface *above* it — the
+prompt visibly grows out of the trusted pixel region (provenance), and the
+slide doubles as an enforced **arming delay** (700 ms): controls stay
+disabled until it elapses, defeating baited mis-taps (an app training
+rapid taps where a chrome control is about to appear). The timer is the
+enforcement; the animation is its visible form — `prefers-reduced-motion`
+removes the motion, never the delay.
 
 ## What the artifact itself shows
 
