@@ -737,6 +737,87 @@ Related: the static share-link viewer (reader page + ciphertext + key
 in fragment) covers "share with a non-user" without discovery
 infrastructure.
 
+## System services: one component kind, capability profiles
+
+Recorded 2026-08-17 from design discussion. Leaning, not ruling;
+tracked with the system-services issue.
+
+**Data services.** The mobile-OS analogy has a second half beyond app
+sandboxing: shared, permission-gated data models (Contacts, Calendar,
+HealthKit, ContentProviders). Here they are **schema-authority
+components**: a versioned service (e.g. `polymorph-data:tasks`) owns a
+partition of automerge documents — schema, policy, migrations — and
+multiple apps project it (list, board, velocity chart). User-space and
+sandboxed (not TCB), extensible (not vendor-blessed), E2E-synced.
+Refines the #8 wording rather than reversing it: the **engine owns
+CRDT/crypto/sync mechanics** (one implementation, engine-held doc
+handles behind the #8 WIT surface); **each doc has exactly one schema
+authority** — its service, a singleton instance per partition serving
+multi-version facades (never two service versions live over one
+partition); **apps never touch doc surfaces at all**.
+
+**One component kind.** Data services and egress providers (storage
+backends, LLM APIs, protocol bridges) are not structural kinds — a
+component's authority is its import set, and a parallel kind taxonomy
+would be a second source of truth that can lie. They are **system
+services** distinguished by *computed capability profiles*: the linker
+derives and displays what a component can reach. The load-bearing
+badge is **transitive egress-reachability** over the composition graph
+— "pure: this code cannot reach the network" — which cannot lie and
+correctly handles compositions (a pure service linked to an egress
+adapter is not pure; the adapter is an exfil proxy and the graph says
+so). Caveat recorded: the badge covers code paths; data a pure service
+writes may still travel via other components holding read + egress —
+that is #7's flow matrix (data classes × destinations), the badge's
+complement. Obligations attach to capabilities, not kinds: doc-partition
+authority ⇒ singleton/schema-authority/facade rules; egress ⇒
+destination scoping, proxied fetch, audit, and the compound prompt when
+combined with data authority. Splitting one service into
+pure-data + egress-adapter is an **engineering choice where it buys
+failure tolerance** (high-sensitivity data with peripheral egress,
+user-swappable destinations, differing trust tiers), made cheap by
+composition and incentivized (purity earns lighter review) — never a
+forced classification. Where the egress is the purpose (LLM chat,
+CalDAV bridge), a split boundary protects nothing.
+
+**Defaults and rules that generalize:**
+
+- **Per-app partitions by default, everywhere** (from the calendar
+  observation): a service defaults each app to its own partition;
+  shared scopes are explicit user grants. Stronger than the mobile-OS
+  whole-store grant, nearly free since partitions are docs (the ACL
+  unit).
+- **Cross-service references cross ACL units**: refs-by-id with
+  graceful absence, never embedded joins.
+- **Bulk data** (photos): metadata docs + blob attachments via the
+  storage layer's existing chunk/name-key machinery — a
+  service-declarable pattern, already spiked.
+- Consent UX gains the right granularity: installing a service is the
+  big HealthKit-shaped moment; app↔service grants are semantic
+  ("Kanban: Tasks read/write"); service compromise is bounded by
+  partition blast radius plus the egress badge.
+
+**Hard parts, ranked:** (1) **schema migration in a multi-version,
+multi-peer CRDT world** — a v3 service migrating while an offline v2
+peer writes v2 shapes is concurrent schema mutation; candidate tools:
+forward-compatible schemas, write-new-read-both windows,
+migration-as-new-doc with forwarding, and Cambria (Ink & Switch's
+schema lenses); deserves its own decision memo, the data-layer
+equivalent of the group-crypto memo. (2) **Governance/fragmentation**
+— competing schemas kill interop (the WinFS/semantic-desktop failure);
+the ContentProviders/HealthKit lesson: ship a small curated core set
+(contacts, calendar, tasks, files/photos), each arriving with apps
+that prove it; community services namespaced, not blessed. (3)
+Services as high-value targets — bounded by the egress badge,
+partition blast radius, and install-time consent weight. File systems
+are the maximal case and must not shape v1 (doc-count scale wall).
+
+Demo tie-in: #20's G1 contract should be `polymorph-data:tasks@0.1.0`,
+the first data service; the follow-on demo is **three apps, one
+service** (todomvc + kanban + velocity chart over one shared task
+partition — the chart reading automerge history), which exhibits the
+differentiator no platform has.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
