@@ -432,6 +432,20 @@ name-secrecy mode where egress is free or flat); provider metadata
 unchanged (sizes, timing, and now recipient *counts* via K_p objects;
 tree-ids in paths pseudonymized by the name-key already).
 
+**Spike executed 2026-08-16 and passed**
+([spikes/storage/](spikes/storage/README.md), tracked in #19): SigV4
+signed in-guest via polymorph:webcrypto against a real MinIO; the
+dumb-store contract confirmed sufficient (unsigned LIST and PUT
+refused); an account-less recipient read via K_p → name-keys →
+manifests → chunks over pure name secrecy; and the stolen-device
+scenario ran as an executable assertion — a cracked-image resurrection
+reads successfully *before* revocation and retrieves nothing after it
+(K_p 404, no derivable names), while the owner's second device rides
+the rotation. The wasip3 http client's wit-bindgen runtime (0.57) is
+isolated in its own fetch component composed via `wac plug` — the
+component model resolving runtime-version conflicts, and the fetch
+import doubling as the per-destination network-grant seam.
+
 **Provider order.** First: one **S3-compatible provider component**
 (R2 and B2 as documented defaults — real 10 GB free tiers, R2 free
 egress; MinIO/Garage cover self-host) — no external approval gates,
