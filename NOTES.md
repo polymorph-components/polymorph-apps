@@ -446,6 +446,44 @@ isolated in its own fetch component composed via `wac plug` — the
 component model resolving runtime-version conflicts, and the fetch
 import doubling as the per-destination network-grant seam.
 
+**The provider contract generalized 2026-08-17** (capability profile and
+per-backend analysis on the [#19 thread](../../issues/19)): what varies
+across consumer backends is which *pull-tier mechanics* they can enforce
+— client-chosen names, derivable addresses, anonymous fetch, revocable
+bearer capabilities, per-identity grants, expiring URLs. The pull tier
+becomes a strategy chosen per profile; the E2E-travelling capability
+becomes a tagged union; revocation-shaped operations report their
+guarantee class (hard/cooperative × immediate/eventual) so the
+cooperative-revocation UX rule is machine-carried. Draft WIT:
+[wit/blobstore.wit](wit/blobstore.wit) — required floor (put/delete with
+overwrite-in-place at stable addresses, fetch-under-capability,
+owner-only listing) plus profiled `pull`, with the name-secrecy strategy
+as a framework-core component composed above floor-only providers.
+**Dropbox spike executed 2026-08-17 and passed**
+([spikes/dropbox/](spikes/dropbox/README.md)): the link-capability
+strategy over live consumer Dropbox — folder shared link as container
+capability, plain derivable names beneath it, pickup objects as stable
+per-recipient files with their own revocable links, overwritten in place
+on rotation. Revocation is **hard, retroactive, sub-second**: a cracked
+image that deliberately hoarded the container link (labeled no-persist
+violation) reads before revocation and retrieves nothing after — the
+assertion name secrecy cannot make; pull-now + pull-past collapse into
+one `revoke_shared_link`, pull-forward is a re-mint on the same folder
+(zero data movement, relocation/compaction unnecessary for revocation on
+this backend). A 27-assertion raw-HTTP probe suite pins the platform
+facts (ancestor-link leaf rule; no existence oracle; refusal statuses
+wobble 400/401 — assert classes, not codes; API-host CORS clean for
+browser recipients; app secret degrades to a public identifier in any
+shipped client; free tier gates expiring links and caps at 2 GB).
+Provider order updated: Dropbox and OneDrive lead the consumer-drive
+tier (path-addressable, revocable links; OneDrive adds
+`redeemSharingLink` durable grants — Azure-signup friction gates its
+probe); **Google Drive drops to last** — server-assigned fileIds break
+derivable addresses, and its candidate shapes (Apps-Script adapter
+restoring GET-by-derived-name with no OAuth surface; account-ACL
+folders; link-shared folders with fileId indirection) are recorded on
+the #19 thread.
+
 **Provider order.** First: one **S3-compatible provider component**
 (R2 and B2 as documented defaults — real 10 GB free tiers, R2 free
 egress; MinIO/Garage cover self-host) — no external approval gates,
