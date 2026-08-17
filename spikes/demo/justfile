@@ -1,0 +1,40 @@
+# End-to-end TodoMVC demo (#20 G6+G7): the tasks engine under deltic in
+# the browser, integrated with the todomvc surface spike.
+#
+# Sibling checkouts (same convention as spikes/tasks-engine):
+#   ../../../polymorph-iroh                (relay binary)
+#   ../../../polymorph-{webcrypto,websocket,webrtc-datachannels} (deltic ports)
+
+IROH_CHECKOUT := env_var_or_default("IROH_CHECKOUT", "../../../polymorph-iroh")
+
+# Build the engine composite (delegates to the tasks-engine spike).
+engine:
+    cd ../tasks-engine && just compose
+
+# Translate the composite for deltic (build-time; the browser never
+# ships the translator).
+translate: engine
+    mkdir -p build
+    deno run --allow-read --allow-write tools/translate.ts \
+        ../tasks-engine/target/composed.wasm build/engine.plan.json
+
+# Local infra: iroh relay (ws on 3340) + MinIO (9000) with CORS open.
+infra:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    relay="{{IROH_CHECKOUT}}/.deps/iroh/target/release/iroh-relay"
+    [ -x "$relay" ] || { echo "iroh-relay not built at $relay" >&2; exit 1; }
+    minio="../tasks-engine/.deps/minio"
+    [ -x "$minio" ] || { echo "minio not fetched; run spikes/tasks-engine once" >&2; exit 1; }
+    data="$(mktemp -d /tmp/pm-demo-minio.XXXXXX)"
+    "$relay" --dev &
+    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+    MINIO_API_CORS_ALLOW_ORIGIN='*' \
+        "$minio" server "$data" --address 127.0.0.1:9000 --quiet &
+    trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$data"' EXIT
+    echo "infra up: relay :3340, minio :9000 — ctrl-c to stop"
+    wait
+
+# Bring-up phases (Deno; needs `just infra` running for wire/bucket).
+bringup PHASE="solo": translate
+    deno run -A host/bringup.ts {{PHASE}}

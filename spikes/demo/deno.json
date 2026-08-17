@@ -1,0 +1,32 @@
+{
+  "//": [
+    "MODULE-IDENTITY CONSTRAINT (from polymorph-iroh/host-deltic): the",
+    "sibling deltic port modules import @deltic/runtime/embedder by bare",
+    "specifier; this file maps the specifier ONCE for the whole graph so",
+    "`instanceof WitError` holds across every boundary.",
+    "Sibling checkouts: ../../../polymorph-{webcrypto,websocket,webrtc-datachannels}",
+    "(same convention as spikes/tasks-engine's IROH_CHECKOUT)."
+  ],
+  "nodeModulesDir": "auto",
+  "minimumDependencyAge": "PT1M",
+  "imports": {
+    "@deltic/runtime/embedder": "jsr:@deltic/runtime@0.1.0/embedder",
+    "@deltic/translator": "jsr:@deltic/translator@0.1.0",
+    "@deltic/wasi": "jsr:@deltic/wasi@0.1.0",
+    "@deltic/wasi/http": "jsr:@deltic/wasi@0.1.0/http",
+    "@polymorph/webcrypto-deltic": "../../../polymorph-webcrypto/js/deltic/src/mod.ts",
+    "@polymorph/websocket-deltic": "./host/ports/websocket.ts",
+    "@polymorph/webrtc-deltic": "../../../polymorph-webrtc-datachannels/deltic-impl/src/webrtc.ts",
+    "node-datachannel": "npm:node-datachannel@0.32.3",
+    "node-datachannel/polyfill": "npm:node-datachannel@0.32.3/polyfill",
+    "werift": "npm:werift@0.22.2"
+  },
+  "compilerOptions": {
+    "lib": [
+      "deno.ns",
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ]
+  }
+}
