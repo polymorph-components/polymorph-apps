@@ -1,8 +1,8 @@
 // The spike's framework chrome (#22, provisional until user-tested):
 // trusted shell UI rendered strictly OUTSIDE the app rectangle. Trust
-// anchors are position (this code owns everything around #app) and the
-// user's personalization secret (shell storage; no app capability can
-// read it) — never visual style. Modal chrome pauses the app's event
+// anchors are position (this code owns everything around #app) and
+// absolute interaction rules (chrome never asks for secret input in a
+// drawer) — never visual style. Modal chrome pauses the app's event
 // queue: the app cannot observe or race the user's interaction.
 //
 // Interaction-emergence experiment: chrome interactions are revealed by
@@ -16,31 +16,6 @@
 import type { Runner } from "./app.ts";
 
 const ARM_MS = 700; // <= 1s per the experiment's budget
-
-const SECRET_KEY = "polymorph-spike-chrome-secret";
-const EMOJI = ["🦆", "🌵", "🚲", "🪐", "🍉", "🦞", "🎈", "🗿", "🌊", "🔭"];
-const WORDS = [
-  "amber",
-  "briar",
-  "cobalt",
-  "dune",
-  "ember",
-  "fjord",
-  "grove",
-  "harbor",
-  "iris",
-  "juniper",
-];
-
-function personalSecret(): string {
-  let s = localStorage.getItem(SECRET_KEY);
-  if (!s) {
-    const pick = (xs: string[]) => xs[Math.floor(Math.random() * xs.length)];
-    s = `${pick(EMOJI)} ${pick(WORDS)}-${pick(WORDS)}`;
-    localStorage.setItem(SECRET_KEY, s);
-  }
-  return s;
-}
 
 export interface Chrome {
   bind(runner: Runner): void;
@@ -124,9 +99,6 @@ export function initChrome(petname: string, detail: string): Chrome {
   function consentContent(close: () => void) {
     const root = document.createElement("div");
     root.className = "chrome-sheet";
-    const secret = document.createElement("div");
-    secret.className = "chrome-secret";
-    secret.textContent = personalSecret();
     const h = document.createElement("h2");
     h.textContent = "Simulated consent prompt";
     const p = document.createElement("p");
@@ -143,7 +115,7 @@ export function initChrome(petname: string, detail: string): Chrome {
     const note = document.createElement("p");
     note.className = "chrome-note";
     note.textContent =
-      "Your personalization mark is shown above; controls arm only after the reveal completes.";
+      "Controls arm only after the reveal completes. Chrome never asks you to type a secret here.";
     const row = document.createElement("div");
     row.className = "chrome-row";
     const allow = document.createElement("button");
@@ -153,7 +125,7 @@ export function initChrome(petname: string, detail: string): Chrome {
     allow.onclick = close;
     deny.onclick = close;
     row.append(allow, deny);
-    root.append(secret, h, p, note, row);
+    root.append(h, p, note, row);
     return { root, controls: [allow, deny] };
   }
 

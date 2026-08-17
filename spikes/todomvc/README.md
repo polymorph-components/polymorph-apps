@@ -198,14 +198,15 @@ reads. Findings:
 
 The demo page carries a prototype of the shell's own UI, rendered strictly
 outside the app rectangle (`host/chrome.ts`): a persistent strip (petname,
-guest/backend indicators, kill), and a simulated consent sheet that shows
-the user's **personalization secret** (generated once, kept in shell
-storage no app capability can read) and **pauses the app's event queue**
-while open — events fired at the app during a prompt are queued, not
-delivered, and land only after dismissal. Kill (behind its own confirm)
-stops delivery permanently and removes the app's DOM. Style is
-deliberately shared-looking: position and the secret are the trust
-anchors, never CSS.
+guest/backend indicators, kill), and a simulated consent sheet that
+**pauses the app's event queue** while open — events fired at the app
+during a prompt are queued, not delivered, and land only after dismissal.
+Kill (behind its own confirm) stops delivery permanently and removes the
+app's DOM. Style is deliberately shared-looking: position and absolute
+interaction rules are the trust anchors, never CSS. Secret entry is out of
+scope for drawers by rule (chrome never asks for typed secrets here; that
+belongs to a dedicated identity surface — see #22, which also records
+dropping the earlier personalization-secret experiment).
 
 **Interaction-emergence experiment**: chrome interactions are revealed by
 the strip sliding down, exposing the interaction surface *above* it — the
