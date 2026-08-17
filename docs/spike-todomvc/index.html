@@ -15,20 +15,16 @@
       background: #2b2d42; color: #fff;
       font: 14px/1.4 -apple-system, system-ui, sans-serif;
     }
-    #chrome-drawer {
-      display: grid; grid-template-rows: 0fr;
-      transition: grid-template-rows 700ms cubic-bezier(.2, .8, .2, 1);
-    }
-    #chrome-drawer.chrome-open { grid-template-rows: 1fr; }
-    /* Bottom-anchor the content inside the clip so it slides DOWN in
-       lockstep with the strip — a drawer being pulled open, not a
-       curtain being raised. */
     #chrome-drawer > div {
-      overflow: hidden; min-height: 0;
+      /* Pixel-height animation (set from JS at open): fr-interpolation is
+         nonlinear and engine-varied, which decoupled the perceived content
+         motion from the frame. One animated property drives both. */
+      height: 0; overflow: hidden;
       display: flex; flex-direction: column; justify-content: flex-end;
+      transition: height 700ms cubic-bezier(.2, .8, .2, 1);
     }
     @media (prefers-reduced-motion: reduce) {
-      #chrome-drawer { transition: none; }
+      #chrome-drawer > div { transition: none; }
     }
     #chrome {
       display: flex; align-items: center; gap: 10px;
@@ -51,6 +47,7 @@
     .chrome-sheet {
       max-width: 480px; margin: 0 auto; padding: 18px 20px 22px;
       font-size: 15px; line-height: 1.5;
+      flex-shrink: 0;
     }
     .chrome-sheet h2 { margin: 10px 0 6px; font-size: 17px; }
     .chrome-secret {

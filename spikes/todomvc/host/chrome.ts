@@ -91,6 +91,7 @@ export function initChrome(petname: string, detail: string): Chrome {
     const close = () => {
       open = false;
       drawer.classList.remove("chrome-open");
+      drawerInner.style.height = "0px";
       dim.hidden = true;
       runner?.resume();
       // Clear content after the collapse transition would have finished.
@@ -103,6 +104,15 @@ export function initChrome(petname: string, detail: string): Chrome {
     for (const b of controls) b.disabled = true;
     dim.hidden = false;
     drawer.classList.add("chrome-open");
+    // Animate to the measured content height: strip and content ride one
+    // curve, rigidly glued (the fr-interpolation trick was nonlinear and
+    // engine-varied). scrollHeight misses flex-end top-overflow, so
+    // measure at height:auto, then animate 0 → target.
+    drawerInner.style.height = "auto";
+    const target = drawerInner.offsetHeight;
+    drawerInner.style.height = "0px";
+    void drawerInner.offsetHeight;
+    drawerInner.style.height = `${target}px`;
     // The arming delay: the timer is the enforcement; the slide is its
     // visible form. A press started while disabled produces no click.
     setTimeout(() => {
