@@ -81,15 +81,23 @@ export interface Runner {
   settle(): Promise<void>;
   /** Monotonic count of queued invocations (quiescence detection). */
   readonly generation: number;
+  /** Suspend guest invocations (modal chrome, #22): queued, not delivered. */
+  pause(): void;
+  /** Resume delivery of queued invocations. */
+  resume(): void;
 }
 
 export function createRunner(surface: Surface): Runner {
   let chain: Promise<unknown> = Promise.resolve();
   let generation = 0;
+  let gate: Promise<void> = Promise.resolve();
+  let releaseGate: (() => void) | null = null;
   const call = <T>(f: () => Promise<T>): Promise<T> => {
     generation++;
     // Ops emitted before a trap are applied; the flush runs on both paths.
-    const next = chain.then(f).then(
+    // The gate (chrome-owned input suspension) is crossed before the guest
+    // sees the invocation.
+    const next = chain.then(() => gate).then(f).then(
       (v) => {
         surface.flush();
         return v;
@@ -111,6 +119,18 @@ export function createRunner(surface: Surface): Runner {
     },
     get generation() {
       return generation;
+    },
+    pause() {
+      if (!releaseGate) {
+        gate = new Promise((r) => {
+          releaseGate = r;
+        });
+      }
+    },
+    resume() {
+      releaseGate?.();
+      releaseGate = null;
+      gate = Promise.resolve();
     },
   };
 }

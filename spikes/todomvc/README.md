@@ -194,6 +194,18 @@ reads. Findings:
   seam.
 
 
+## Framework-chrome prototype (#22, provisional until user-tested)
+
+The demo page carries a prototype of the shell's own UI, rendered strictly
+outside the app rectangle (`host/chrome.ts`): a persistent strip (petname,
+guest/backend indicators, kill), and a simulated consent sheet that shows
+the user's **personalization secret** (generated once, kept in shell
+storage no app capability can read) and **pauses the app's event queue**
+while open — events fired at the app during a prompt are queued, not
+delivered, and land only after dismissal. Kill stops delivery permanently
+and removes the app's DOM. Style is deliberately shared-looking: position
+and the secret are the trust anchors, never CSS.
+
 ## What the artifact itself shows
 
 `wasm-tools component wit build/todomvc.component.wasm` prints the world the

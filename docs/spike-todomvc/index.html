@@ -5,8 +5,56 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TodoMVC — polymorph wasm→DOM spike</title>
   <link rel="stylesheet" href="todomvc-app.css">
+  <style>
+    /* Framework chrome (#22): rendered strictly outside the app rectangle. */
+    #chrome {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; font: 14px/1.4 -apple-system, system-ui, sans-serif;
+      background: #2b2d42; color: #fff;
+      position: sticky; top: 0; z-index: 10;
+      padding-top: max(8px, env(safe-area-inset-top));
+    }
+    #chrome .chrome-petname { font-weight: 600; }
+    #chrome .chrome-caps { opacity: .7; font-size: 12px; }
+    #chrome .chrome-spacer { flex: 1; }
+    #chrome button {
+      font: inherit; font-size: 12px; color: #fff; background: #4a4e69;
+      border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer;
+    }
+    #chrome-overlay {
+      position: fixed; inset: 0; z-index: 20;
+      background: rgba(0,0,0,.45);
+      display: flex; align-items: flex-end; justify-content: center;
+    }
+    #chrome-overlay[hidden] { display: none; }
+    .chrome-sheet {
+      background: #fff; color: #333; width: 100%; max-width: 480px;
+      border-radius: 12px 12px 0 0; padding: 20px 24px 28px;
+      font: 15px/1.5 -apple-system, system-ui, sans-serif;
+      box-shadow: 0 -8px 30px rgba(0,0,0,.25);
+    }
+    .chrome-sheet h2 { margin: 8px 0; font-size: 17px; }
+    .chrome-secret {
+      font-size: 20px; background: #f1f0ea; border-radius: 8px;
+      padding: 8px 12px; display: inline-block;
+    }
+    .chrome-foreign { font-style: italic; background: #fff3cd; padding: 0 4px; }
+    .chrome-note { font-size: 12px; color: #666; }
+    .chrome-row { display: flex; gap: 12px; margin-top: 14px; }
+    .chrome-row button {
+      flex: 1; font: inherit; padding: 10px; border-radius: 8px;
+      border: 1px solid #ccc; background: #fff; cursor: pointer;
+    }
+    .chrome-row button:first-child { background: #2b2d42; color: #fff; border: none; }
+    .chrome-killed {
+      padding: 40px 20px; text-align: center; color: #666;
+      font: 14px/1.6 -apple-system, system-ui, sans-serif;
+    }
+  </style>
 </head>
 <body data-page="demo">
+  <header id="chrome"></header>
+  <div id="chrome-overlay" hidden></div>
   <div id="app">loading…</div>
   <footer class="info">
     <p>Double-click (or double-tap) to edit a todo</p>
