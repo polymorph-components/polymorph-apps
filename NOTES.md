@@ -680,9 +680,14 @@ declared otherwise (see the status note at the top).
   names); K_p locations are id-derived in the spike (existence
   probeable; production wants a pairwise-secret location — needs a
   stable pairwise-DH story over rotating prekeys, #19/#10); the
-  storage spike's dumb-store contract needed nothing new. Remaining
+  storage spike's dumb-store contract needed nothing new.   Remaining
   #19-scope items unchanged (R2/B2 quirks, TLS, GC/compaction,
-  credential rotation, Drive provider).
+  credential rotation, Drive provider). **G5 executed 2026-08-16 and
+  passed** (same spike): the identity-bundle/keyslot design (see §Key
+  lifecycle, "The identity bundle and unlock spectrum") — export with
+  argon2id-passphrase + PRF-shaped slots, wrong passphrase refused,
+  restart from bundle + bucket alone, restored device authors and the
+  tablet accepts (8 tasks end state).
 - **Topology leaning: one engine composite, one keyhive instance.**
   `subduction_keyhive` is an in-process wrapper that *holds* the
   `Keyhive` instance, implementing subduction's connection/storage
@@ -748,6 +753,44 @@ device can vanish:
   the recovery path is the crown jewels and gets its own threat-model
   section. Escrow options (none / social / provider) deliberately
   deferred.
+
+### The identity bundle and unlock spectrum (G5 record, 2026-08-16)
+
+Decided for the demo, designed for the framework; executed in
+[spikes/tasks-engine/](spikes/tasks-engine/README.md). G4's bucket
+cold-boot collapses persistence to one question — *where does the key
+live between sessions* — because all content rehydrates from the
+bucket. The answer is **one sealed identity bundle** (keyhive archive +
+identity key + partition refs) under a random bundle key held in
+**keyslots**, LUKS-style; unlock methods are slots, not formats:
+
+| slot | material | notes |
+|---|---|---|
+| passkey-PRF | 32B from the authenticator, one gesture | synced (vendor-trusting, survives eviction + new device) or hardware-bound (no vendor); support: current Chromium/Apple/Android yes, Firefox/Win10 tail no — feature-detect at enrollment, never at recovery |
+| generated recovery phrase | ~8–10 diceware words (~100+ bits), argon2id as depth | the no-hardware fallback; never user-invented for replicated copies |
+| passphrase + argon2id | human-chosen, work-factored | **downloadable device file / local unlock only** |
+
+**The exposure rule (structural, not policy prose): wrap strength must
+match ciphertext exposure.** Bucket-replicated bundle copies omit the
+passphrase slot — nothing the *system* replicates is ever crackable via
+human memory (brainwallet/LastPass lesson; we have no trusted server to
+rate-limit guesses *by design*). The user's downloaded file may carry
+the passphrase slot: custody makes it have+know. Local device copies:
+either. Eviction reality: no browser artifact is durable — durability =
+multiple devices + the recovery bundle; passkeys and files survive
+storage eviction, IndexedDB (and the future keystore slice) do not.
+
+Spike results and #11 data points: restart via bundle+bucket works
+end-to-end (wrong passphrase refused; restored device authors and
+others accept — CGKA leaf secrets ride the archive); polymorph:webcrypto
+has **no private-key export at this rev** (extractability is recorded
+mint-time policy awaiting the platform keystore slice), so exportable
+identities are an explicit demo-grade `Soft` variant until the keystore
+lands; **self-rotation secrets exist only in the archive** — a stale
+bundle cannot reach epochs its own authoring created, so persisted
+bundles refresh after authoring (or #11 designs a re-join path);
+passkeys are origin-bound, so the origin-migration story must carry
+re-enrollment, not credential portability.
 
 ## Compute placement and push
 

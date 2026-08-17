@@ -1,4 +1,4 @@
-# Tasks-engine spike (#20 G1 + G2 + G3 + G4)
+# Tasks-engine spike (#20 G1 + G2 + G3 + G4 + G5)
 
 The walking skeleton's content spine generalized from a linear chain to
 the **real automerge change DAG**, with the first data service —
@@ -122,9 +122,48 @@ never connects** — it lives entirely off the bucket (MinIO).
 9. Revocation flavor 2 (lost phone): phone revoked from Alice's group;
    laptop's next task never becomes readable at the phone (ciphertext
    arrived, decrypt refused); the tablet reads everything.
+10. Restart (G5): laptop exports its identity bundle (passphrase +
+    PRF-shaped keyslots); a fresh instance restores from the bundle +
+    bucket alone, reads everything, and authors a task the tablet
+    accepts.
 
 Final state: the wireless tablet at `iroh conns: 0` holds the complete
-7-task list.
+8-task list, one task authored by a restarted device.
+
+## The identity bundle (G5, #11's persistence slice)
+
+Restarts collapse to one artifact: everything *content* rehydrates from
+the bucket (G4), so the only state a device must keep is its identity —
+and that ships as one **sealed bundle** (keyhive archive + identity key
++ partition refs) under a random bundle key held in **keyslots**,
+LUKS-style:
+
+- a **passphrase slot** (argon2id; parameters + salt travel in the
+  slot) — the wrap for a *downloadable device file* in user custody;
+- a **raw-secret slot** — the passkey-PRF output or a generated
+  recovery code, depending on what the host wires in.
+
+The exposure rule is structural: wrap strength must match ciphertext
+exposure. Bucket-replicated copies would omit the passphrase slot
+(high-entropy only); the user's downloaded file may carry it
+(have + know). Adding/removing an unlock method edits slots without
+re-encrypting the payload.
+
+The scenario proves the full loop: export with both slots → a fresh
+instance refuses a wrong passphrase, restores via the right one
+(identity id identical), rehydrates the whole task list from the
+bucket, **authors a new task that other members accept** (the
+group-encryption leaf secrets survived the archive), and a third
+instance opens the same bundle via the PRF-shaped slot.
+
+Findings for #11: the webcrypto interface has **no private-key export
+at this rev** (extractability is recorded mint-time policy awaiting the
+platform keystore) — so the exportable identity is an explicit
+demo-grade `Soft` key variant, selected at `init`, and the honest
+browser path is the keystore slice. And **self-rotation secrets live
+only in the archive**: a stale bundle predating the device's own
+authoring cannot reach epochs its own rotations created — refresh the
+persisted bundle after authoring, or design a re-join path.
 
 ## Findings
 

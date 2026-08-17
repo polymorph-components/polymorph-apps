@@ -130,8 +130,34 @@ type KhProto = KeyhiveProtocol<
 
 // --- one signer, two traits ---
 
+/// The device identity key. `Platform` is the default posture (webcrypto
+/// mints it; the private half never enters guest memory — and at this
+/// rev the interface has NO private-key export at all: extractability is
+/// recorded policy awaiting the platform keystore, a #11 data point).
+/// `Soft` is the G5 demo-grade posture: an in-guest key that identity
+/// bundles can carry; the browser keystore slice later replaces it.
+enum IdentityKey {
+    Platform(SigningKey),
+    Soft(Box<ed25519_dalek::SigningKey>),
+}
+
+impl IdentityKey {
+    async fn sign_bytes(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+        match self {
+            IdentityKey::Platform(k) => k
+                .sign(data)
+                .await
+                .map_err(|e| format!("webcrypto sign: {e}")),
+            IdentityKey::Soft(k) => {
+                use ed25519_dalek::Signer as _;
+                Ok(k.sign(data).to_bytes().to_vec())
+            }
+        }
+    }
+}
+
 struct SignerInner {
-    key: SigningKey,
+    key: IdentityKey,
     verifying: DalekVerifyingKey,
     sign_count: Cell<u64>,
 }
@@ -163,7 +189,7 @@ impl AsyncSigner<Local> for WebcryptoSigner {
             let sig = self
                 .0
                 .key
-                .sign(payload_bytes)
+                .sign_bytes(payload_bytes)
                 .await
                 .map_err(|_| SigningError::SigningFailed(ed25519_dalek::SignatureError::new()))?;
             ed25519_dalek::Signature::from_slice(&sig).map_err(SigningError::SigningFailed)
@@ -179,9 +205,9 @@ impl Signer<Local> for WebcryptoSigner {
             let sig = self
                 .0
                 .key
-                .sign(message.as_slice())
+                .sign_bytes(message.as_slice())
                 .await
-                .expect("webcrypto signing failed (Signer trait is infallible)");
+                .expect("identity signing failed (Signer trait is infallible)");
             ed25519_dalek::Signature::from_slice(&sig).expect("64-byte signature")
         })
     }
@@ -650,6 +676,67 @@ struct SignedManifest {
     manifest: Vec<u8>,
     sig: Vec<u8>,
 }
+
+// --- the identity bundle (G5): one sealed payload, LUKS-style keyslots ---
+
+#[derive(Serialize, Deserialize)]
+enum BundleSlot {
+    /// argon2id(passphrase) — the downloadable-file wrap. Parameters
+    /// and salt travel with the slot (agility, per-device calibration).
+    Passphrase {
+        salt: [u8; 16],
+        m_cost_kib: u32,
+        t_cost: u32,
+        p_cost: u32,
+        wrapped: Vec<u8>,
+    },
+    /// A caller-provided 32-byte secret: the passkey-PRF output or a
+    /// generated recovery code, depending on what the host wires in.
+    Secret { label: String, wrapped: Vec<u8> },
+}
+
+#[derive(Serialize, Deserialize)]
+struct IdentityBundle {
+    /// Cleartext, human-auditable ("whose device file is this").
+    label: String,
+    created: u64,
+    slots: Vec<BundleSlot>,
+    /// AES-GCM(bundle-key) of a bincoded `BundlePayload`.
+    sealed: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BundlePayload {
+    /// The soft identity key's 32-byte seed (Soft posture only —
+    /// platform-held identities have no export path at this rev).
+    signing_key_seed: [u8; 32],
+    verifying: [u8; 32],
+    keyhive_archive: Vec<u8>,
+    partition: Vec<u8>,
+    owner: Vec<u8>,
+}
+
+fn argon2id_key(
+    pass: &str,
+    salt: &[u8],
+    m_cost_kib: u32,
+    t_cost: u32,
+    p_cost: u32,
+) -> Result<[u8; 32], String> {
+    let params = argon2::Params::new(m_cost_kib, t_cost, p_cost, Some(32))
+        .map_err(|e| format!("argon2 params: {e}"))?;
+    let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+    let mut out = [0u8; 32];
+    a.hash_password_into(pass.as_bytes(), salt, &mut out)
+        .map_err(|e| format!("argon2: {e}"))?;
+    Ok(out)
+}
+
+/// Spike-scale argon2id parameters (OWASP-baseline shape; production
+/// calibrates per device class).
+const ARGON_M_KIB: u32 = 19_456;
+const ARGON_T: u32 = 2;
+const ARGON_P: u32 = 1;
 
 async fn sha256(data: &[u8]) -> Result<Vec<u8>, String> {
     let digest = sha2::make_digest(Sha2Variant::Sha256).map_err(|e| format!("digest mint: {e}"))?;
@@ -1239,31 +1326,104 @@ fn read_snapshot(am: &AutoCommit) -> Result<Vec<TodoItem>, String> {
     Ok(items)
 }
 
+/// Assemble instance state around an identity + keyhive (fresh from
+/// `init` or restored from a bundle by `identity-import`).
+fn finish_init(signer: WebcryptoSigner, verifying: DalekVerifyingKey, kh: Kh) -> Result<(), String> {
+    let my_peer = PeerId::from(verifying);
+    #[allow(clippy::arc_with_non_send_sync)] // upstream APIs take Arc; single-threaded wasm
+    let shared_kh = Arc::new(async_lock::Mutex::new(kh.clone()));
+    let proto: Rc<KhProto> = Rc::new(KeyhiveProtocol::new(
+        shared_kh,
+        MemoryKeyhiveStorage::new(),
+        KeyhivePeerId::from_bytes(verifying.to_bytes()),
+        // Placeholder card slot: the protocol wants OUR contact card to
+        // answer card requests; minted lazily below.
+        CARD.with(|c| c.borrow().clone().expect("card set before finish_init")),
+    ));
+
+    let sd_storage = MemoryStorage::new();
+    #[allow(clippy::arc_with_non_send_sync)] // upstream APIs take Arc; single-threaded wasm
+    let policy = Arc::new(SubductionKeyhive::new(kh.clone()));
+    let (sd, _handler, listener, manager) = SubductionBuilder::new()
+        .signer(signer.clone())
+        .storage(sd_storage.clone(), policy)
+        .spawner(WitSpawn)
+        .timer(NeverTimeout)
+        .build::<Local, Conn>();
+    wit_bindgen::spawn_local(async move {
+        let _ = listener.await;
+    });
+    wit_bindgen::spawn_local(async move {
+        let _ = manager.await;
+    });
+
+    STATE.with(|s| {
+        *s.borrow_mut() = Some(State {
+            kh,
+            sd,
+            sd_storage,
+            signer,
+            my_peer,
+            nonce_cache: Rc::new(NonceCache::default()),
+            proto,
+            conn_results: HashMap::new(),
+            syncs: HashMap::new(),
+            endpoint: None,
+            iroh_identity: None,
+            iroh_conns: HashMap::new(),
+            partitions: HashMap::new(),
+            pending: HashMap::new(),
+            active: None,
+            kh_nudge: 0,
+            store: None,
+            buckets: HashMap::new(),
+            fetches: 0,
+            next_id: 0,
+        })
+    });
+    Ok(())
+}
+
+thread_local! {
+    /// Our contact card, staged for `finish_init`.
+    static CARD: RefCell<Option<keyhive_core::contact_card::ContactCard>> =
+        const { RefCell::new(None) };
+}
+
 // --- the exported driver ---
 
 struct Component;
 
 impl DriverGuest for Component {
-    async fn init() -> Result<String, String> {
-        let options = SigningKeyOptions {
-            sign: true,
-            extractable: false,
+    async fn init(exportable_identity: bool) -> Result<String, String> {
+        let (key, verifying) = if exportable_identity {
+            // G5 demo-grade posture: a soft in-guest key the identity
+            // bundle can carry.
+            let sk = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+            let vk = sk.verifying_key();
+            (IdentityKey::Soft(Box::new(sk)), vk)
+        } else {
+            // Default posture: platform-held, non-extractable.
+            let options = SigningKeyOptions {
+                sign: true,
+                extractable: false,
+            };
+            let (key, vk) = ed25519::generate_key(options)
+                .await
+                .map_err(|e| format!("webcrypto generate-key: {e}"))?;
+            let vk_raw = vk
+                .export_key_raw()
+                .await
+                .map_err(|e| format!("webcrypto export verifying key: {e}"))?;
+            let verifying = DalekVerifyingKey::from_bytes(&arr32(&vk_raw, "verifying key")?)
+                .map_err(|e| format!("parse verifying key: {e:?}"))?;
+            (IdentityKey::Platform(key), verifying)
         };
-        let (key, vk) = ed25519::generate_key(options)
-            .await
-            .map_err(|e| format!("webcrypto generate-key: {e}"))?;
-        let vk_raw = vk
-            .export_key_raw()
-            .await
-            .map_err(|e| format!("webcrypto export verifying key: {e}"))?;
-        let verifying = DalekVerifyingKey::from_bytes(&arr32(&vk_raw, "verifying key")?)
-            .map_err(|e| format!("parse verifying key: {e:?}"))?;
         let signer = WebcryptoSigner(Rc::new(SignerInner {
             key,
             verifying,
             sign_count: Cell::new(0),
         }));
-        let my_peer = PeerId::from(verifying);
 
         let kh = Kh::generate(
             signer.clone(),
@@ -1278,55 +1438,8 @@ impl DriverGuest for Component {
             .contact_card()
             .await
             .map_err(|e| format!("contact card: {e:?}"))?;
-        #[allow(clippy::arc_with_non_send_sync)] // upstream APIs take Arc; single-threaded wasm
-        let shared_kh = Arc::new(async_lock::Mutex::new(kh.clone()));
-        let proto: Rc<KhProto> = Rc::new(KeyhiveProtocol::new(
-            shared_kh,
-            MemoryKeyhiveStorage::new(),
-            KeyhivePeerId::from_bytes(verifying.to_bytes()),
-            card,
-        ));
-
-        let sd_storage = MemoryStorage::new();
-        #[allow(clippy::arc_with_non_send_sync)] // upstream APIs take Arc; single-threaded wasm
-        let policy = Arc::new(SubductionKeyhive::new(kh.clone()));
-        let (sd, _handler, listener, manager) = SubductionBuilder::new()
-            .signer(signer.clone())
-            .storage(sd_storage.clone(), policy)
-            .spawner(WitSpawn)
-            .timer(NeverTimeout)
-            .build::<Local, Conn>();
-        wit_bindgen::spawn_local(async move {
-            let _ = listener.await;
-        });
-        wit_bindgen::spawn_local(async move {
-            let _ = manager.await;
-        });
-
-        STATE.with(|s| {
-            *s.borrow_mut() = Some(State {
-                kh,
-                sd,
-                sd_storage,
-                signer,
-                my_peer,
-                nonce_cache: Rc::new(NonceCache::default()),
-                proto,
-                conn_results: HashMap::new(),
-                syncs: HashMap::new(),
-                endpoint: None,
-                iroh_identity: None,
-                iroh_conns: HashMap::new(),
-                partitions: HashMap::new(),
-                pending: HashMap::new(),
-                active: None,
-                kh_nudge: 0,
-                store: None,
-                buckets: HashMap::new(),
-                fetches: 0,
-                next_id: 0,
-            })
-        });
+        CARD.with(|c| *c.borrow_mut() = Some(card));
+        finish_init(signer, verifying, kh)?;
         Ok(hex::encode(verifying.to_bytes()))
     }
 
@@ -1616,7 +1729,7 @@ impl DriverGuest for Component {
         let sig = signer
             .0
             .key
-            .sign(manifest_bytes.as_slice())
+            .sign_bytes(manifest_bytes.as_slice())
             .await
             .map_err(|e| format!("manifest sign: {e}"))?;
         let signed = bincode::serialize(&SignedManifest {
@@ -1761,6 +1874,185 @@ impl DriverGuest for Component {
             "pulled kp epochs={} events={ingested} chunks={fetched}",
             keychain.len()
         ))
+    }
+
+    async fn identity_export(
+        label: String,
+        passphrase: Option<String>,
+        secret_slot: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, String> {
+        if passphrase.is_none() && secret_slot.is_none() {
+            return Err("at least one keyslot required".into());
+        }
+        let (kh, signer, verifying, owner) = with_state(|s| {
+            (
+                s.kh.clone(),
+                s.signer.clone(),
+                s.signer.0.verifying.to_bytes(),
+                s.my_peer.as_bytes().to_vec(),
+            )
+        })?;
+        let partition = active_partition()?;
+        let seed = match &signer.0.key {
+            IdentityKey::Soft(sk) => sk.to_bytes(),
+            IdentityKey::Platform(_) => {
+                return Err(
+                    "identity not exportable: platform-held key (init with \
+                     exportable-identity, or wait for the platform keystore)"
+                        .into(),
+                )
+            }
+        };
+        let archive = kh.into_archive().await;
+        let payload = BundlePayload {
+            signing_key_seed: seed,
+            verifying,
+            keyhive_archive: bincode::serialize(&archive)
+                .map_err(|e| format!("archive serialize: {e}"))?,
+            partition,
+            owner,
+        };
+
+        let bundle_key: [u8; 32] = rand::random();
+        let aead = aead_from_raw(&bundle_key).await?;
+        let sealed = aead_seal(
+            &aead,
+            b"identity-bundle",
+            &bincode::serialize(&payload).map_err(|e| e.to_string())?,
+        )
+        .await?;
+
+        let mut slots = Vec::new();
+        if let Some(pass) = passphrase {
+            let salt: [u8; 16] = rand::random();
+            let slot_key = argon2id_key(&pass, &salt, ARGON_M_KIB, ARGON_T, ARGON_P)?;
+            let slot_aead = aead_from_raw(&slot_key).await?;
+            slots.push(BundleSlot::Passphrase {
+                salt,
+                m_cost_kib: ARGON_M_KIB,
+                t_cost: ARGON_T,
+                p_cost: ARGON_P,
+                wrapped: aead_seal(&slot_aead, b"bundle-slot", &bundle_key).await?,
+            });
+        }
+        if let Some(secret) = secret_slot {
+            let slot_key = arr32(&secret, "secret slot")?;
+            let slot_aead = aead_from_raw(&slot_key).await?;
+            slots.push(BundleSlot::Secret {
+                label: "external-secret".into(),
+                wrapped: aead_seal(&slot_aead, b"bundle-slot", &bundle_key).await?,
+            });
+        }
+
+        bincode::serialize(&IdentityBundle {
+            label,
+            created: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            slots,
+            sealed,
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    async fn identity_import(
+        bundle: Vec<u8>,
+        passphrase: Option<String>,
+        secret: Option<Vec<u8>>,
+    ) -> Result<String, String> {
+        if STATE.with(|s| s.borrow().is_some()) {
+            return Err("already initialized".into());
+        }
+        let bundle: IdentityBundle =
+            bincode::deserialize(&bundle).map_err(|e| format!("bad bundle: {e}"))?;
+
+        // Try every slot the caller has material for.
+        let mut bundle_key: Option<[u8; 32]> = None;
+        for slot in &bundle.slots {
+            match slot {
+                BundleSlot::Passphrase {
+                    salt,
+                    m_cost_kib,
+                    t_cost,
+                    p_cost,
+                    wrapped,
+                } => {
+                    let Some(pass) = &passphrase else { continue };
+                    let slot_key = argon2id_key(pass, salt, *m_cost_kib, *t_cost, *p_cost)?;
+                    let slot_aead = aead_from_raw(&slot_key).await?;
+                    if let Ok(k) = aead_open(&slot_aead, b"bundle-slot", wrapped).await {
+                        bundle_key = Some(arr32(&k, "bundle key")?);
+                        break;
+                    }
+                }
+                BundleSlot::Secret { wrapped, .. } => {
+                    let Some(sec) = &secret else { continue };
+                    let slot_key = arr32(sec, "secret")?;
+                    let slot_aead = aead_from_raw(&slot_key).await?;
+                    if let Ok(k) = aead_open(&slot_aead, b"bundle-slot", wrapped).await {
+                        bundle_key = Some(arr32(&k, "bundle key")?);
+                        break;
+                    }
+                }
+            }
+        }
+        let bundle_key = bundle_key.ok_or("unlock failed: no keyslot opened")?;
+
+        let aead = aead_from_raw(&bundle_key).await?;
+        let payload: BundlePayload =
+            bincode::deserialize(&aead_open(&aead, b"identity-bundle", &bundle.sealed).await?)
+                .map_err(|e| format!("payload decode: {e}"))?;
+
+        let sk = ed25519_dalek::SigningKey::from_bytes(&payload.signing_key_seed);
+        let verifying = DalekVerifyingKey::from_bytes(&payload.verifying)
+            .map_err(|e| format!("bad verifying key: {e:?}"))?;
+        if sk.verifying_key() != verifying {
+            return Err("bundle inconsistent: seed does not match verifying key".into());
+        }
+        let signer = WebcryptoSigner(Rc::new(SignerInner {
+            key: IdentityKey::Soft(Box::new(sk)),
+            verifying,
+            sign_count: Cell::new(0),
+        }));
+
+        let archive: keyhive_core::archive::Archive<T> =
+            bincode::deserialize(&payload.keyhive_archive)
+                .map_err(|e| format!("archive decode: {e}"))?;
+        #[allow(clippy::arc_with_non_send_sync)] // upstream API shape; single-threaded wasm
+        let csprng = Arc::new(futures::lock::Mutex::new(rand::rngs::OsRng));
+        let kh = Kh::try_from_archive(
+            &archive,
+            signer.clone(),
+            MemoryCiphertextStore::new(),
+            NoListener,
+            csprng,
+        )
+        .await
+        .map_err(|e| format!("archive restore: {e:?}"))?;
+
+        let card = kh
+            .contact_card()
+            .await
+            .map_err(|e| format!("contact card: {e:?}"))?;
+        CARD.with(|c| *c.borrow_mut() = Some(card));
+        finish_init(signer, verifying, kh)?;
+
+        // Bind the tasks service to the bundled partition; content
+        // rehydrates from the bucket (G4 cold boot).
+        with_state(|s| {
+            s.partitions.insert(
+                payload.partition.clone(),
+                Partition {
+                    am: AutoCommit::new(),
+                    applied: HashSet::new(),
+                    revision: 0,
+                    undecryptable: 0,
+                },
+            );
+            s.active = Some(payload.partition.clone());
+        })?;
+        Ok(hex::encode(payload.verifying))
     }
 
     async fn iroh_bind(relay_url: String) -> Result<String, String> {

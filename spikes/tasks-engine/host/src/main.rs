@@ -158,13 +158,17 @@ async fn main() -> Result<()> {
     let phone = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
     let bob = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
     let tablet = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
+    let laptop2 = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
+    let laptop3 = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
     println!(
-        "[{:>9.2?}] instantiated laptop + phone + bob + tablet",
+        "[{:>9.2?}] instantiated laptop + phone + bob + tablet (+2 restart shells)",
         t0.elapsed()
     );
 
     store
-        .run_concurrent(async move |acc| scenario(acc, laptop, phone, bob, tablet, relay, s3).await)
+        .run_concurrent(async move |acc| {
+            scenario(acc, laptop, phone, bob, tablet, laptop2, laptop3, relay, s3).await
+        })
         .await?
 }
 
@@ -280,12 +284,15 @@ fn render(items: &[TodoItem]) -> String {
         .join(", ")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scenario(
     acc: &Accessor<Ctx>,
     laptop: bindings::Spike,
     phone: bindings::Spike,
     bob: bindings::Spike,
     tablet: bindings::Spike,
+    laptop2: bindings::Spike,
+    laptop3: bindings::Spike,
     relay: String,
     s3: S3Args,
 ) -> Result<()> {
@@ -293,17 +300,22 @@ async fn scenario(
     let p: &Driver = phone.polymorph_engine_spike_driver();
     let b: &Driver = bob.polymorph_engine_spike_driver();
     let tb: &Driver = tablet.polymorph_engine_spike_driver();
+    let l2: &Driver = laptop2.polymorph_engine_spike_driver();
+    let l3: &Driver = laptop3.polymorph_engine_spike_driver();
     let lt: &Tasks = laptop.polymorph_data_tasks_tasks();
     let pt: &Tasks = phone.polymorph_data_tasks_tasks();
     let bt: &Tasks = bob.polymorph_data_tasks_tasks();
     let tt: &Tasks = tablet.polymorph_data_tasks_tasks();
+    let l2t: &Tasks = laptop2.polymorph_data_tasks_tasks();
 
     // 1. Identities; hub topology (laptop is the wire hub). The TABLET
     // never binds, never connects: it will live entirely off the bucket.
-    let l_id = step!("laptop.init", l.call_init(acc));
-    let p_id = step!("phone.init ", p.call_init(acc));
-    let b_id = step!("bob.init   ", b.call_init(acc));
-    let t_id = step!("tablet.init", tb.call_init(acc));
+    // Laptop uses the G5 demo-grade SOFT identity (bundle-exportable);
+    // everyone else keeps the platform-held default.
+    let l_id = step!("laptop.init (soft identity)", l.call_init(acc, true));
+    let p_id = step!("phone.init ", p.call_init(acc, false));
+    let b_id = step!("bob.init   ", b.call_init(acc, false));
+    let t_id = step!("tablet.init", tb.call_init(acc, false));
     let l_id_bytes = hex::decode(&l_id).map_err(|e| format_err!("{e}"))?;
     let p_id_bytes = hex::decode(&p_id).map_err(|e| format_err!("{e}"))?;
     let b_id_bytes = hex::decode(&b_id).map_err(|e| format_err!("{e}"))?;
@@ -734,7 +746,90 @@ async fn scenario(
     let p_stats = p.call_stats(acc).await?;
     println!("            phone still sees 6 tasks; {p_stats}");
 
-    for (name, d) in [("laptop", l), ("tablet", tb)] {
+    // 10. G5: restart from the identity bundle. Laptop exports the
+    // sealed bundle with two keyslots — an argon2id passphrase (the
+    // downloadable-file wrap) and a raw 32-byte secret standing in for
+    // a passkey-PRF output. A fresh instance restores from the bundle
+    // plus the bucket: identity, epochs, and the full task list.
+    let prf_secret: Vec<u8> = (0..32u8).collect(); // obviously-synthetic PRF stand-in
+    let bundle = step!(
+        "laptop.identity-export(passphrase slot + prf slot)",
+        l.call_identity_export(
+            acc,
+            "alice-laptop".into(),
+            Some("correct horse battery staple".into()),
+            Some(prf_secret.clone())
+        )
+    );
+    println!("            bundle: {} bytes, 2 keyslots", bundle.len());
+
+    // Wrong passphrase must fail before any state is built.
+    match l2
+        .call_identity_import(acc, bundle.clone(), Some("wrong horse".into()), None)
+        .await?
+    {
+        Err(e) => println!("            wrong passphrase refused: {e}"),
+        Ok(_) => bail!("SLOT FAILURE: wrong passphrase opened the bundle"),
+    }
+
+    let restored = step!(
+        "laptop2.identity-import(passphrase) [restart]",
+        l2.call_identity_import(
+            acc,
+            bundle.clone(),
+            Some("correct horse battery staple".into()),
+            None
+        )
+    );
+    if restored != l_id {
+        bail!("restored identity differs: {restored} != {l_id}");
+    }
+    println!("            restored identity == laptop identity");
+    l2.call_init_store(
+        acc,
+        s3.endpoint.clone(),
+        s3.bucket.clone(),
+        s3.access.clone(),
+        s3.secret.clone(),
+    )
+    .await?
+    .map_err(|e| format_err!("laptop2 init-store: {e}"))?;
+    let summary = step!(
+        "laptop2.bucket-pull [rehydrate: bundle + bucket only]",
+        l2.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+    );
+    println!("            {summary}");
+    wait_items(acc, l2t, "laptop2 reads all 7 tasks", |i| i.len() == 7).await?;
+
+    // The restored device can still AUTHOR (its group-encryption leaf
+    // secrets survived the archive) and others accept the result.
+    step!(
+        "laptop2.tasks.add('post-restart task')",
+        l2t.call_add(acc, "post-restart task".into())
+    );
+    let summary = step!("laptop2.bucket-flush", l2.call_bucket_flush(acc, part.clone()));
+    println!("            {summary}");
+    let summary = step!(
+        "tablet.bucket-pull",
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+    );
+    println!("            {summary}");
+    wait_items(acc, tt, "tablet sees the restored device's task (8 total)", |i| {
+        i.len() == 8
+    })
+    .await?;
+
+    // The PRF-shaped slot opens the same bundle.
+    let restored3 = step!(
+        "laptop3.identity-import(prf slot)",
+        l3.call_identity_import(acc, bundle, None, Some(prf_secret))
+    );
+    if restored3 != l_id {
+        bail!("prf-slot restore differs: {restored3} != {l_id}");
+    }
+    println!("            prf-shaped slot opens the same bundle");
+
+    for (name, d) in [("laptop", l), ("tablet", tb), ("laptop2", l2)] {
         let s = d.call_stats(acc).await?;
         println!("{name}: {s}");
     }

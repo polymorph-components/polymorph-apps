@@ -9,7 +9,11 @@ package polymorph:engine-spike@0.1.0;
 interface driver {
     /// One webcrypto identity backing keyhive and subduction; both layers
     /// built, tasks service ready to bind a partition. Returns the id, hex.
-    init: async func() -> result<string, string>;
+    /// `exportable-identity` selects the G5 demo-grade SOFT key (in-guest,
+    /// bundle-exportable) instead of the platform-held default — the
+    /// webcrypto interface has no private-key export at this rev (a #11
+    /// data point; the platform keystore slice is the honest fix).
+    init: async func(exportable-identity: bool) -> result<string, string>;
 
     // --- keyhive membership (synced by the bridge over the wire) ---
     //
@@ -82,6 +86,23 @@ interface driver {
     /// Pull via K_p: op stream into keyhive, chunks into the
     /// sedimentree, then apply. Works with zero live connections.
     bucket-pull: async func(doc-id: list<u8>, owner-id: list<u8>) -> result<string, string>;
+
+    // --- the identity bundle (#20 G5; #11's persistence slice) ---
+    //
+    // One sealed bundle (keyhive archive + identity key + partition
+    // refs) under a random bundle key held in KEYSLOTS, LUKS-style: a
+    // passphrase slot (argon2id — the downloadable-file wrap) and/or a
+    // raw 32-byte-secret slot (passkey-PRF / recovery-code stand-in).
+    // Everything else rehydrates from the bucket (G4), so this bundle
+    // plus store config is a complete device restart.
+
+    /// Export the sealed bundle. At least one slot must be requested.
+    identity-export: async func(label: string, passphrase: option<string>, secret-slot: option<list<u8>>) -> result<list<u8>, string>;
+
+    /// Initialize this instance FROM a bundle (instead of `init`):
+    /// restores identity + keyhive state and binds the tasks service to
+    /// the bundled partition. Returns the identity id, hex.
+    identity-import: async func(bundle: list<u8>, passphrase: option<string>, secret: option<list<u8>>) -> result<string, string>;
 
     // --- the iroh wire + subduction sync (from the skeleton) ---
 
