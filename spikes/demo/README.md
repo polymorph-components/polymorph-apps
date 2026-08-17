@@ -9,9 +9,9 @@ endpoint — running **under deltic in the page**. Three panes, one page:
 
 | pane | role | sync path |
 |---|---|---|
-| Alice — laptop | wire hub, bucket owner | live (iroh websocket relay) + bucket |
-| Bob | collaborator | live (iroh websocket relay) |
-| Alice — tablet | second device, **zero connections ever** | bucket (MinIO) only |
+| Alice — laptop | wire hub, bucket owner | live (n0's public relay by default) + bucket |
+| Bob | collaborator | live (n0's public relay by default) |
+| Alice — tablet | second device, **zero connections ever** | your S3 bucket (Storage… dialog) |
 
 Demo beats, all driven through the real UIs and verified:
 adds/toggles/edits converge across all three replicas; the tablet cold
@@ -52,11 +52,18 @@ per pane (×3, one browser page):
 ## Run it
 
 ```
-just infra    # iroh relay :3340 + MinIO :9000 (CORS open) — keep running
 just serve    # build engine+app, translate, bundle, serve on :8600
 ```
 
-Open http://127.0.0.1:8600/. Requires sibling checkouts
+Open http://127.0.0.1:8600/. The live path rides n0's public relay
+(`?relay=…` overrides, e.g. a local `iroh-relay --dev`); the bucket
+pane activates through the **Storage…** dialog with any S3-compatible
+endpoint whose CORS admits the page origin (`just infra` runs a local
+MinIO with open CORS, plus a local relay). Hosted build:
+https://polymorph-components.github.io/polymorph-apps/spike-demo/
+— same story: public relay out of the box, bring your own bucket.
+
+Requires sibling checkouts
 (`polymorph-iroh` built, `polymorph-{webcrypto,websocket,webrtc-datachannels}`)
 and the `spikes/tasks-engine` MinIO fetch (run that spike once).
 

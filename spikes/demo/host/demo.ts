@@ -23,24 +23,44 @@ import {
   until,
 } from "./engine.ts";
 
-// Infra endpoints. Pages cannot host a relay or a bucket, so the demo
-// points at LOCAL infra by default (browsers treat 127.0.0.1 as
-// potentially trustworthy, so an https page may talk to it); override
-// via query params for self-hosted infra:
-//   ?relay=…&s3=…&bucket=…&access=…&secret=…
+// The live path rides n0's PUBLIC relay by default (interop proven in
+// polymorph-iroh's `just interop-prod`); override with ?relay=… — e.g.
+// a local `iroh-relay --dev` at http://127.0.0.1:3340.
 const params = new URLSearchParams(location.search);
-const RELAY = params.get("relay") ?? "http://127.0.0.1:3340";
-const S3 = {
-  endpoint: params.get("s3") ?? "http://127.0.0.1:9000",
-  bucket: params.get("bucket") ?? "pm-demo",
-  access: params.get("access") ?? "minioadmin",
-  secret: params.get("secret") ?? "minioadmin",
-};
+const RELAY = params.get("relay") ?? "https://use1-1.relay.n0.iroh.link";
 
-const INFRA_HELP = `this demo needs a local iroh relay (:3340) and MinIO (:9000):
-  git clone https://github.com/polymorph-components/polymorph-apps
-  cd polymorph-apps/spikes/tasks-engine && just minio && cd ../demo && just infra
-then reload this page (or pass ?relay=…&s3=… for your own infra).`;
+// The bucket (non-realtime path + the tablet pane) is USER-CONFIGURED:
+// any S3-compatible endpoint whose CORS admits this origin. Stored in
+// localStorage; query params (?s3=&bucket=&access=&secret=) pre-seed it.
+interface S3Config {
+  endpoint: string;
+  bucket: string;
+  access: string;
+  secret: string;
+}
+
+const S3_KEY = "pm-demo-s3";
+
+function loadS3(): S3Config | null {
+  if (params.get("s3")) {
+    return {
+      endpoint: params.get("s3")!,
+      bucket: params.get("bucket") ?? "pm-demo",
+      access: params.get("access") ?? "",
+      secret: params.get("secret") ?? "",
+    };
+  }
+  try {
+    const raw = localStorage.getItem(S3_KEY);
+    return raw ? JSON.parse(raw) as S3Config : null;
+  } catch {
+    return null;
+  }
+}
+
+const INFRA_HELP = `the live path needs the relay to be reachable (default: n0's public
+relay; ?relay=… to override). The bucket pane is configured via the
+Storage… dialog and is optional for boot.`;
 
 // --- artifacts -----------------------------------------------------------------
 
@@ -192,16 +212,6 @@ async function boot() {
   const ha = await alice.engine.driver.syncStart(bob.id, part, true);
   await until("alice subscribe", () => alice.engine.driver.syncStatus(ha));
 
-  say("bucket: grant + flush + tablet cold boot…");
-  await alice.engine.driver.initStore(S3.endpoint, S3.bucket, S3.access, S3.secret);
-  await tablet.engine.driver.initStore(S3.endpoint, S3.bucket, S3.access, S3.secret);
-  await alice.engine.driver.ensureBucket();
-  for (const m of [alice.id, bob.id, tablet.id]) {
-    await alice.engine.driver.storeGrant(part, m);
-  }
-  await alice.engine.driver.bucketFlush(part);
-  tablet.status(await tablet.engine.driver.bucketPull(part, alice.id));
-
   say("mounting apps…");
   for (const p of panes) await mountApp(p, appArt);
 
@@ -225,8 +235,38 @@ async function boot() {
     enqueue(() => pull(alice.engine, bob.id));
   }, 2500);
 
+  // --- the bucket leg: user-configured, activates the tablet ---------------
+
+  let bucketReady = false;
+  const syncBtn = document.getElementById("bucket-sync") as HTMLButtonElement;
+  const autoBox = document.getElementById("bucket-auto") as HTMLInputElement;
+  syncBtn.disabled = true;
+  autoBox.disabled = true;
+  tablet.status("no storage configured — use Storage… to activate this pane");
+
+  const setupBucket = (cfg: S3Config) =>
+    enqueue(async () => {
+      try {
+        tablet.status("configuring storage…");
+        await alice.engine.driver.initStore(cfg.endpoint, cfg.bucket, cfg.access, cfg.secret);
+        await tablet.engine.driver.initStore(cfg.endpoint, cfg.bucket, cfg.access, cfg.secret);
+        await alice.engine.driver.ensureBucket();
+        for (const m of [alice.id, bob.id, tablet.id]) {
+          await alice.engine.driver.storeGrant(part, m);
+        }
+        await alice.engine.driver.bucketFlush(part);
+        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id));
+        bucketReady = true;
+        syncBtn.disabled = false;
+        autoBox.disabled = false;
+      } catch (e) {
+        tablet.status(`storage setup failed: ${err(e)} — check endpoint + CORS`);
+      }
+    });
+
   const bucketSync = () =>
     enqueue(async () => {
+      if (!bucketReady) return;
       try {
         await alice.engine.driver.bucketFlush(part);
         await tablet.engine.driver.bucketFlush(part);
@@ -236,14 +276,53 @@ async function boot() {
         tablet.status(`bucket: ${err(e)}`);
       }
     });
-  (document.getElementById("bucket-sync") as HTMLButtonElement).onclick = () => {
+  syncBtn.onclick = () => {
     bucketSync();
   };
-
-  const autoBox = document.getElementById("bucket-auto") as HTMLInputElement;
   setInterval(() => {
     if (autoBox.checked) bucketSync();
   }, 4000);
+
+  // The storage dialog: prefill from stored config (or local-MinIO
+  // defaults), persist on save, run setup once.
+  const dialog = document.getElementById("s3-dialog") as HTMLDialogElement;
+  const field = (id: string) => document.getElementById(id) as HTMLInputElement;
+  (document.getElementById("s3-open") as HTMLButtonElement).onclick = () => {
+    const cur = loadS3() ?? {
+      endpoint: "http://127.0.0.1:9000",
+      bucket: "pm-demo",
+      access: "minioadmin",
+      secret: "minioadmin",
+    };
+    field("s3-endpoint").value = cur.endpoint;
+    field("s3-bucket").value = cur.bucket;
+    field("s3-access").value = cur.access;
+    field("s3-secret").value = cur.secret;
+    dialog.showModal();
+  };
+  (document.getElementById("s3-save") as HTMLButtonElement).onclick = (ev) => {
+    ev.preventDefault();
+    const cfg: S3Config = {
+      endpoint: field("s3-endpoint").value.trim().replace(/\/$/, ""),
+      bucket: field("s3-bucket").value.trim(),
+      access: field("s3-access").value,
+      secret: field("s3-secret").value,
+    };
+    localStorage.setItem(S3_KEY, JSON.stringify(cfg));
+    dialog.close();
+    if (bucketReady) {
+      tablet.status("storage changed — reload the page to reconfigure");
+    } else {
+      setupBucket(cfg);
+    }
+  };
+  (document.getElementById("s3-cancel") as HTMLButtonElement).onclick = (ev) => {
+    ev.preventDefault();
+    dialog.close();
+  };
+
+  const stored = loadS3();
+  if (stored) setupBucket(stored);
 
   (document.getElementById("revoke-bob") as HTMLButtonElement).onclick = () => {
     enqueue(async () => {
@@ -259,10 +338,12 @@ async function boot() {
     });
   };
 
-  // Live stats footer per pane.
+  // Live stats footer per pane (the tablet keeps its setup hint until
+  // storage is configured).
   setInterval(() => {
     enqueue(async () => {
       for (const p of panes) {
+        if (p === tablet && !bucketReady) continue;
         try {
           p.status(await p.engine.driver.stats());
         } catch { /* pane dead */ }
