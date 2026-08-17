@@ -62,3 +62,17 @@ site: translate app
 # Serve the demo (needs `just infra` in another terminal).
 serve: site
     deno run --allow-net --allow-read jsr:@std/http/file-server serve --port 8600
+
+# Build the demo into the repo's Pages root (same pattern as the
+# todomvc spike: docs/ is served by GitHub Pages, the build is
+# committed). The page still needs LOCAL infra (relay + MinIO) or
+# ?relay=&s3= overrides — Pages hosts the artifact, not the network.
+pages: translate app
+    mkdir -p ../../docs/spike-demo
+    deno check host/demo.ts
+    deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o ../../docs/spike-demo/demo.js host/demo.ts
+    cp build/app.component.wasm build/app.plan.json ../../docs/spike-demo/
+    cp ../tasks-engine/target/composed.wasm ../../docs/spike-demo/engine.component.wasm
+    cp build/engine.plan.json ../../docs/spike-demo/
+    cp web/index.html ../../docs/spike-demo/
+    cp ../todomvc/web/todomvc-app.css ../../docs/spike-demo/

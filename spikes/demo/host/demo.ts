@@ -23,13 +23,24 @@ import {
   until,
 } from "./engine.ts";
 
-const RELAY = "http://127.0.0.1:3340";
+// Infra endpoints. Pages cannot host a relay or a bucket, so the demo
+// points at LOCAL infra by default (browsers treat 127.0.0.1 as
+// potentially trustworthy, so an https page may talk to it); override
+// via query params for self-hosted infra:
+//   ?relay=…&s3=…&bucket=…&access=…&secret=…
+const params = new URLSearchParams(location.search);
+const RELAY = params.get("relay") ?? "http://127.0.0.1:3340";
 const S3 = {
-  endpoint: "http://127.0.0.1:9000",
-  bucket: "pm-demo",
-  access: "minioadmin",
-  secret: "minioadmin",
+  endpoint: params.get("s3") ?? "http://127.0.0.1:9000",
+  bucket: params.get("bucket") ?? "pm-demo",
+  access: params.get("access") ?? "minioadmin",
+  secret: params.get("secret") ?? "minioadmin",
 };
+
+const INFRA_HELP = `this demo needs a local iroh relay (:3340) and MinIO (:9000):
+  git clone https://github.com/polymorph-components/polymorph-apps
+  cd polymorph-apps/spikes/tasks-engine && just minio && cd ../demo && just infra
+then reload this page (or pass ?relay=…&s3=… for your own infra).`;
 
 // --- artifacts -----------------------------------------------------------------
 
@@ -266,5 +277,10 @@ async function boot() {
 
 boot().catch((e) => {
   console.error(e);
-  document.getElementById("banner")!.textContent = `boot failed: ${err(e)} (see console)`;
+  const banner = document.getElementById("banner")!;
+  banner.textContent = `boot failed: ${err(e)}`;
+  const help = document.createElement("pre");
+  help.style.cssText = "margin:.5em 0 0; font-size:11px; color:#f5c16c; white-space:pre-wrap";
+  help.textContent = INFRA_HELP;
+  banner.appendChild(help);
 });
