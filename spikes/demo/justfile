@@ -38,3 +38,27 @@ infra:
 # Bring-up phases (Deno; needs `just infra` running for wire/bucket).
 bringup PHASE="solo": translate
     deno run -A host/bringup.ts {{PHASE}}
+
+# Build the app guest and translate both components.
+app:
+    cd guest-app && cargo build --release --target wasm32-unknown-unknown
+    wasm-tools component new \
+        guest-app/target/wasm32-unknown-unknown/release/demo_app_guest.wasm \
+        -o build/app.component.wasm
+    deno run --allow-read --allow-write tools/translate.ts \
+        build/app.component.wasm build/app.plan.json
+
+# Assemble the servable demo directory.
+site: translate app
+    mkdir -p serve
+    deno check host/demo.ts
+    deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/demo.js host/demo.ts
+    cp build/app.component.wasm build/app.plan.json serve/
+    cp ../tasks-engine/target/composed.wasm serve/engine.component.wasm
+    cp build/engine.plan.json serve/engine.plan.json
+    cp web/index.html serve/
+    cp ../todomvc/web/todomvc-app.css serve/
+
+# Serve the demo (needs `just infra` in another terminal).
+serve: site
+    deno run --allow-net --allow-read jsr:@std/http/file-server serve --port 8600

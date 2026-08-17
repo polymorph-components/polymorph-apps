@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>polymorph — end-to-end TodoMVC</title>
+  <link rel="stylesheet" href="./todomvc-app.css">
+  <style>
+    body { margin: 0; background: #f5f5f5; font: 14px 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    #banner { padding: .6em 1em; background: #1a1a2e; color: #eee; font-size: 13px; }
+    #controls { padding: .5em 1em; background: #16213e; color: #ccc; display: flex; gap: 1em; align-items: center; }
+    #controls button { padding: .3em .8em; }
+    #panes { display: flex; gap: 12px; padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .pane { flex: 1 1 340px; min-width: 320px; max-width: 560px; }
+    .pane h2 { margin: 0 0 4px; font-size: 15px; color: #333; font-weight: 600; }
+    .pane h2 small { color: #888; font-weight: 400; }
+    .pane .status { font-size: 11px; color: #777; margin: 4px 0; min-height: 2.4em;
+                    font-family: ui-monospace, monospace; word-break: break-all; }
+    .pane.revoked-mark h2 { color: #b03030; }
+    #bob-pane.revoked { opacity: .75; }
+    #bob-pane.revoked h2::after { content: " — revoked"; color: #b03030; }
+    .todoapp { margin: 0; }
+    .todoapp h1 { font-size: 40px; top: -40px; }
+    .new-todo, .edit { font-size: 18px; }
+    .todo-list li { font-size: 18px; }
+  </style>
+</head>
+<body>
+  <div id="banner">booting…</div>
+  <div id="controls">
+    <button id="bucket-sync" title="flush alice+tablet, pull tablet+alice">Sync via bucket</button>
+    <label><input type="checkbox" id="bucket-auto"> auto (3s)</label>
+    <button id="revoke-bob">Revoke Bob</button>
+    <span style="margin-left:auto; font-size:11px">
+      alice⇄bob: live (iroh relay) · tablet: bucket only (MinIO) · all E2E-encrypted (BeeKEM epochs)
+    </span>
+  </div>
+  <div id="panes">
+    <div class="pane" id="alice-pane">
+      <h2>Alice — laptop <small>wire hub + bucket owner</small></h2>
+      <div class="status" id="alice-status">…</div>
+      <div id="alice-app"></div>
+    </div>
+    <div class="pane" id="bob-pane">
+      <h2>Bob <small>collaborator, live relay</small></h2>
+      <div class="status" id="bob-status">…</div>
+      <div id="bob-app"></div>
+    </div>
+    <div class="pane" id="tablet-pane">
+      <h2>Alice — tablet <small>no connections, bucket only</small></h2>
+      <div class="status" id="tablet-status">…</div>
+      <div id="tablet-app"></div>
+    </div>
+  </div>
+  <script type="module" src="./demo.js"></script>
+</body>
+</html>

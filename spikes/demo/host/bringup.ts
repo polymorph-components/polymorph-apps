@@ -140,6 +140,27 @@ async function wire() {
       (await alice.tasks.items()).items.some((i) => i.title === "from bob"));
     step("bob → alice over the wire (transitive put authority)");
 
+    // Soak: revoke bob, keep every background loop running for 30s —
+    // the browser wedge suspect (post-revocation refused pulls + nudged
+    // keyhive re-syncs) reproduces here if it is engine-side.
+    if (Deno.args[1] === "soak") {
+      await alice.driver.khRevokeMember(part, bobId);
+      await alice.tasks.add("secret");
+      const t0 = performance.now();
+      let cycles = 0;
+      while (performance.now() - t0 < 30_000) {
+        await alice.tasks.items();
+        await bob.tasks.items().catch(() => {});
+        const h = await bob.driver.syncStart(aliceId, part, false);
+        await until("refused pull settles", () => bob.driver.syncStatus(h)).catch(() => {});
+        await pull("alice", alice, bobId).catch(() => {});
+        cycles++;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      console.log(`soak: ${cycles} cycles, no wedge; bob items:`,
+        (await bob.tasks.items()).items.length);
+    }
+
     console.log("\nWIRE PASS");
   } catch (e) {
     dumpOnFail([["alice", alice], ["bob", bob]]);

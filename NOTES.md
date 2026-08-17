@@ -682,12 +682,31 @@ declared otherwise (see the status note at the top).
   stable pairwise-DH story over rotating prekeys, #19/#10); the
   storage spike's dumb-store contract needed nothing new.   Remaining
   #19-scope items unchanged (R2/B2 quirks, TLS, GC/compaction,
-  credential rotation, Drive provider). **G5 executed 2026-08-16 and
+  credential rotation, Drive provider).   **G5 executed 2026-08-16 and
   passed** (same spike): the identity-bundle/keyslot design (see §Key
   lifecycle, "The identity bundle and unlock spectrum") — export with
   argon2id-passphrase + PRF-shaped slots, wrong passphrase refused,
   restart from bundle + bucket alone, restored device authors and the
-  tablet accepts (8 tasks end state).
+  tablet accepts (8 tasks end state). **G6+G7 executed 2026-08-17 and
+  passed** ([spikes/demo/](spikes/demo/README.md)): the end-to-end
+  TodoMVC demo — the SAME engine composite translated (~200 ms) and
+  instantiated (~30–50 ms) under deltic **in the browser**, three panes
+  (alice laptop, bob live over the iroh websocket relay, alice tablet
+  bucket-only with zero connections), the todomvc surface guest's model
+  swapped to `polymorph-data:tasks` with the app's import wired
+  directly to the engine instance's export, every demo beat driven
+  through the real UIs: three-replica convergence over both sync
+  paths, tablet cold boot + cold authoring, live revocation (bob holds
+  ciphertext he cannot decrypt — `undecryptable: 1` visible in-page —
+  while the tablet rides the rotation). Findings recorded in the spike
+  README: deltic 0.1.0 embedder-convention renames vs the sibling
+  ports' stale pins (websocket port vendored+migrated; upstream
+  migration owed), browser bundling needs the webrtc node backend
+  externalized, the first-sync policy race reproduces at browser
+  timings (gate on kh-knows-agent(doc)), one observed
+  subscription-push miss (bounded by reconciliation pulls; Deno soak
+  clean — upstream repro owed), background driver calls serialized
+  page-wide after an overlap freeze.
 - **Topology leaning: one engine composite, one keyhive instance.**
   `subduction_keyhive` is an in-process wrapper that *holds* the
   `Keyhive` instance, implementing subduction's connection/storage
