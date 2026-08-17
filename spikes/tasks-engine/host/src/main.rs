@@ -1,0 +1,466 @@
+//! Engine-spike host: three engine instances — Alice's laptop and phone
+//! (device stand-in: both direct members) and Bob (collaborator) — over
+//! iroh, exercising the tasks data service on the automerge change DAG.
+//!
+//! Asserts: creation → members (edit) → seal ordering; convergence of the
+//! task list across all three; a genuine concurrency fork (laptop and
+//! phone author from the same frontier) merged by a later change (a chunk
+//! with two parents exists); collaborator edits propagate; revocation cuts
+//! Bob off from new epochs while laptop and phone ride the rotation.
+
+use std::path::PathBuf;
+use std::time::Instant;
+
+use polymorph_webcrypto_wasmtime::{WasiWebcryptoCtx, WasiWebcryptoCtxView, WasiWebcryptoView};
+use wasmtime::component::{Accessor, Component, HasData, Linker, ResourceTable};
+use wasmtime::error::Context as _;
+use wasmtime::{bail, format_err, Config, Engine, Result, Store};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_webrtc_datachannels::{self as webrtc_host, WebrtcCtx, WebrtcCtxView, WebrtcView};
+use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketView};
+
+mod bindings {
+    wasmtime::component::bindgen!({
+        path: "../guest/wit",
+        world: "spike",
+        imports: {
+            default: async | store | trappable,
+        },
+        exports: {
+            default: async,
+        },
+    });
+}
+
+use bindings::exports::polymorph::engine_spike::driver::Guest as Driver;
+use bindings::exports::polymorph_data::tasks::tasks::{Guest as Tasks, TodoItem};
+
+struct Ctx {
+    wasi: WasiCtx,
+    webcrypto: WasiWebcryptoCtx,
+    websocket: WasiWebsocketCtx,
+    webrtc: WebrtcCtx,
+    table: ResourceTable,
+}
+
+impl HasData for Ctx {
+    type Data<'a> = &'a mut Self;
+}
+
+impl WasiView for Ctx {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiWebcryptoView for Ctx {
+    fn webcrypto(&mut self) -> WasiWebcryptoCtxView<'_> {
+        WasiWebcryptoCtxView {
+            ctx: &mut self.webcrypto,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiWebsocketView for Ctx {
+    fn websocket(&mut self) -> WasiWebsocketCtxView<'_> {
+        WasiWebsocketCtxView {
+            ctx: &mut self.websocket,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WebrtcView for Ctx {
+    fn webrtc(&mut self) -> WebrtcCtxView<'_> {
+        WebrtcCtxView {
+            ctx: &mut self.webrtc,
+            table: &mut self.table,
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    let path = args
+        .next()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/composed.wasm"));
+    let mut relay = "http://127.0.0.1:3340".to_string();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--relay" => relay = args.next().ok_or_else(|| format_err!("--relay needs a URL"))?,
+            other => bail!("unknown argument {other}"),
+        }
+    }
+
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.wasm_component_model_async(true);
+    let engine = Engine::new(&config)?;
+
+    let component = Component::from_file(&engine, &path)
+        .with_context(|| format!("loading component {}", path.display()))?;
+
+    let mut linker: Linker<Ctx> = Linker::new(&engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
+    polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
+    wasmtime_websocket::add_to_linker(&mut linker)?;
+    webrtc_host::add_to_linker(&mut linker)?;
+
+    let mut store = Store::new(
+        &engine,
+        Ctx {
+            wasi: WasiCtxBuilder::new().inherit_stdout().inherit_stderr().build(),
+            webcrypto: WasiWebcryptoCtx::new(),
+            websocket: WasiWebsocketCtx::new(),
+            webrtc: WebrtcCtx::new(),
+            table: ResourceTable::new(),
+        },
+    );
+
+    let t0 = Instant::now();
+    let laptop = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
+    let phone = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
+    let bob = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
+    println!("[{:>9.2?}] instantiated laptop + phone + bob", t0.elapsed());
+
+    store
+        .run_concurrent(async move |acc| scenario(acc, laptop, phone, bob, relay).await)
+        .await?
+}
+
+macro_rules! step {
+    ($label:expr, $call:expr) => {{
+        let t = Instant::now();
+        let out = $call
+            .await?
+            .map_err(|e| format_err!("{}: {e}", $label))?;
+        println!("[{:>9.2?}] {}", t.elapsed(), $label);
+        out
+    }};
+}
+
+/// Establish an iroh wire between two instances (initiator ← acceptor) and
+/// wait for the subduction handshake on both ends.
+async fn connect(
+    acc: &Accessor<Ctx>,
+    initiator: (&Driver, &str, &[u8]),
+    acceptor: (&Driver, &str, &str),
+    relay: &str,
+) -> Result<()> {
+    let (ini, ini_name, acceptor_sd_id) = initiator;
+    let (acp, acp_name, acp_endpoint) = acceptor;
+    let ep_bytes = hex::decode(acp_endpoint).map_err(|e| format_err!("{e}"))?;
+    let ca = acp
+        .call_iroh_start(acc, false, vec![], relay.to_string(), vec![])
+        .await?
+        .map_err(|e| format_err!("{acp_name} accept: {e}"))?;
+    let cb = ini
+        .call_iroh_start(acc, true, ep_bytes, relay.to_string(), acceptor_sd_id.to_vec())
+        .await?
+        .map_err(|e| format_err!("{ini_name} connect: {e}"))?;
+    let t = Instant::now();
+    let (mut a, mut b) = (None, None);
+    for _ in 0..2000 {
+        if a.is_none() {
+            a = ini
+                .call_conn_status(acc, cb)
+                .await?
+                .map_err(|e| format_err!("{ini_name} handshake: {e}"))?;
+        }
+        if b.is_none() {
+            b = acp
+                .call_conn_status(acc, ca)
+                .await?
+                .map_err(|e| format_err!("{acp_name} handshake: {e}"))?;
+        }
+        if a.is_some() && b.is_some() {
+            println!(
+                "[{:>9.2?}] wire up: {ini_name} <-> {acp_name}",
+                t.elapsed()
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    }
+    bail!("wire {ini_name}<->{acp_name} did not come up")
+}
+
+/// Poll a tasks view until `want` returns true for the snapshot. Errors are
+/// treated as not-ready (e.g. epoch material still in flight on the bridge)
+/// but remembered for the timeout report.
+async fn wait_items(
+    acc: &Accessor<Ctx>,
+    t: &Tasks,
+    what: &str,
+    want: impl Fn(&[TodoItem]) -> bool,
+) -> Result<Vec<TodoItem>> {
+    let start = Instant::now();
+    let mut last_err = None;
+    for _ in 0..2000 {
+        match t.call_items(acc).await? {
+            Ok(snap) => {
+                if want(&snap.items) {
+                    println!("[{:>9.2?}] {what}", start.elapsed());
+                    return Ok(snap.items);
+                }
+            }
+            Err(e) => last_err = Some(e),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    bail!("{what}: condition never held (last error: {last_err:?})")
+}
+
+/// Generated WIT records don't derive PartialEq; compare by content.
+fn same(a: &[TodoItem], b: &[TodoItem]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.id == y.id && x.title == y.title && x.completed == y.completed)
+}
+
+fn render(items: &[TodoItem]) -> String {
+    items
+        .iter()
+        .map(|i| {
+            format!(
+                "[{}] {}",
+                if i.completed { "x" } else { " " },
+                i.title
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+async fn scenario(
+    acc: &Accessor<Ctx>,
+    laptop: bindings::Spike,
+    phone: bindings::Spike,
+    bob: bindings::Spike,
+    relay: String,
+) -> Result<()> {
+    let l: &Driver = laptop.polymorph_engine_spike_driver();
+    let p: &Driver = phone.polymorph_engine_spike_driver();
+    let b: &Driver = bob.polymorph_engine_spike_driver();
+    let lt: &Tasks = laptop.polymorph_data_tasks_tasks();
+    let pt: &Tasks = phone.polymorph_data_tasks_tasks();
+    let bt: &Tasks = bob.polymorph_data_tasks_tasks();
+
+    // 1. Identities; hub topology (laptop is the hub).
+    let l_id = step!("laptop.init", l.call_init(acc));
+    let p_id = step!("phone.init ", p.call_init(acc));
+    let b_id = step!("bob.init   ", b.call_init(acc));
+    let l_id_bytes = hex::decode(&l_id).map_err(|e| format_err!("{e}"))?;
+    let p_id_bytes = hex::decode(&p_id).map_err(|e| format_err!("{e}"))?;
+    let b_id_bytes = hex::decode(&b_id).map_err(|e| format_err!("{e}"))?;
+
+    let _l_ep = step!("laptop.iroh-bind", l.call_iroh_bind(acc, relay.clone()));
+    let p_ep = step!("phone.iroh-bind ", p.call_iroh_bind(acc, relay.clone()));
+    let b_ep = step!("bob.iroh-bind   ", b.call_iroh_bind(acc, relay.clone()));
+
+    connect(acc, (l, "laptop", &p_id_bytes), (p, "phone", p_ep.as_str()), &relay).await?;
+    connect(acc, (l, "laptop", &b_id_bytes), (b, "bob", b_ep.as_str()), &relay).await?;
+
+    // Contact cards travel over the bridge.
+    let t = Instant::now();
+    let mut known = false;
+    for _ in 0..2000 {
+        let kp = l
+            .call_kh_knows_peer(acc, p_id_bytes.clone())
+            .await?
+            .map_err(|e| format_err!("{e}"))?;
+        let kb = l
+            .call_kh_knows_peer(acc, b_id_bytes.clone())
+            .await?
+            .map_err(|e| format_err!("{e}"))?;
+        if kp && kb {
+            known = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    }
+    if !known {
+        bail!("contact cards did not propagate");
+    }
+    println!("[{:>9.2?}] contact cards exchanged over the bridge", t.elapsed());
+
+    // 2. Partition lifecycle: create → add members (edit) → seal.
+    let part = step!("laptop.create-partition", l.call_create_partition(acc));
+    step!(
+        "laptop.kh-add-member(phone, edit)",
+        l.call_kh_add_member(acc, part.clone(), p_id_bytes.clone(), "edit".into())
+    );
+    step!(
+        "laptop.kh-add-member(bob, edit)",
+        l.call_kh_add_member(acc, part.clone(), b_id_bytes.clone(), "edit".into())
+    );
+    step!("laptop.seal-partition", l.call_seal_partition(acc, part.clone()));
+    step!("phone.adopt-partition", p.call_adopt_partition(acc, part.clone()));
+    step!("bob.adopt-partition  ", b.call_adopt_partition(acc, part.clone()));
+
+    // Members subscribe to the hub.
+    for (d, name) in [(p, "phone"), (b, "bob")] {
+        let h = d
+            .call_sync_start(acc, l_id_bytes.clone(), part.clone(), true)
+            .await?
+            .map_err(|e| format_err!("{name} sync-start: {e}"))?;
+        let t = Instant::now();
+        loop {
+            match d.call_sync_status(acc, h).await? {
+                Ok(Some(summary)) => {
+                    println!("[{:>9.2?}] {name} first sync: {summary}", t.elapsed());
+                    break;
+                }
+                Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(3)).await,
+                Err(e) => bail!("{name} sync: {e}"),
+            }
+        }
+    }
+    // The hub subscribes back so member-authored chunks flow to it.
+    for (id, name) in [(p_id_bytes.clone(), "phone"), (b_id_bytes.clone(), "bob")] {
+        let h = l
+            .call_sync_start(acc, id, part.clone(), true)
+            .await?
+            .map_err(|e| format_err!("laptop sync-start({name}): {e}"))?;
+        loop {
+            match l.call_sync_status(acc, h).await? {
+                Ok(Some(_)) => break,
+                Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(3)).await,
+                Err(e) => bail!("laptop sync({name}): {e}"),
+            }
+        }
+    }
+
+    // Wait until both members can decrypt the creation chunk (revision 1).
+    // This proves the bridge delivered doc membership + epoch material, so
+    // subsequent subscription pushes pass the members' policy checks — a
+    // push rejected by a not-yet-informed policy is not redelivered.
+    for (t, name) in [(pt, "phone"), (bt, "bob")] {
+        let start = Instant::now();
+        let mut ok = false;
+        for _ in 0..2000 {
+            let rev = t
+                .call_revision(acc)
+                .await?
+                .map_err(|e| format_err!("{name} revision: {e}"))?;
+            if rev >= 1 {
+                println!(
+                    "[{:>9.2?}] {name} decrypted the creation chunk (revision {rev})",
+                    start.elapsed()
+                );
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        if !ok {
+            bail!("{name} never decrypted the creation chunk");
+        }
+    }
+
+    // 3. Tasks flow: laptop authors two.
+    let milk = step!("laptop.tasks.add('buy milk')", lt.call_add(acc, "buy milk".into()));
+    let _demo = step!(
+        "laptop.tasks.add('write demo')",
+        lt.call_add(acc, "write demo".into())
+    );
+    let items = wait_items(acc, pt, "phone sees both tasks", |i| i.len() == 2).await?;
+    println!("            phone: {}", render(&items));
+    wait_items(acc, bt, "bob sees both tasks", |i| i.len() == 2).await?;
+
+    // 4. A real concurrency fork: phone toggles while laptop adds, both
+    // from the same frontier; sync merges; phone's next change has two
+    // parents.
+    step!(
+        "phone.tasks.set-completed('buy milk') [concurrent]",
+        pt.call_set_completed(acc, milk.clone(), true)
+    );
+    step!(
+        "laptop.tasks.add('laptop task') [concurrent]",
+        lt.call_add(acc, "laptop task".into())
+    );
+    wait_items(acc, pt, "phone converged on fork", |i| {
+        i.len() == 3 && i.iter().any(|x| x.title == "buy milk" && x.completed)
+    })
+    .await?;
+    step!(
+        "phone.tasks.add('phone task') [merges the fork]",
+        pt.call_add(acc, "phone task".into())
+    );
+
+    let want4 = |i: &[TodoItem]| {
+        i.len() == 4 && i.iter().any(|x| x.title == "buy milk" && x.completed)
+    };
+    let li = wait_items(acc, lt, "laptop converged (4 tasks)", want4).await?;
+    let pi = wait_items(acc, pt, "phone converged (4 tasks)", want4).await?;
+    let bi = wait_items(acc, bt, "bob converged (4 tasks)", want4).await?;
+    if !same(&li, &pi) || !same(&pi, &bi) {
+        bail!("replicas diverged:\n  laptop {li:?}\n  phone {pi:?}\n  bob {bi:?}");
+    }
+    println!("            all: {}", render(&li));
+
+    let (chunks, max_parents) = step!("laptop.chunk-stats", l.call_chunk_stats(acc, part.clone()));
+    println!("            chunks={chunks}, max-parents={max_parents}");
+    if max_parents < 2 {
+        bail!("expected a merge chunk with >= 2 parents (the DAG assertion)");
+    }
+
+    // 5. Collaborator edit propagates.
+    let demo_id = bi
+        .iter()
+        .find(|x| x.title == "write demo")
+        .map(|x| x.id.clone())
+        .ok_or_else(|| format_err!("bob lost 'write demo'"))?;
+    step!(
+        "bob.tasks.set-completed('write demo')",
+        bt.call_set_completed(acc, demo_id, true)
+    );
+    wait_items(acc, lt, "laptop sees bob's toggle", |i| {
+        i.iter().any(|x| x.title == "write demo" && x.completed)
+    })
+    .await?;
+
+    // 6. Revocation: bob is cut off from the new epoch; devices ride it.
+    step!(
+        "laptop.kh-revoke-member(bob)",
+        l.call_kh_revoke_member(acc, part.clone(), b_id_bytes.clone())
+    );
+    step!(
+        "laptop.tasks.add('secret task') [post-revocation]",
+        lt.call_add(acc, "secret task".into())
+    );
+    wait_items(acc, pt, "phone sees the post-revocation task (rode the rotation)", |i| {
+        i.len() == 5 && i.iter().any(|x| x.title == "secret task")
+    })
+    .await?;
+
+    // Bob must never see it: give propagation a grace window, then assert.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let snap = bt
+        .call_items(acc)
+        .await?
+        .map_err(|e| format_err!("bob items: {e}"))?;
+    if snap.items.iter().any(|x| x.title == "secret task") {
+        bail!("REVOCATION FAILURE: bob sees the secret task");
+    }
+    if snap.items.len() != 4 {
+        bail!("bob's view changed unexpectedly: {:?}", snap.items);
+    }
+    let b_stats = b.call_stats(acc).await?;
+    println!("            bob still sees 4 tasks; {b_stats}");
+
+    for (name, d) in [("laptop", l), ("phone", p)] {
+        let s = d.call_stats(acc).await?;
+        println!("{name}: {s}");
+    }
+    println!("\nSPIKE PASSED");
+    Ok(())
+}

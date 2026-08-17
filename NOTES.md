@@ -615,9 +615,33 @@ declared otherwise (see the status note at the top).
   and **the two upstreams version-skew** (the bridge pins released
   keyhive, which predates the BeeKEM ratcheting change; a
   `[patch.crates-io]` onto the git rev compiled clean — pin keyhive and
-  subduction as a *pair*). The bridge also assumes the identity
+  subduction as a *pair*).   The bridge also assumes the identity
   unification (peer id = 32-byte verifying key = keyhive identifier),
-  confirming the one-key-per-device design.
+  confirming the one-key-per-device design. (4) The engine spike
+  (#20 G1+G2). **Executed 2026-08-16 and passed**
+  ([spikes/tasks-engine/](spikes/tasks-engine/README.md)): the
+  skeleton's content spine generalized to the real automerge change
+  DAG — chunk = one automerge change, cref = its `ChangeHash`, chunk
+  parents = the change's `deps()` = keyhive pred-refs = sedimentree
+  parents, one DAG across all three layers — with the first data
+  service, `polymorph-data:tasks@0.1.0`, served from inside the engine
+  composite (demo-v1 topology). Three instances (two devices + a
+  collaborator) over a real relay: a genuine concurrency fork merges
+  (a chunk with two parents exists), replicas converge, a revoked
+  member is crypto-excluded while a remaining member rides the
+  rotation in ~100 ms. Two integration findings:
+  **`KeyhiveProtocol`'s event cache must be refreshed after locally
+  created ops** (`sync_keyhive` serves a `PeriodicEventCache` once one
+  exists; upstream's runtime refreshes on an interval — embedders that
+  skip the runtime must `refresh_cache()` before syncing or every
+  post-cache local op, e.g. the post-revocation rotation, is silently
+  never offered to peers), and **one-shot bridge syncs need a retry
+  discipline** (the spike re-syncs from read polls that find
+  themselves waiting; upstream intends a periodic loop). With the
+  cache refreshed, the post-revocation ciphertext did *not* reach the
+  revoked subscriber — the 3b "subscriptions bypass the pull gate"
+  observation is timing-dependent, not unconditional (context for the
+  #17 draft).
 - **Topology leaning: one engine composite, one keyhive instance.**
   `subduction_keyhive` is an in-process wrapper that *holds* the
   `Keyhive` instance, implementing subduction's connection/storage

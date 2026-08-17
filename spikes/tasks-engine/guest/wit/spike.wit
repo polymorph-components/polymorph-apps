@@ -1,0 +1,57 @@
+package polymorph:engine-spike@0.1.0;
+
+/// The engine spike (#20 G2): the walking skeleton's content spine
+/// generalized from a linear chain to the real automerge change DAG, with
+/// the `polymorph-data:tasks` service served from inside the engine
+/// composite (demo-v1 topology). Chunk identity = automerge ChangeHash;
+/// chunk parents = the change's deps = keyhive predecessor refs =
+/// sedimentree parents — one DAG across all three layers.
+interface driver {
+    /// One webcrypto identity backing keyhive and subduction; both layers
+    /// built, tasks service ready to bind a partition. Returns the id, hex.
+    init: async func() -> result<string, string>;
+
+    // --- keyhive membership (synced by the bridge over the wire) ---
+
+    kh-knows-peer: async func(peer-id: list<u8>) -> result<bool, string>;
+    /// `level` is one of "read", "edit", "admin" (authors need "edit":
+    /// subduction's put policy requires it).
+    kh-add-member: async func(doc-id: list<u8>, peer-id: list<u8>, level: string) -> result<_, string>;
+    kh-revoke-member: async func(doc-id: list<u8>, peer-id: list<u8>) -> result<_, string>;
+
+    // --- the iroh wire + subduction sync (from the skeleton) ---
+
+    iroh-bind: async func(relay-url: string) -> result<string, string>;
+    iroh-start: async func(initiator: bool, peer-endpoint-id: list<u8>, relay-url: string, expected-peer: list<u8>) -> result<u32, string>;
+    conn-status: async func(conn: u32) -> result<option<string>, string>;
+    sync-start: async func(peer: list<u8>, tree: list<u8>, subscribe: bool) -> result<u32, string>;
+    sync-status: async func(handle: u32) -> result<option<string>, string>;
+
+    // --- partition lifecycle (the create → add members → seal ordering
+    // --- is load-bearing: epoch membership at seal time determines
+    // --- readability) ---
+
+    /// Create the partition: keyhive doc + the automerge creation change
+    /// (the todos map), held UNSEALED so members can be added first.
+    create-partition: async func() -> result<list<u8>, string>;
+
+    /// Encrypt and commit the pending creation change under the current
+    /// epoch, and bind the tasks service to this partition.
+    seal-partition: async func(id: list<u8>) -> result<_, string>;
+
+    /// Bind the tasks service to a partition this instance did not create
+    /// (members receive everything through sync).
+    adopt-partition: async func(id: list<u8>) -> result<_, string>;
+
+    /// DAG evidence: (chunks known, max parent count over chunks).
+    chunk-stats: async func(id: list<u8>) -> result<tuple<u32, u32>, string>;
+
+    stats: async func() -> string;
+}
+
+world spike {
+    import polymorph:iroh/endpoint@0.1.0;
+    import polymorph:iroh/identity-generate@0.1.0;
+    export driver;
+    export polymorph-data:tasks/tasks@0.1.0;
+}
