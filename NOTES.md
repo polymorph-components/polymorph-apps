@@ -178,26 +178,78 @@ Static-only dividends worth actively exploiting:
 Positioned as supply-chain hygiene and publisher/host separation — not
 as the trust-model foundation (the origin is trusted; see above).
 
-The cheap discipline: the **bootloader shape**. Nearly everything
+**The bootloader shape, refined to a constant root.** Recorded
+2026-08-17 from design discussion; leaning, not ruling; tracked in
+[#3](../../issues/3), writeup on the thread. Nearly everything
 content-addressed and immutable (hash-named assets,
-`Cache-Control: immutable`); a single tiny mutable root (entry HTML +
-SW registration) that changes only on release. Optionally the root
-verifies a signed release manifest before activating cached assets.
-The verification is circular — the verifier arrives from the same
-origin — which is acceptable under the trust statement; the discipline
-still pays because the *practical* attack surface becomes a ~2KB
-diffable, monitorable bootstrap.
+`Cache-Control: immutable`). The founding sketch had a single tiny
+mutable root changing per release; the refinement makes the root
+**constant**: a trivial entry HTML (registers the SW, nothing else)
+plus a bootstrap service worker, both immutable-forever in the honest
+case. The SW embeds the publisher root keys, fetches a small mutable
+**signed release manifest**, verifies it via WebCrypto (Ed25519 +
+SHA-256 — no crypto code frozen into the bootstrap), fills the Cache
+API with content-addressed assets verified at cache-fill time, and
+serves everything — including navigations, so post-install even the
+entry HTML comes from verified cache — at real URLs with real headers
+(correct wasm MIME for streaming compilation, strict CSP with no
+eval/blob loading; execution semantics stay boring). A release ships
+new assets plus a new signed manifest; the root files never change.
+Floor note: two files, not one — a SW must be a same-origin
+URL-addressed script registered from a document, so the HTML shell can
+only be made trivial enough to inline-audit, not eliminated.
 
-Signed releases additionally separate the **framework publisher** from
-the **origin operator**: users trust the project, then pick any host.
-Detection (not prevention) options that stack on top, roughly in order
+What it buys: the canary predicate for every monitor collapses to a
+**constant** — "this origin serves digest X at these two URLs,
+forever" — instead of a moving target tracked against a release feed;
+any root change is prima facie compromise or a rare, loud, signed
+bootstrap upgrade. And publisher/host separation gets teeth: in the
+honest-root case the **publisher key gates what code runs**; an origin
+operator deploys releases but cannot author them. Users trust the
+project, then pick any host.
+
+What it cannot buy, stated plainly: **the web platform has no pinning
+primitive**. SW registration takes no integrity metadata (no SRI for
+SW scripts), and the browser's SW update check fetches the script
+directly, bypassing the SW's own fetch handler by spec — a compromised
+origin ships a replacement bootstrap within ~24h or next navigation.
+First visit and post-eviction are TOFU from the origin. The founding
+sketch's circularity acknowledgment therefore stands: this is
+detection-shaped, not prevention-shaped, and acceptable under the
+trust statement. Detection layers that stack on top, roughly in order
 of cost: CT-log monitoring of origin certs; third-party monitors
-fetching origins and comparing to published release hashes; peers
-gossiping release hashes over iroh (targeted delivery becomes
-detectable by cross-checking with contacts); an optional verification
-extension (the Code Verify precedent). Isolated Web Apps (Chromium
-signed web bundles) are the real install-time fix but sacrifice
-cross-platform PWA delivery — a possible future tier, not the baseline.
+comparing origins to the pinned root digests (now a constant check);
+peers gossiping (release version, root digest) over iroh — targeted
+delivery, freezes, and rollbacks become detectable by cross-checking
+with contacts; an optional verification extension (the Code Verify
+precedent — cheaper here, pinning two constant hashes rather than
+tracking releases). Isolated Web Apps (Chromium signed web bundles)
+are the real install-time fix but sacrifice cross-platform PWA
+delivery — a possible future tier, not the baseline.
+
+The hard sub-problems, named (crib TUF's role structure rather than
+re-derive it):
+
+- **Rollback**: signatures alone admit replay of an old signed
+  manifest; the SW persists a monotonic release version and hard-fails
+  on regression.
+- **Freshness**: advisory only — hard manifest expiry would brick
+  offline use, which local-first exists to serve. Staleness warnings
+  plus the multi-device gossip cross-check ("your origin served v37,
+  mine saw v42") cover targeted freezes.
+- **Root rotation inside a never-changing file**: embed k-of-n root
+  keys and accept TUF-style signed root-rotation chains from the
+  baked-in set — otherwise key loss is pin suicide (the HPKP lesson)
+  and key compromise forces the alarm event.
+- **Eviction = re-TOFU**: storage eviction (see
+  [Key lifecycle](#key-lifecycle)) silently wipes the rollback counter
+  and verified cache; detect and surface the downgrade, never paper
+  over it.
+- **Frozen bugs**: every bootstrap bug lives until a root change — the
+  exact event monitors alarm on. The bootstrap stays tiny,
+  dependency-free, and format-versioned from day one, with a defined
+  loud upgrade path: a new root signed by the root chain, so monitors
+  verify continuity rather than merely noticing change.
 
 ## Origin topology
 
