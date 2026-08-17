@@ -40,11 +40,22 @@ struct Ctx {
     webcrypto: WasiWebcryptoCtx,
     websocket: WasiWebsocketCtx,
     webrtc: WebrtcCtx,
+    http: wasmtime_wasi_http::WasiHttpCtx,
     table: ResourceTable,
 }
 
 impl HasData for Ctx {
     type Data<'a> = &'a mut Self;
+}
+
+impl wasmtime_wasi_http::p3::WasiHttpView for Ctx {
+    fn http(&mut self) -> wasmtime_wasi_http::p3::WasiHttpCtxView<'_> {
+        wasmtime_wasi_http::p3::WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: wasmtime_wasi_http::p3::default_hooks(),
+        }
+    }
 }
 
 impl WasiView for Ctx {
@@ -91,12 +102,28 @@ async fn main() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/composed.wasm"));
     let mut relay = "http://127.0.0.1:3340".to_string();
+    let mut endpoint = "http://127.0.0.1:9000".to_string();
+    let mut bucket = "pm-tasks-spike".to_string();
+    let mut access = "minioadmin".to_string();
+    let mut secret = "minioadmin".to_string();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--relay" => relay = args.next().ok_or_else(|| format_err!("--relay needs a URL"))?,
+            "--endpoint" => {
+                endpoint = args.next().ok_or_else(|| format_err!("--endpoint needs a URL"))?
+            }
+            "--bucket" => bucket = args.next().ok_or_else(|| format_err!("--bucket needs a name"))?,
+            "--access" => access = args.next().ok_or_else(|| format_err!("--access needs a key"))?,
+            "--secret" => secret = args.next().ok_or_else(|| format_err!("--secret needs a key"))?,
             other => bail!("unknown argument {other}"),
         }
     }
+    let s3 = S3Args {
+        endpoint,
+        bucket,
+        access,
+        secret,
+    };
 
     let mut config = Config::new();
     config.wasm_component_model(true);
@@ -109,6 +136,7 @@ async fn main() -> Result<()> {
     let mut linker: Linker<Ctx> = Linker::new(&engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
+    wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
     wasmtime_websocket::add_to_linker(&mut linker)?;
     webrtc_host::add_to_linker(&mut linker)?;
@@ -120,6 +148,7 @@ async fn main() -> Result<()> {
             webcrypto: WasiWebcryptoCtx::new(),
             websocket: WasiWebsocketCtx::new(),
             webrtc: WebrtcCtx::new(),
+            http: wasmtime_wasi_http::WasiHttpCtx::new(),
             table: ResourceTable::new(),
         },
     );
@@ -128,11 +157,22 @@ async fn main() -> Result<()> {
     let laptop = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
     let phone = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
     let bob = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
-    println!("[{:>9.2?}] instantiated laptop + phone + bob", t0.elapsed());
+    let tablet = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
+    println!(
+        "[{:>9.2?}] instantiated laptop + phone + bob + tablet",
+        t0.elapsed()
+    );
 
     store
-        .run_concurrent(async move |acc| scenario(acc, laptop, phone, bob, relay).await)
+        .run_concurrent(async move |acc| scenario(acc, laptop, phone, bob, tablet, relay, s3).await)
         .await?
+}
+
+struct S3Args {
+    endpoint: String,
+    bucket: String,
+    access: String,
+    secret: String,
 }
 
 macro_rules! step {
@@ -245,22 +285,29 @@ async fn scenario(
     laptop: bindings::Spike,
     phone: bindings::Spike,
     bob: bindings::Spike,
+    tablet: bindings::Spike,
     relay: String,
+    s3: S3Args,
 ) -> Result<()> {
     let l: &Driver = laptop.polymorph_engine_spike_driver();
     let p: &Driver = phone.polymorph_engine_spike_driver();
     let b: &Driver = bob.polymorph_engine_spike_driver();
+    let tb: &Driver = tablet.polymorph_engine_spike_driver();
     let lt: &Tasks = laptop.polymorph_data_tasks_tasks();
     let pt: &Tasks = phone.polymorph_data_tasks_tasks();
     let bt: &Tasks = bob.polymorph_data_tasks_tasks();
+    let tt: &Tasks = tablet.polymorph_data_tasks_tasks();
 
-    // 1. Identities; hub topology (laptop is the hub).
+    // 1. Identities; hub topology (laptop is the wire hub). The TABLET
+    // never binds, never connects: it will live entirely off the bucket.
     let l_id = step!("laptop.init", l.call_init(acc));
     let p_id = step!("phone.init ", p.call_init(acc));
     let b_id = step!("bob.init   ", b.call_init(acc));
+    let t_id = step!("tablet.init", tb.call_init(acc));
     let l_id_bytes = hex::decode(&l_id).map_err(|e| format_err!("{e}"))?;
     let p_id_bytes = hex::decode(&p_id).map_err(|e| format_err!("{e}"))?;
     let b_id_bytes = hex::decode(&b_id).map_err(|e| format_err!("{e}"))?;
+    let t_id_bytes = hex::decode(&t_id).map_err(|e| format_err!("{e}"))?;
 
     let _l_ep = step!("laptop.iroh-bind", l.call_iroh_bind(acc, relay.clone()));
     let p_ep = step!("phone.iroh-bind ", p.call_iroh_bind(acc, relay.clone()));
@@ -294,11 +341,27 @@ async fn scenario(
 
     // 2. Users are groups of devices (G3, #10's minimal slice).
     // Alice: laptop creates her user group and enrolls the phone (its
-    // contact card arrived over the bridge). Bob: his own user group.
+    // contact card arrived over the bridge) and the tablet (its card is
+    // pasted — it has no wire). Bob: his own user group.
     let alice_g = step!("laptop.kh-create-group (user 'alice')", l.call_kh_create_group(acc));
     step!(
         "laptop.kh-add-to-group(phone, edit) [enrollment]",
         l.call_kh_add_to_group(acc, alice_g.clone(), p_id_bytes.clone(), "edit".into())
+    );
+    let tablet_card = step!("tablet.kh-contact-card [QR paste]", tb.call_kh_contact_card(acc));
+    step!(
+        "laptop.kh-ingest-contact(tablet)",
+        l.call_kh_ingest_contact(acc, tablet_card)
+    );
+    step!(
+        "laptop.kh-add-to-group(tablet, edit) [enrollment, wireless]",
+        l.call_kh_add_to_group(acc, alice_g.clone(), t_id_bytes.clone(), "edit".into())
+    );
+    // The tablet needs the owner's contact card for the K_p prekey DH.
+    let laptop_card = step!("laptop.kh-contact-card", l.call_kh_contact_card(acc));
+    step!(
+        "tablet.kh-ingest-contact(laptop)",
+        tb.call_kh_ingest_contact(acc, laptop_card)
     );
     let bob_g = step!("bob.kh-create-group (user 'bob')", b.call_kh_create_group(acc));
 
@@ -324,9 +387,14 @@ async fn scenario(
     // cards inside a doc the user's devices share.)
     let pending_p = step!(
         "phone.kh-ingest-card(bob-group)",
-        p.call_kh_ingest_card(acc, bob_card)
+        p.call_kh_ingest_card(acc, bob_card.clone())
     );
     println!("            events pending after ingest (phone): {pending_p}");
+    let pending_t = step!(
+        "tablet.kh-ingest-card(bob-group)",
+        tb.call_kh_ingest_card(acc, bob_card)
+    );
+    println!("            events pending after ingest (tablet): {pending_t}");
     // Contact exchange is mutual: bob gets Alice's card (her individual
     // reaches alice-group, so the card carries the group's ops).
     let alice_card = step!(
@@ -371,6 +439,7 @@ async fn scenario(
     step!("laptop.seal-partition", l.call_seal_partition(acc, part.clone()));
     step!("phone.adopt-partition", p.call_adopt_partition(acc, part.clone()));
     step!("bob.adopt-partition  ", b.call_adopt_partition(acc, part.clone()));
+    step!("tablet.adopt-partition", tb.call_adopt_partition(acc, part.clone()));
 
     // Members subscribe to the hub.
     for (d, name) in [(p, "phone"), (b, "bob")] {
@@ -494,22 +563,119 @@ async fn scenario(
     })
     .await?;
 
-    // 7. Revocation, flavor 1 — collaborator: revoke BOB'S GROUP from the
-    // doc. Bob is cut off from the new epoch; Alice's devices ride it.
+    // 6. The bucket path (G4): the same envelope bytes, a second sync
+    // surface. Laptop configures the store and grants K_p to every
+    // member individual; the TABLET — which has never touched the wire —
+    // cold-boots from the bucket alone.
+    for (d, name, ak, sk) in [
+        (l, "laptop", s3.access.as_str(), s3.secret.as_str()),
+        (p, "phone ", s3.access.as_str(), s3.secret.as_str()),
+        (tb, "tablet", s3.access.as_str(), s3.secret.as_str()),
+        (b, "bob   ", "", ""),
+    ] {
+        d.call_init_store(
+            acc,
+            s3.endpoint.clone(),
+            s3.bucket.clone(),
+            ak.to_string(),
+            sk.to_string(),
+        )
+        .await?
+        .map_err(|e| format_err!("{name} init-store: {e}"))?;
+    }
+    println!("            stores configured (bob: pull-only, no creds)");
+    step!("laptop.ensure-bucket", l.call_ensure_bucket(acc));
+    for (member, name) in [
+        (l_id_bytes.clone(), "laptop"),
+        (p_id_bytes.clone(), "phone"),
+        (t_id_bytes.clone(), "tablet"),
+        (b_id_bytes.clone(), "bob"),
+    ] {
+        step!(
+            format!("laptop.store-grant({name})"),
+            l.call_store_grant(acc, part.clone(), member)
+        );
+    }
+    let summary = step!("laptop.bucket-flush", l.call_bucket_flush(acc, part.clone()));
+    println!("            {summary}");
+
+    // Cold start: the tablet joins from the bucket alone.
+    let summary = step!(
+        "tablet.bucket-pull [cold start, zero connections]",
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+    );
+    println!("            {summary}");
+    let ti = wait_items(acc, tt, "tablet reads the full task list from the bucket", |i| {
+        i.len() == 4
+            && i.iter().any(|x| x.title == "buy milk" && x.completed)
+            && i.iter().any(|x| x.title == "write demo" && x.completed)
+    })
+    .await?;
+    let li_now = lt
+        .call_items(acc)
+        .await?
+        .map_err(|e| format_err!("laptop items: {e}"))?;
+    if !same(&ti, &li_now.items) {
+        bail!(
+            "tablet's bucket view diverges from laptop's live view:\n  tablet {ti:?}\n  laptop {:?}",
+            li_now.items
+        );
+    }
+    println!("            tablet == laptop, via bucket only");
+
+    // 7. Cold authoring: the tablet writes through the bucket; the DAG
+    // flows bucket -> laptop -> live wire -> phone and bob.
+    step!(
+        "tablet.tasks.add('tablet task') [cold author]",
+        tt.call_add(acc, "tablet task".into())
+    );
+    let summary = step!("tablet.bucket-flush", tb.call_bucket_flush(acc, part.clone()));
+    println!("            {summary}");
+    let summary = step!(
+        "laptop.bucket-pull",
+        l.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+    );
+    println!("            {summary}");
+    wait_items(acc, lt, "laptop sees the tablet task (via bucket)", |i| i.len() == 5).await?;
+    wait_items(acc, pt, "phone sees the tablet task (bucket -> laptop -> wire)", |i| {
+        i.len() == 5
+    })
+    .await?;
+    wait_items(acc, bt, "bob sees the tablet task", |i| i.len() == 5).await?;
+
+    // 8. Revocation, flavor 1 — collaborator: revoke BOB'S GROUP from the
+    // doc AND his K_p from the bucket (the name-key epoch rotates with
+    // the BeeKEM epoch). Bob is cut off on both surfaces.
     step!(
         "laptop.kh-revoke-member(bob-group)",
         l.call_kh_revoke_member(acc, part.clone(), bob_g.clone())
     );
     step!(
+        "laptop.store-revoke(bob)",
+        l.call_store_revoke(acc, part.clone(), b_id_bytes.clone())
+    );
+    step!(
         "laptop.tasks.add('secret task') [post-revocation]",
         lt.call_add(acc, "secret task".into())
     );
+    let summary = step!("laptop.bucket-flush", l.call_bucket_flush(acc, part.clone()));
+    println!("            {summary}");
     wait_items(acc, pt, "phone sees the post-revocation task (rode the rotation)", |i| {
-        i.len() == 5 && i.iter().any(|x| x.title == "secret task")
+        i.len() == 6 && i.iter().any(|x| x.title == "secret task")
+    })
+    .await?;
+    let summary = step!(
+        "tablet.bucket-pull [rides the rotation via K_p republish]",
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+    );
+    println!("            {summary}");
+    wait_items(acc, tt, "tablet sees the post-revocation task", |i| {
+        i.len() == 6 && i.iter().any(|x| x.title == "secret task")
     })
     .await?;
 
-    // Bob must never see it: give propagation a grace window, then assert.
+    // Bob: the live surface must never show it, and the bucket surface
+    // must refuse at the K_p (deleted; nothing else is locatable).
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     let snap = bt
         .call_items(acc)
@@ -518,13 +684,23 @@ async fn scenario(
     if snap.items.iter().any(|x| x.title == "secret task") {
         bail!("REVOCATION FAILURE: bob sees the secret task");
     }
-    if snap.items.len() != 4 {
+    if snap.items.len() != 5 {
         bail!("bob's view changed unexpectedly: {:?}", snap.items);
     }
+    match b
+        .call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        .await?
+    {
+        Err(e) if e.contains("kp missing") => {
+            println!("            bob.bucket-pull refused: {e}");
+        }
+        Err(e) => bail!("bob's pull failed for the wrong reason: {e}"),
+        Ok(s) => bail!("REVOCATION FAILURE: bob's bucket pull succeeded: {s}"),
+    }
     let b_stats = b.call_stats(acc).await?;
-    println!("            bob still sees 4 tasks; {b_stats}");
+    println!("            bob still sees 5 tasks; {b_stats}");
 
-    // 8. Revocation, flavor 2 — lost phone: revoke the PHONE from Alice's
+    // 9. Revocation, flavor 2 — lost phone: revoke the PHONE from Alice's
     // user group. Same mechanic, different node of the delegation graph.
     step!(
         "laptop.kh-revoke-from-group(alice-group, phone) [lost phone]",
@@ -534,7 +710,15 @@ async fn scenario(
         "laptop.tasks.add('post-lost-phone task')",
         lt.call_add(acc, "post-lost-phone task".into())
     );
-    wait_items(acc, lt, "laptop sees all 6 tasks", |i| i.len() == 6).await?;
+    wait_items(acc, lt, "laptop sees all 7 tasks", |i| i.len() == 7).await?;
+    let summary = step!("laptop.bucket-flush", l.call_bucket_flush(acc, part.clone()));
+    println!("            {summary}");
+    let summary = step!(
+        "tablet.bucket-pull",
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+    );
+    println!("            {summary}");
+    wait_items(acc, tt, "tablet sees all 7 tasks", |i| i.len() == 7).await?;
 
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     let snap = pt
@@ -544,14 +728,16 @@ async fn scenario(
     if snap.items.iter().any(|x| x.title == "post-lost-phone task") {
         bail!("LOST-PHONE FAILURE: the revoked phone reads the new task");
     }
-    if snap.items.len() != 5 {
+    if snap.items.len() != 6 {
         bail!("phone's view changed unexpectedly: {:?}", snap.items);
     }
     let p_stats = p.call_stats(acc).await?;
-    println!("            phone still sees 5 tasks; {p_stats}");
+    println!("            phone still sees 6 tasks; {p_stats}");
 
-    let l_stats = l.call_stats(acc).await?;
-    println!("laptop: {l_stats}");
+    for (name, d) in [("laptop", l), ("tablet", tb)] {
+        let s = d.call_stats(acc).await?;
+        println!("{name}: {s}");
+    }
     println!("\nSPIKE PASSED");
     Ok(())
 }

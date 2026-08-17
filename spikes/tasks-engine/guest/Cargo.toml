@@ -32,6 +32,7 @@ wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-tas
 
 future_form = "0.3.1"
 futures = { version = "0.3", default-features = false, features = ["async-await", "std"] }
+serde = { version = "1", features = ["derive"] }
 async-channel = "2"
 async-lock = "3"
 ed25519-dalek = "2.1"

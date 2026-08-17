@@ -33,21 +33,31 @@ use ed25519_dalek::VerifyingKey as DalekVerifyingKey;
 use future_form::{FutureForm, Local};
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 
-use polymorph_webcrypto_guest::{ed25519, SigningKey, SigningKeyOptions};
+use polymorph_webcrypto_guest::{
+    aes_gcm::{self, AesVariant},
+    ed25519, hmac_sha2,
+    sha2::{self, Sha2Variant},
+    Aead, AeadKeyOptions, MacKeyOptions, SigningKey, SigningKeyOptions,
+};
 
 use beekem::encrypted::EncryptedContent;
 use keyhive_core::access::Access;
+use keyhive_core::contact_card::ContactCard;
 use keyhive_core::event::static_event::StaticEvent;
+use keyhive_core::event::Event;
 use keyhive_core::keyhive::Keyhive;
 use keyhive_core::listener::no_listener::NoListener;
 use keyhive_core::principal::document::id::DocumentId;
 use keyhive_core::principal::group::id::GroupId;
 use keyhive_core::principal::identifier::Identifier;
+use keyhive_core::principal::individual::id::IndividualId;
 use keyhive_core::principal::membered::Membered;
 use keyhive_core::store::ciphertext::memory::MemoryCiphertextStore;
+use keyhive_crypto::share_key::{ShareKey, ShareSecretKey};
 use keyhive_crypto::signed::SigningError;
 use keyhive_crypto::signer::async_signer::AsyncSigner;
 use keyhive_crypto::verifiable::Verifiable;
+use serde::{Deserialize, Serialize};
 
 use sedimentree_core::{
     blob::Blob, depth::CountLeadingZeroBytes, id::SedimentreeId, loose_commit::id::CommitId,
@@ -75,6 +85,7 @@ use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
 use exports::polymorph::engine_spike::driver::Guest as DriverGuest;
 use exports::polymorph_data::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
+use polymorph::fetchspike::fetch;
 use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
 use polymorph::iroh::identity_generate;
 use polymorph::iroh::types::{EndpointAddr, TransportAddr};
@@ -369,6 +380,26 @@ struct Partition {
     undecryptable: u32,
 }
 
+/// S3-compatible store config (empty creds = unsigned GETs only).
+struct StoreCfg {
+    endpoint: String,
+    bucket: String,
+    access: String,
+    secret: String,
+}
+
+/// One partition's bucket-side state (the #19 pull layer).
+struct BucketState {
+    /// Per-epoch name-keys; index = epoch. Rotated on store-revoke.
+    name_keys: Vec<[u8; 32]>,
+    /// cref -> epoch it was flushed under.
+    flushed: HashMap<[u8; 32], u32>,
+    /// Append-ordered manifest entries: (cref, parents, epoch).
+    entries: Vec<([u8; 32], Vec<[u8; 32]>, u32)>,
+    /// Member individuals holding a K_p.
+    grantees: Vec<Vec<u8>>,
+}
+
 struct State {
     kh: Kh,
     sd: Arc<Sd>,
@@ -389,6 +420,9 @@ struct State {
     active: Option<Vec<u8>>,
     /// Rate limiter for `nudge_keyhive_sync` (fires when it reaches 0).
     kh_nudge: u32,
+    store: Option<StoreCfg>,
+    buckets: HashMap<Vec<u8>, BucketState>,
+    fetches: u32,
     next_id: u32,
 }
 
@@ -582,6 +616,405 @@ async fn iroh_reader(in_tx: async_channel::Sender<Vec<u8>>, recv: RecvStream, se
             Ok(None) | Err(_) => break,
         }
     }
+}
+
+// --- the bucket path (#19's pull layer; adapted from spikes/storage) ---
+
+#[derive(Serialize, Deserialize)]
+struct KpObject {
+    /// The owner prekey the DH used (member looks up nothing for it).
+    owner_pk: ShareKey,
+    /// The member prekey the DH used (member looks up its secret by it).
+    member_pk: ShareKey,
+    sealed: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct KpPayload {
+    /// (epoch, name-key) keychain: current epoch grants history names.
+    name_keys: Vec<(u32, [u8; 32])>,
+    /// Devices whose oplogs/manifests to fetch (absent ones are skipped).
+    devices: Vec<[u8; 32]>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BucketManifest {
+    doc: Vec<u8>,
+    /// Append-ordered (cref, parents, epoch).
+    entries: Vec<([u8; 32], Vec<[u8; 32]>, u32)>,
+    device: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+struct SignedManifest {
+    manifest: Vec<u8>,
+    sig: Vec<u8>,
+}
+
+async fn sha256(data: &[u8]) -> Result<Vec<u8>, String> {
+    let digest = sha2::make_digest(Sha2Variant::Sha256).map_err(|e| format!("digest mint: {e}"))?;
+    digest.compute(data).await.map_err(|e| format!("sha256: {e}"))
+}
+
+async fn hmac(raw_key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    hmac_sha2::import_key_raw(
+        Sha2Variant::Sha256,
+        raw_key.to_vec(),
+        MacKeyOptions {
+            sign: true,
+            verify: false,
+            extractable: false,
+        },
+    )
+    .await
+    .map_err(|e| format!("hmac import: {e}"))?
+    .sign(data)
+    .await
+    .map_err(|e| format!("hmac sign: {e}"))
+}
+
+async fn aead_from_raw(raw: &[u8]) -> Result<Aead, String> {
+    aes_gcm::import_key_raw(
+        AesVariant::Aes256,
+        raw.to_vec(),
+        AeadKeyOptions {
+            seal: true,
+            open: true,
+            wrap: false,
+            unwrap: false,
+            extractable: false,
+        },
+    )
+    .await
+    .map_err(|e| format!("aead import: {e}"))
+}
+
+async fn aead_seal(aead: &Aead, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let nonce: [u8; 12] = rand::random();
+    let ct = aead
+        .seal(nonce.as_slice(), aad, plaintext)
+        .await
+        .map_err(|e| format!("seal: {e}"))?;
+    let mut blob = nonce.to_vec();
+    blob.extend_from_slice(&ct);
+    Ok(blob)
+}
+
+async fn aead_open(aead: &Aead, aad: &[u8], blob: &[u8]) -> Result<Vec<u8>, String> {
+    if blob.len() < 12 {
+        return Err("blob too short".into());
+    }
+    let stream = aead
+        .open(&blob[..12], aad, &blob[12..])
+        .await
+        .map_err(|e| format!("open: {e}"))?;
+    Ok(stream.collect().await)
+}
+
+// SigV4 over the fetch import (from spikes/storage, verbatim mechanics).
+
+/// Civil date from days since the epoch (Howard Hinnant's algorithm).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn amz_dates() -> (String, String) {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_secs() as i64;
+    let (y, mo, d) = civil_from_days(secs.div_euclid(86400));
+    let rem = secs.rem_euclid(86400);
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let date = format!("{y:04}{mo:02}{d:02}");
+    let amz = format!("{date}T{h:02}{mi:02}{s:02}Z");
+    (date, amz)
+}
+
+struct Store {
+    endpoint: String,
+    bucket: String,
+    access: String,
+    secret: String,
+}
+
+fn store() -> Result<Store, String> {
+    with_state(|s| {
+        s.store.as_ref().map(|c| Store {
+            endpoint: c.endpoint.clone(),
+            bucket: c.bucket.clone(),
+            access: c.access.clone(),
+            secret: c.secret.clone(),
+        })
+    })?
+    .ok_or("store not configured (init-store first)".into())
+}
+
+fn host_of(endpoint: &str) -> String {
+    endpoint
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+async fn do_fetch(
+    method: &str,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+) -> Result<(u16, Vec<u8>), String> {
+    let _ = with_state(|s| s.fetches += 1);
+    let resp = fetch::request(method.to_string(), url, headers, body)
+        .await
+        .map_err(|e| format!("fetch: {e}"))?;
+    Ok((resp.status, resp.body))
+}
+
+async fn s3_signed(
+    st: &Store,
+    method: &str,
+    key: &str,
+    query: &str,
+    body: Vec<u8>,
+) -> Result<(u16, Vec<u8>), String> {
+    let host = host_of(&st.endpoint);
+    let path = if key.is_empty() {
+        format!("/{}", st.bucket)
+    } else {
+        format!("/{}/{}", st.bucket, key)
+    };
+    let (date, amz) = amz_dates();
+    let payload_hash = hex::encode(sha256(&body).await?);
+
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz}\n");
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let canonical_request =
+        format!("{method}\n{path}\n{query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+    let scope = format!("{date}/us-east-1/s3/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz}\n{scope}\n{}",
+        hex::encode(sha256(canonical_request.as_bytes()).await?)
+    );
+
+    let mut key_material = format!("AWS4{}", st.secret).into_bytes();
+    for step in [date.as_str(), "us-east-1", "s3", "aws4_request"] {
+        key_material = hmac(&key_material, step.as_bytes()).await?;
+    }
+    let signature = hex::encode(hmac(&key_material, string_to_sign.as_bytes()).await?);
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
+        st.access
+    );
+
+    let url = if query.is_empty() {
+        format!("{}{path}", st.endpoint)
+    } else {
+        format!("{}{path}?{}", st.endpoint, query.trim_end_matches('='))
+    };
+    do_fetch(
+        method,
+        url,
+        vec![
+            ("x-amz-date".into(), amz),
+            ("x-amz-content-sha256".into(), payload_hash),
+            ("authorization".into(), authorization),
+        ],
+        body,
+    )
+    .await
+}
+
+async fn put_object(st: &Store, key: &str, body: Vec<u8>) -> Result<(), String> {
+    let (status, resp) = s3_signed(st, "PUT", key, "", body).await?;
+    if status == 200 {
+        Ok(())
+    } else {
+        Err(format!("PUT {key}: {status} {}", String::from_utf8_lossy(&resp)))
+    }
+}
+
+async fn delete_object(st: &Store, key: &str) -> Result<(), String> {
+    let (status, resp) = s3_signed(st, "DELETE", key, "", Vec::new()).await?;
+    if status == 204 || status == 200 {
+        Ok(())
+    } else {
+        Err(format!("DELETE {key}: {status} {}", String::from_utf8_lossy(&resp)))
+    }
+}
+
+/// Unsigned GET: the account-less pull path (availability by name secrecy).
+async fn get_object_unsigned(st: &Store, key: &str) -> Result<Option<Vec<u8>>, String> {
+    let url = format!("{}/{}/{}", st.endpoint, st.bucket, key);
+    let (status, body) = do_fetch("GET", url, Vec::new(), Vec::new()).await?;
+    match status {
+        200 => Ok(Some(body)),
+        404 | 403 => Ok(None),
+        other => Err(format!("GET {key}: {other}")),
+    }
+}
+
+/// Name-keyed object names: hex(HMAC(name-key, kind || id)).
+async fn object_name(name_key: &[u8; 32], kind: &[u8], id: &[u8]) -> Result<String, String> {
+    let mut data = kind.to_vec();
+    data.extend_from_slice(id);
+    Ok(hex::encode(hmac(name_key, &data).await?))
+}
+
+/// K_p location. Spike simplification: derived from public ids (doc,
+/// owner, member), so members can compute it with no shared secret and
+/// no prekey-set agreement; the payload is still prekey-wrapped, and
+/// revocation deletes the object. Production wants a pairwise-secret
+/// location (existence privacy) — a #19/#10 design item.
+async fn kp_location(doc: &[u8], owner: &[u8], member: &[u8]) -> Result<String, String> {
+    let mut data = b"kp".to_vec();
+    data.extend_from_slice(doc);
+    data.extend_from_slice(owner);
+    data.extend_from_slice(member);
+    Ok(hex::encode(sha256(&data).await?))
+}
+
+/// My prekey pairs, out of keyhive's Active.
+async fn my_prekey_pairs(kh: &Kh) -> Result<std::collections::BTreeMap<ShareKey, ShareSecretKey>, String> {
+    let blob = kh
+        .active()
+        .lock()
+        .await
+        .export_prekey_secrets()
+        .await
+        .map_err(|e| format!("export prekeys: {e}"))?;
+    bincode::deserialize(&blob).map_err(|e| format!("prekeys decode: {e}"))
+}
+
+/// AEAD from a prekey-DH shared secret (HMAC as the KDF step).
+async fn ikm_aead(ikm: &[u8; 32], info: &[u8]) -> Result<Aead, String> {
+    let key = hmac(ikm, info).await?;
+    aead_from_raw(&key).await
+}
+
+/// Serialize everything this keyhive knows as static events: membership
+/// ops (every group/doc it holds, including ingested foreign groups),
+/// reachable prekey ops, and CGKA ops. This is the bucket's op stream:
+/// sufficient state for a cold member to join, gated by name secrecy at
+/// rest and by BeeKEM for the content it unlocks.
+async fn export_oplog(kh: &Kh) -> Result<Vec<u8>, String> {
+    let mem = kh.membership_ops_for_all_agents().await;
+    let pre = kh.reachable_prekey_ops_for_all_agents().await;
+    let cg = kh.cgka_ops_for_all_agents().await;
+
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    let mut events: Vec<StaticEvent<T>> = Vec::new();
+    let push = |se: StaticEvent<T>, seen: &mut HashSet<[u8; 32]>, out: &mut Vec<StaticEvent<T>>| {
+        let digest = keyhive_crypto::digest::Digest::hash(&se);
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&digest.as_slice()[..32]);
+        if seen.insert(key) {
+            out.push(se);
+        }
+    };
+
+    for source_ops in mem.ops.values() {
+        for op in source_ops.values() {
+            let ev: Event<Local, WebcryptoSigner, T, NoListener> = op.clone().into();
+            push(StaticEvent::from(ev), &mut seen, &mut events);
+        }
+    }
+    for key_ops in pre.ops.values() {
+        for op in key_ops.iter() {
+            let ev: Event<Local, WebcryptoSigner, T, NoListener> = Event::from(op.as_ref().clone());
+            push(StaticEvent::from(ev), &mut seen, &mut events);
+        }
+    }
+    for cgka_ops in cg.ops.values() {
+        for op in cgka_ops.iter() {
+            let ev: Event<Local, WebcryptoSigner, T, NoListener> = Event::from(op.clone());
+            push(StaticEvent::from(ev), &mut seen, &mut events);
+        }
+    }
+    bincode::serialize(&events).map_err(|e| format!("oplog serialize: {e}"))
+}
+
+/// Publish one member's K_p: the name-key keychain + device list, sealed
+/// to a DH between one of the owner's and one of the member's keyhive
+/// contact-card prekeys (both picks recorded in the object).
+async fn publish_kp(st: &Store, kh: &Kh, doc: &[u8], member: &[u8]) -> Result<(), String> {
+    let did = kh_doc_id(doc)?;
+    let my_id_bytes = with_state(|s| s.my_peer.as_bytes().to_vec())?;
+
+    // The member's prekey, picked from their ingested card.
+    let member_ident = identifier(member)?;
+    let member_agent = kh
+        .get_agent(member_ident)
+        .await
+        .ok_or("member agent unknown (ingest their contact card first)")?;
+    let member_picks = member_agent.pick_individual_prekeys(did).await;
+    let member_pk = *member_picks
+        .get(&IndividualId::from(member_ident))
+        .ok_or("no prekey for member")?;
+
+    // My own pick + its secret.
+    let my_agent = kh
+        .get_agent(identifier(&my_id_bytes)?)
+        .await
+        .ok_or("own agent missing")?;
+    let my_picks = my_agent.pick_individual_prekeys(did).await;
+    let owner_pk = *my_picks
+        .get(&IndividualId::from(identifier(&my_id_bytes)?))
+        .ok_or("no own prekey")?;
+    let pairs = my_prekey_pairs(kh).await?;
+    let owner_sk = pairs.get(&owner_pk).ok_or("own prekey secret missing")?;
+
+    let ikm = owner_sk.derive_new_secret_key(&member_pk).to_bytes();
+    let payload = with_state(|s| {
+        let b = s.buckets.get(doc).ok_or("no bucket state".to_string())?;
+        let mut devices: Vec<[u8; 32]> = Vec::new();
+        for g in &b.grantees {
+            if let Ok(arr) = arr32(g, "grantee") {
+                devices.push(arr);
+            }
+        }
+        Ok::<_, String>(KpPayload {
+            name_keys: b
+                .name_keys
+                .iter()
+                .enumerate()
+                .map(|(e, nk)| (e as u32, *nk))
+                .collect(),
+            devices,
+        })
+    })??;
+    let aead = ikm_aead(&ikm, b"kp-wrap").await?;
+    let sealed = aead_seal(&aead, doc, &bincode::serialize(&payload).map_err(|e| e.to_string())?)
+        .await?;
+    let obj = KpObject {
+        owner_pk,
+        member_pk,
+        sealed,
+    };
+    let name = kp_location(doc, &my_id_bytes, member).await?;
+    put_object(st, &name, bincode::serialize(&obj).map_err(|e| e.to_string())?).await
+}
+
+/// Ensure bucket-side state exists for a partition.
+fn ensure_bucket_state(doc: &[u8]) -> Result<(), String> {
+    with_state(|s| {
+        s.buckets.entry(doc.to_vec()).or_insert_with(|| BucketState {
+            name_keys: vec![rand::random()],
+            flushed: HashMap::new(),
+            entries: Vec::new(),
+            grantees: Vec::new(),
+        });
+    })
 }
 
 // --- the DAG content spine ---
@@ -888,6 +1321,9 @@ impl DriverGuest for Component {
                 pending: HashMap::new(),
                 active: None,
                 kh_nudge: 0,
+                store: None,
+                buckets: HashMap::new(),
+                fetches: 0,
                 next_id: 0,
             })
         });
@@ -1002,6 +1438,329 @@ impl DriverGuest for Component {
             .map_err(|e| format!("revoke member: {e:?}"))?;
         refreshed_sync(&proto, None).await?;
         Ok(())
+    }
+
+    async fn kh_contact_card() -> Result<Vec<u8>, String> {
+        let kh = with_state(|s| s.kh.clone())?;
+        let card = kh
+            .contact_card()
+            .await
+            .map_err(|e| format!("contact card: {e:?}"))?;
+        bincode::serialize(&card).map_err(|e| e.to_string())
+    }
+
+    async fn kh_ingest_contact(card: Vec<u8>) -> Result<(), String> {
+        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+        let card: ContactCard = bincode::deserialize(&card).map_err(|e| format!("bad card: {e}"))?;
+        kh.receive_contact_card(&card)
+            .await
+            .map_err(|e| format!("receive contact card: {e:?}"))?;
+        refreshed_sync(&proto, None).await?;
+        Ok(())
+    }
+
+    async fn init_store(
+        endpoint: String,
+        bucket: String,
+        access_key: String,
+        secret_key: String,
+    ) -> Result<(), String> {
+        with_state(|s| {
+            s.store = Some(StoreCfg {
+                endpoint: endpoint.trim_end_matches('/').to_string(),
+                bucket,
+                access: access_key,
+                secret: secret_key,
+            });
+        })
+    }
+
+    async fn ensure_bucket() -> Result<(), String> {
+        let st = store()?;
+        // An explicit location body: some servers reject a bodyless
+        // CreateBucket arriving without a Content-Length.
+        let create = br#"<CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>us-east-1</LocationConstraint></CreateBucketConfiguration>"#.to_vec();
+        let (status, resp) = s3_signed(&st, "PUT", "", "", create).await?;
+        if status != 200 && status != 409 {
+            return Err(format!(
+                "create bucket: {status} {}",
+                String::from_utf8_lossy(&resp)
+            ));
+        }
+        let policy = format!(
+            r#"{{"Version":"2012-10-17","Statement":[{{"Effect":"Allow","Principal":{{"AWS":["*"]}},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::{}/*"]}}]}}"#,
+            st.bucket
+        );
+        let (status, resp) = s3_signed(&st, "PUT", "", "policy=", policy.into_bytes()).await?;
+        if status == 200 || status == 204 {
+            Ok(())
+        } else {
+            Err(format!(
+                "put bucket policy: {status} {}",
+                String::from_utf8_lossy(&resp)
+            ))
+        }
+    }
+
+    async fn store_grant(doc_id: Vec<u8>, member: Vec<u8>) -> Result<(), String> {
+        let st = store()?;
+        let kh = with_state(|s| s.kh.clone())?;
+        ensure_bucket_state(&doc_id)?;
+        with_state(|s| {
+            let b = s.buckets.get_mut(&doc_id).expect("bucket state");
+            if !b.grantees.contains(&member) {
+                b.grantees.push(member.clone());
+            }
+        })?;
+        // Republish every grantee's K_p: the keychain (and device list)
+        // may have grown since their K_p was written.
+        let grantees = with_state(|s| s.buckets.get(&doc_id).map(|b| b.grantees.clone()))?
+            .ok_or("no bucket state")?;
+        for g in grantees {
+            publish_kp(&st, &kh, &doc_id, &g).await?;
+        }
+        Ok(())
+    }
+
+    async fn store_revoke(doc_id: Vec<u8>, member: Vec<u8>) -> Result<(), String> {
+        let st = store()?;
+        let kh = with_state(|s| s.kh.clone())?;
+        let my_id = with_state(|s| s.my_peer.as_bytes().to_vec())?;
+
+        // Cooperative immediacy: the pickup object goes away.
+        delete_object(&st, &kp_location(&doc_id, &my_id, &member).await?).await?;
+
+        // Hard forward boundary: rotate the name-key epoch alongside the
+        // BeeKEM rotation the keyhive revocation causes.
+        let remaining = with_state(|s| {
+            let b = s.buckets.get_mut(&doc_id).ok_or("no bucket state".to_string())?;
+            b.grantees.retain(|g| g != &member);
+            b.name_keys.push(rand::random());
+            Ok::<_, String>(b.grantees.clone())
+        })??;
+        for g in remaining {
+            publish_kp(&st, &kh, &doc_id, &g).await?;
+        }
+        Ok(())
+    }
+
+    async fn bucket_flush(doc_id: Vec<u8>) -> Result<String, String> {
+        let st = store()?;
+        ensure_bucket_state(&doc_id)?;
+        let (kh, sd, storage, signer, device_vk) = with_state(|s| {
+            (
+                s.kh.clone(),
+                s.sd.clone(),
+                s.sd_storage.clone(),
+                s.signer.clone(),
+                *s.my_peer.as_bytes(),
+            )
+        })?;
+        let tree = tree_id(&doc_id)?;
+
+        // New chunks: the same envelope bytes the sedimentree holds.
+        let commits = causal_order(sd.get_commits(tree).await.unwrap_or_default());
+        let (nk_current, epoch) = with_state(|s| {
+            let b = s.buckets.get(&doc_id).expect("bucket state");
+            (
+                *b.name_keys.last().expect("epoch"),
+                (b.name_keys.len() - 1) as u32,
+            )
+        })?;
+        let mut new_chunks = 0u32;
+        for commit in commits {
+            let cref = *commit.head().as_bytes();
+            let already = with_state(|s| {
+                s.buckets
+                    .get(&doc_id)
+                    .map(|b| b.flushed.contains_key(&cref))
+                    .unwrap_or(false)
+            })?;
+            if already {
+                continue;
+            }
+            let verified =
+                <MemoryStorage as Storage<Local>>::load_loose_commit(&storage, tree, commit.head())
+                    .await
+                    .map_err(|e| format!("load: {e:?}"))?
+                    .ok_or("commit blob not found")?;
+            let name = object_name(&nk_current, b"chunk", &cref).await?;
+            put_object(&st, &name, verified.blob().as_slice().to_vec()).await?;
+            let parents: Vec<[u8; 32]> = commit.parents().iter().map(|p| *p.as_bytes()).collect();
+            with_state(|s| {
+                let b = s.buckets.get_mut(&doc_id).expect("bucket state");
+                b.flushed.insert(cref, epoch);
+                b.entries.push((cref, parents, epoch));
+            })?;
+            new_chunks += 1;
+        }
+
+        // The op stream, then the signed manifest — both under the
+        // current name-key, per device.
+        let oplog = export_oplog(&kh).await?;
+        let oplog_len = oplog.len();
+        put_object(&st, &object_name(&nk_current, b"oplog", &device_vk).await?, oplog).await?;
+
+        let entries = with_state(|s| {
+            s.buckets
+                .get(&doc_id)
+                .map(|b| b.entries.clone())
+                .unwrap_or_default()
+        })?;
+        let manifest = BucketManifest {
+            doc: doc_id.clone(),
+            entries,
+            device: device_vk,
+        };
+        let manifest_bytes = bincode::serialize(&manifest).map_err(|e| e.to_string())?;
+        let sig = signer
+            .0
+            .key
+            .sign(manifest_bytes.as_slice())
+            .await
+            .map_err(|e| format!("manifest sign: {e}"))?;
+        let signed = bincode::serialize(&SignedManifest {
+            manifest: manifest_bytes,
+            sig,
+        })
+        .map_err(|e| e.to_string())?;
+        put_object(
+            &st,
+            &object_name(&nk_current, b"manifest", &device_vk).await?,
+            signed,
+        )
+        .await?;
+
+        Ok(format!(
+            "flushed chunks={new_chunks} oplog={oplog_len}B epoch={epoch}"
+        ))
+    }
+
+    async fn bucket_pull(doc_id: Vec<u8>, owner: Vec<u8>) -> Result<String, String> {
+        let st = store()?;
+        let (kh, sd) = with_state(|s| (s.kh.clone(), s.sd.clone()))?;
+        let my_id = with_state(|s| s.my_peer.as_bytes().to_vec())?;
+        let tree = tree_id(&doc_id)?;
+
+        // 1. K_p: locate by ids, unwrap by prekey DH.
+        let loc = kp_location(&doc_id, &owner, &my_id).await?;
+        let blob = get_object_unsigned(&st, &loc)
+            .await?
+            .ok_or("kp missing (404): revoked or never granted")?;
+        let obj: KpObject = bincode::deserialize(&blob).map_err(|e| format!("kp decode: {e}"))?;
+        let pairs = my_prekey_pairs(&kh).await?;
+        let sk = pairs
+            .get(&obj.member_pk)
+            .ok_or("K_p not sealed to any of my prekeys")?;
+        let ikm = sk.derive_new_secret_key(&obj.owner_pk).to_bytes();
+        let aead = ikm_aead(&ikm, b"kp-wrap").await?;
+        let payload: KpPayload =
+            bincode::deserialize(&aead_open(&aead, &doc_id, &obj.sealed).await?)
+                .map_err(|e| format!("kp payload decode: {e}"))?;
+        let mut keychain: Vec<(u32, [u8; 32])> = payload.name_keys.clone();
+        keychain.sort_by_key(|(e, _)| *e);
+        let name_keys: HashMap<u32, [u8; 32]> = keychain.iter().copied().collect();
+
+        // Adopt the shared keychain: any flush from this instance must
+        // place objects under the DOC's name-keys (a privately minted
+        // keychain would publish to names nobody else can derive).
+        ensure_bucket_state(&doc_id)?;
+        with_state(|s| {
+            let b = s.buckets.get_mut(&doc_id).expect("bucket state");
+            b.name_keys = keychain.iter().map(|(_, nk)| *nk).collect();
+        })?;
+
+        // 2. Op streams (newest epoch first; a device's oplog lives under
+        // the newest name-key it flushed with).
+        let mut ingested = 0usize;
+        for device in &payload.devices {
+            for (_, nk) in keychain.iter().rev() {
+                let name = object_name(nk, b"oplog", device).await?;
+                if let Some(blob) = get_object_unsigned(&st, &name).await? {
+                    let events: Vec<StaticEvent<T>> =
+                        bincode::deserialize(&blob).map_err(|e| format!("oplog decode: {e}"))?;
+                    ingested += events.len();
+                    kh.ingest_unsorted_static_events(events).await;
+                    break;
+                }
+            }
+        }
+
+        // 3. Manifests -> union of entries.
+        let mut entries: Vec<([u8; 32], Vec<[u8; 32]>, u32)> = Vec::new();
+        for device in &payload.devices {
+            for (_, nk) in keychain.iter().rev() {
+                let name = object_name(nk, b"manifest", device).await?;
+                let Some(blob) = get_object_unsigned(&st, &name).await? else {
+                    continue;
+                };
+                let signed: SignedManifest =
+                    bincode::deserialize(&blob).map_err(|e| format!("manifest decode: {e}"))?;
+                let vk = ed25519::import_verifying_key_raw(device.to_vec())
+                    .await
+                    .map_err(|e| format!("vk import: {e}"))?;
+                vk.verify(signed.manifest.as_slice(), signed.sig.as_slice())
+                    .await
+                    .map_err(|_| "manifest signature invalid".to_string())?;
+                let manifest: BucketManifest =
+                    bincode::deserialize(&signed.manifest).map_err(|e| e.to_string())?;
+                for e in manifest.entries {
+                    if !entries.iter().any(|(c, _, _)| *c == e.0) {
+                        entries.push(e);
+                    }
+                }
+                break;
+            }
+        }
+
+        // Objects already in the bucket are flushed state: record them so
+        // a later flush from this instance uploads only genuinely new
+        // chunks (and its manifest carries the full known set).
+        with_state(|s| {
+            let b = s.buckets.get_mut(&doc_id).expect("bucket state");
+            for (cref, parents, epoch) in &entries {
+                if !b.flushed.contains_key(cref) {
+                    b.flushed.insert(*cref, *epoch);
+                    b.entries.push((*cref, parents.clone(), *epoch));
+                }
+            }
+        })?;
+
+        // 4. Chunks -> the sedimentree (envelope bytes verbatim), then the
+        // normal apply path.
+        let have: HashSet<[u8; 32]> = sd
+            .get_commits(tree)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|c| *c.head().as_bytes())
+            .collect();
+        let mut fetched = 0u32;
+        for (cref, parents, epoch) in &entries {
+            if have.contains(cref) {
+                continue;
+            }
+            let nk = name_keys
+                .get(epoch)
+                .ok_or(format!("keychain missing epoch {epoch}"))?;
+            let name = object_name(nk, b"chunk", cref).await?;
+            let blob = get_object_unsigned(&st, &name)
+                .await?
+                .ok_or(format!("chunk object missing for epoch {epoch}"))?;
+            let parent_set: BTreeSet<CommitId> =
+                parents.iter().map(|p| CommitId::new(*p)).collect();
+            sd.add_commit(tree, CommitId::new(*cref), parent_set, Blob::new(blob))
+                .await
+                .map_err(|e| format!("add_commit: {e:?}"))?;
+            fetched += 1;
+        }
+        if with_state(|s| s.partitions.contains_key(&doc_id))? {
+            apply_new_chunks(&doc_id).await?;
+        }
+        Ok(format!(
+            "pulled kp epochs={} events={ingested} chunks={fetched}",
+            keychain.len()
+        ))
     }
 
     async fn iroh_bind(relay_url: String) -> Result<String, String> {

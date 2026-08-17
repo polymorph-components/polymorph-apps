@@ -1,16 +1,19 @@
-# Tasks-engine spike (#20 G1 + G2 + G3)
+# Tasks-engine spike (#20 G1 + G2 + G3 + G4)
 
 The walking skeleton's content spine generalized from a linear chain to
 the **real automerge change DAG**, with the first data service —
 `polymorph-data:tasks@0.1.0` — served from inside the engine composite
-(the demo-v1 topology). Quarantined, delete-at-will, wired into no CI.
+(the demo-v1 topology), synced over **both paths**: realtime
+(component-iroh) and non-realtime (an S3-compatible bucket, the #19 pull
+layer). Quarantined, delete-at-will, wired into no CI.
 
 ```
 tasks.add("buy milk")
   ──▶ automerge change (one mutation = one chunk; deps = the frontier)
   ──▶ keyhive encrypt under the current BeeKEM epoch
   ──▶ sedimentree commit (parents = the change's deps)
-  ──▶ subduction sync over component-iroh ──▶ every member's replica
+      ├──▶ subduction sync over component-iroh ──▶ live members
+      └──▶ bucket object under a per-epoch name-key ──▶ cold members
 ```
 
 ## One DAG across three layers
@@ -58,28 +61,70 @@ constitutive ops). Bob pastes his card to Alice (QR/link in the
 product; the host carries it here), and it must be distributed to
 *every* member instance — see findings.
 
+## The bucket path (G4, #19's pull layer under this engine)
+
+The storage spike's stand-ins are replaced by the real coupling:
+
+- **Chunk objects are the sedimentree blobs, byte for byte** — the
+  keyhive `EncryptedContent` envelope. There is no second content
+  encryption; BeeKEM is the read gate on both surfaces.
+- **Object names** are `HMAC(name-key, kind ‖ id)`; the name-key
+  keychain **rotates with revocations** (a `store-revoke` pushes a new
+  epoch alongside the BeeKEM rotation the keyhive revocation causes).
+  Old epochs keep granting history names; new objects are dark to
+  holders of old keychains.
+- **K_p pickup objects** bootstrap a member: the keychain + the device
+  list, sealed to a DH between one of the owner's and one of the
+  member's **keyhive contact-card prekeys** (both picks recorded in the
+  object; the member finds its secret via
+  `Active::export_prekey_secrets`). No ad-hoc x25519 material.
+- **The keyhive op stream is stored as name-keyed blobs, per device**:
+  everything the flusher's keyhive knows (membership + prekey + CGKA
+  ops, foreign-group ops included — the G3 card lesson). This is what
+  makes cold start work: a device that has never had a connection
+  ingests the oplog, derives its epochs (its leaf was added at
+  enrollment), and decrypts.
+- **Manifests** are per-device Ed25519-signed entry lists
+  `(cref, parents, epoch)` — parents let a cold puller insert chunks
+  into its own sedimentree and reuse the normal causal apply path.
+- Author flow: `bucket-flush` = new chunks + oplog + manifest. Boot
+  flow: `bucket-pull` = K_p → oplogs → manifests → chunks → apply.
+  Pulls are entirely unsigned GETs (availability by name secrecy); bob
+  holds no bucket credentials at all.
+
 ## Scenario (host/src/main.rs)
 
-Three engine instances over a real iroh relay: Alice's **laptop** and
-**phone** (enrolled in her user group) and **bob**, a collaborator with
-his own user group. Laptop is the wire hub.
+Four engine instances; laptop, phone and bob over a real iroh relay
+(laptop is the wire hub), plus Alice's **tablet, which never binds and
+never connects** — it lives entirely off the bucket (MinIO).
 
 1. Wires up (two tagged QUIC streams per connection: 'S' subduction,
-   'K' keyhive bridge); contact cards travel over the bridge.
-2. Groups: laptop creates Alice's group and enrolls the phone; bob
-   creates his; cards are exchanged (bob's to laptop AND phone,
-   Alice's to bob).
+   'K' keyhive bridge); contact cards travel over the bridge; the
+   tablet's card is pasted (QR stand-in).
+2. Groups: laptop creates Alice's group and enrolls phone AND tablet;
+   bob creates his; cards are distributed (bob's to laptop, phone, and
+   tablet; Alice's to bob).
 3. Partition lifecycle: create → delegate to the two groups (**edit** —
-   subduction's put policy requires it) → seal; members adopt,
+   subduction's put policy requires it) → seal; live members adopt,
    first-sync, and decrypt transitively.
 4. Tasks flow + the concurrency fork/merge + three-way convergence.
 5. Collaborator edit propagates (transitive put authority).
-6. Revocation flavor 1: bob's group revoked from the doc; **phone rides
-   the rotation** (~100 ms); bob never sees the new task (and received
-   none of its bytes).
-7. Revocation flavor 2 (lost phone): phone revoked from Alice's group;
+6. Bucket: `store-grant` K_p to every member individual;
+   `bucket-flush`; **the tablet cold-boots from the bucket alone** and
+   its view equals laptop's live view.
+7. Cold authoring: the tablet adds a task and flushes; laptop pulls;
+   the task reaches phone and bob over the live wire — one DAG, both
+   surfaces.
+8. Revocation flavor 1: bob's group revoked from the doc AND
+   `store-revoke` (K_p deleted, name-key epoch rotated). Phone rides
+   the rotation live (~100 ms); the tablet rides it via K_p republish;
+   bob gets no bytes live and `kp missing (404)` from the bucket.
+9. Revocation flavor 2 (lost phone): phone revoked from Alice's group;
    laptop's next task never becomes readable at the phone (ciphertext
-   arrived, decrypt refused — `undecryptable: 1`).
+   arrived, decrypt refused); the tablet reads everything.
+
+Final state: the wireless tablet at `iroh conns: 0` holds the complete
+7-task list.
 
 ## Findings
 
@@ -131,15 +176,32 @@ his own user group. Laptop is the wire hub.
   a device into a group propagates CGKA adds to docs containing the
   group from the next epoch onward — same non-retroactivity,
   transitively.
+- **The name-key keychain is doc state, not device state.** A device
+  that flushes under a privately minted keychain publishes to names
+  nobody else can derive; `bucket-pull` therefore adopts the K_p
+  keychain into local state before any flush. (First run failed
+  exactly here: the tablet's manifest was invisible to the laptop.)
+- **K_p locations are id-derived in this spike** (doc ‖ owner ‖
+  member hashed), so no prekey-set agreement is needed to *find* the
+  object — the payload is still prekey-wrapped, and revocation deletes
+  it. The cost: members' K_p existence is probeable by anyone holding
+  the public ids. Production wants a pairwise-secret location, which
+  needs a stable pairwise-DH story on top of rotating prekeys — a
+  #19/#10 design item.
+- **wasi:http@0.3 + wit-bindgen coexistence held**: the storage spike's
+  fetcher component (wit-bindgen 0.57) composed into this engine (0.59)
+  alongside the iroh endpoint with `wac plug` — three runtimes, one
+  composite, zero friction.
 
 ## Running
 
 Needs a `polymorph-iroh` checkout with the endpoint component and relay
-built (see that repo); override with `IROH_CHECKOUT=…`.
+built (see that repo); override with `IROH_CHECKOUT=…`. MinIO is
+fetched once into `.deps/` and run as a user process.
 
 ```
-just run    # build guest, wac-compose with iroh endpoint, run vs local relay
-just check  # clippy, both targets
+just run    # build guest+fetcher, compose, run vs local relay + MinIO
+just check  # clippy, all three crates
 ```
 
 Pins: keyhive `efe6ccf3`, subduction `2401102`, automerge 0.11.0,

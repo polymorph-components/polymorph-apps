@@ -656,10 +656,33 @@ declared otherwise (see the status note at the top).
   intermittently wedged the un-carded device at `KeyNotFound`
   permanently (~1/3 of runs; op-arrival order dependent; open upstream
   question whether a pending foreign-group delegation should wedge
-  epoch derivation). Product consequence for #10: received cards are
+  epoch derivation).   Product consequence for #10: received cards are
   replicated state (carry them in a doc the user's devices share), and
   the individual-card export leaks every membership the person can
-  reach — scope before product exposure.
+  reach — scope before product exposure. **G4 executed 2026-08-16 and
+  passed** (same spike): one engine, both sync paths. The same keyhive
+  envelope bytes feed sedimentree (realtime, iroh) and bucket objects
+  (non-realtime, MinIO via the storage spike's in-guest SigV4 +
+  fetcher component — three wit-bindgen runtimes in one composite);
+  name-key epochs rotate with revocations; **K_p is wrapped to keyhive
+  contact-card prekeys** (`Active::export_prekey_secrets` +
+  `ShareSecretKey::derive_new_secret_key`; the picked prekeys ride in
+  the object, so no prekey-set agreement is needed); **the keyhive op
+  stream is stored as per-device name-keyed blobs**, which makes cold
+  start real: a tablet with zero lifetime connections K_p-bootstraps,
+  ingests the oplog, decrypts history, authors through the bucket
+  (its chunk reaches live members over the wire — one DAG, both
+  surfaces), rides a revocation epoch via K_p republish, and ends at
+  full state (`iroh conns: 0`). The revoked collaborator is dark on
+  both surfaces (no live bytes; `kp missing (404)` at the bucket).
+  Findings: the name-key keychain is DOC state (pulls adopt it before
+  any flush — a privately minted keychain publishes to underivable
+  names); K_p locations are id-derived in the spike (existence
+  probeable; production wants a pairwise-secret location — needs a
+  stable pairwise-DH story over rotating prekeys, #19/#10); the
+  storage spike's dumb-store contract needed nothing new. Remaining
+  #19-scope items unchanged (R2/B2 quirks, TLS, GC/compaction,
+  credential rotation, Drive provider).
 - **Topology leaning: one engine composite, one keyhive instance.**
   `subduction_keyhive` is an in-process wrapper that *holds* the
   `Keyhive` instance, implementing subduction's connection/storage

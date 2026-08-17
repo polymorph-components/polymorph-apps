@@ -50,6 +50,39 @@ interface driver {
     kh-add-member: async func(doc-id: list<u8>, agent-id: list<u8>, level: string) -> result<_, string>;
     kh-revoke-member: async func(doc-id: list<u8>, agent-id: list<u8>) -> result<_, string>;
 
+    /// Keyhive contact card (bincode): materializes the individual +
+    /// prekeys on ingest. The enrollment/QR artifact for devices that
+    /// have never touched the wire.
+    kh-contact-card: async func() -> result<list<u8>, string>;
+    kh-ingest-contact: async func(card: list<u8>) -> result<_, string>;
+
+    // --- the bucket path (#19's pull layer under this engine; G4) ---
+    //
+    // The same keyhive envelope bytes that feed sedimentree feed bucket
+    // objects; object names are HMAC-derived from per-epoch name-keys;
+    // members bootstrap from a per-member K_p pickup object wrapped to
+    // keyhive contact-card prekeys; the keyhive op stream is stored as
+    // name-keyed blobs so a cold device can join from the bucket alone.
+
+    init-store: async func(endpoint: string, bucket: string, access-key: string, secret-key: string) -> result<_, string>;
+    ensure-bucket: async func() -> result<_, string>;
+
+    /// Publish/refresh the member's K_p (name-key keychain + author
+    /// device list), sealed to a keyhive prekey DH.
+    store-grant: async func(doc-id: list<u8>, member-id: list<u8>) -> result<_, string>;
+
+    /// Delete the member's K_p and rotate the name-key epoch; republish
+    /// K_p for the remaining grantees and re-place oplog + manifest.
+    store-revoke: async func(doc-id: list<u8>, member-id: list<u8>) -> result<_, string>;
+
+    /// Push new chunks (envelope bytes), the op-stream blob, and the
+    /// signed manifest.
+    bucket-flush: async func(doc-id: list<u8>) -> result<string, string>;
+
+    /// Pull via K_p: op stream into keyhive, chunks into the
+    /// sedimentree, then apply. Works with zero live connections.
+    bucket-pull: async func(doc-id: list<u8>, owner-id: list<u8>) -> result<string, string>;
+
     // --- the iroh wire + subduction sync (from the skeleton) ---
 
     iroh-bind: async func(relay-url: string) -> result<string, string>;
@@ -83,6 +116,7 @@ interface driver {
 world spike {
     import polymorph:iroh/endpoint@0.1.0;
     import polymorph:iroh/identity-generate@0.1.0;
+    import polymorph:fetchspike/fetch@0.1.0;
     export driver;
     export polymorph-data:tasks/tasks@0.1.0;
 }
