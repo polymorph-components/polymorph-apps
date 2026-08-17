@@ -3,6 +3,7 @@
 # Requires: Rust (wasm32-unknown-unknown), wasm-tools, Deno.
 
 out := "../../docs/spike-todomvc"
+severer := "../no-js-bindgen/severer"
 
 # Full pipeline: guests -> components -> envelopes -> host bundle -> demo dir.
 build: guests
@@ -10,8 +11,11 @@ build: guests
     wasm-tools component new \
       guest/target/wasm32-unknown-unknown/release/todomvc_guest.wasm \
       -o build/todomvc.component.wasm
-    wasm-tools component new \
+    cargo build --release --manifest-path {{severer}}/Cargo.toml
+    {{severer}}/target/release/wbg-sever \
       guest-dioxus/target/wasm32-unknown-unknown/release/todomvc_dioxus_guest.wasm \
+      build/todomvc-dioxus.severed.wasm
+    wasm-tools component new build/todomvc-dioxus.severed.wasm \
       -o build/todomvc-dioxus.component.wasm
     wasm-tools component new \
       lab/target/wasm32-unknown-unknown/release/lab_guest.wasm \

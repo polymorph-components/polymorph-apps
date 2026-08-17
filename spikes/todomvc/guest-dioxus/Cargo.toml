@@ -27,10 +27,4 @@ codegen-units = 1
 panic = "abort"
 strip = "debuginfo"
 
-# The real subsecond (dioxus's hot-patch runtime) links js-sys/wasm-bindgen
-# on all wasm32 targets, which poisons a pure component build. The vendored
-# stub is API-identical and inert (release semantics: call directly).
-[patch.crates-io]
-subsecond = { path = "../vendor/subsecond" }
-
 [workspace]

@@ -1,0 +1,1 @@
+/home/lmartin/.paseo/worktrees/3neqjqbr/powerful-puma/spikes/no-js-bindgen/severer/target/release/wbg-sever: /home/lmartin/.paseo/worktrees/3neqjqbr/powerful-puma/spikes/no-js-bindgen/severer/src/main.rs

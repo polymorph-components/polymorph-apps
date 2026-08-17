@@ -1,8 +1,0 @@
-[package]
-name = "subsecond"
-version = "0.7.10"
-edition = "2021"
-publish = false
-description = "Inert stand-in for dioxus's subsecond hot-patching runtime: identical API, no wasm-bindgen/js-sys, for pure wasm32-unknown-unknown component builds."
-
-[workspace]

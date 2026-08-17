@@ -124,11 +124,15 @@ The framework-support research and decision (2026-08-16):
   commented out in the source. Supporting it means forking its view
   layer. Its standalone `reactive_graph` remains attractive for a future
   hand-rolled fine-grained renderer.
-- **One dependency lie needed patching**: dioxus-core's mandatory
+- **One dependency lie needed severing**: dioxus-core's mandatory
   `subsecond` (hot-patch runtime) links js-sys/wasm-bindgen on *all*
   wasm32 targets — "wasm32 implies browser" strikes again — which poisons
-  componentization. `vendor/subsecond/` is an API-identical inert stub
-  (release semantics: call directly), applied via `[patch.crates-io]`.
+  componentization. Solved generically at composition time:
+  [`../no-js-bindgen`](../no-js-bindgen)'s `wbg-sever` replaces every
+  JS-boundary import with a trapping body and strips the describe
+  machinery (4 imports severed, 1930 describe exports stripped here).
+  A bespoke source-level subsecond stub predated it and was deleted once
+  severing proved sufficient.
 - **Surface additions the framework forced** (the exact prerequisite list
   predicted): `create-text-node` (mixed content like the
   `<strong>{n}</strong> items left` counter), and `before`/`after`
@@ -216,7 +220,7 @@ Pipeline: `cargo build` (todomvc + lab guests) → `wasm-tools component new`
 |---|---|
 | deltic (`@deltic/runtime`, `@deltic/translator`) | `0.1.0-pre.gc4043e6` (JSR) |
 | wit-bindgen (Rust crate) | `=0.60.0` |
-| dioxus (`dioxus`, `dioxus-core`, `dioxus-html`) | `=0.7.10` (subsecond stubbed, see `vendor/`) |
+| dioxus (`dioxus`, `dioxus-core`, `dioxus-html`) | `=0.7.10` (JS boundary severed at build, see `../no-js-bindgen`) |
 | Rust | 1.96.0, `wasm32-unknown-unknown` |
 
 `web/todomvc-app.css` is vendored from
