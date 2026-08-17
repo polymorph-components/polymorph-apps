@@ -818,6 +818,44 @@ service** (todomvc + kanban + velocity chart over one shared task
 partition — the chart reading automerge history), which exhibits the
 differentiator no platform has.
 
+**The consent surface and kernel capabilities** (2026-08-17). Does the
+unification extend to the permission dialog itself — a regular
+component distinguished only by a sensitive import? **Yes at the
+mechanism level, no at the trust level.** Mechanically the consent
+renderer is the most confinable component in the system: its profile
+is `grant-table` (propose/commit) + `trusted-surface` (chrome-owned
+rendering, exclusive input) + pending-request metadata — no doc
+access, no egress, the "pure" badge on the thing that grants
+everything else; and the curated-DOM surface mechanism (#16) can host
+it in chrome space unchanged. But three things break the "just a
+sensitive capability" framing: (1) **self-reference** — every grant is
+mediated by the consent surface except its own; its authority is
+axiomatic, appointed by the release, the fixed point of the grant
+system; (2) **the badge bottoms out** — computed profiles are
+*displayed by* the consent surface, so a malicious renderer defeats
+the display layer that would warn about it: at this boundary
+derivation hands off to **attestation** (named in the signed release,
+pinned by the shell — #3 doing what the badge cannot); (3) **failure
+is different in kind** — a grant-table holder mints arbitrary
+authority; that is TCB membership, not blast radius. Resolution:
+**one component kind, stratified capabilities.** Ordinary
+capabilities are consent-grantable; **kernel capabilities**
+(grant-table write, trusted-surface, linker control, keystore root,
+updater) are holdable by components — keeping the kernel
+micro-kernel-shaped and the consent UI swappable — but granted only
+through the **appointment path** (signed release + ceremony flows the
+powerbox cannot itself perform), with holders enumerated in the #1
+TCB statement. Precedent both ways: Android IMEs/accessibility
+services prove regular-app-with-extraordinary-capability works and
+warn that its grant path must be different in kind, not just
+scarier-looking. The stratification is a gradient, not a wall:
+grant-minting authority is **attenuable** ("mint grants only for
+scopes this service governs"), so service-shipped **picker
+components** (tasks-read + grant-mint(tasks:*) on a trusted surface)
+realize the powerbox — the picking is the granting — with the
+sensitive authority narrowed to the vocabulary the service already
+owns.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
