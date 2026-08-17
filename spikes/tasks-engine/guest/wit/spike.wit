@@ -12,12 +12,43 @@ interface driver {
     init: async func() -> result<string, string>;
 
     // --- keyhive membership (synced by the bridge over the wire) ---
+    //
+    // Agent ids are 32-byte identifiers; individuals, groups, and docs
+    // share the id space. G3: users are GROUPS of device individuals —
+    // partitions are delegated to groups, sharing adds the other user's
+    // group, and "lost phone" and "removed collaborator" are the same
+    // revocation mechanic at different nodes of the delegation graph.
 
-    kh-knows-peer: async func(peer-id: list<u8>) -> result<bool, string>;
+    kh-knows-agent: async func(agent-id: list<u8>) -> result<bool, string>;
+
+    /// Create a group; the caller's individual is its first (admin) member.
+    kh-create-group: async func() -> result<list<u8>, string>;
+
+    /// Enroll an agent into a group. `level` is one of "read", "edit",
+    /// "admin". Adding to a group propagates CGKA adds to every doc that
+    /// (transitively) contains the group — from the next epoch onward.
+    kh-add-to-group: async func(group-id: list<u8>, member-id: list<u8>, level: string) -> result<_, string>;
+
+    /// Revoke an agent from a group ("lost phone"): docs containing the
+    /// group drop CGKA leaves for individuals no longer reachable.
+    kh-revoke-from-group: async func(group-id: list<u8>, member-id: list<u8>) -> result<_, string>;
+
+    /// Export the constitutive events reachable to an agent (a "group
+    /// card"): bincoded static events, carried out of band (QR/paste in
+    /// the product; the host in this spike). The bridge only offers a
+    /// group's ops to its members, so sharing with a foreign group needs
+    /// its card ingested first.
+    kh-export-card: async func(agent-id: list<u8>) -> result<list<u8>, string>;
+
+    /// Ingest a pasted card. Returns how many events stayed pending
+    /// (unresolvable until more context arrives).
+    kh-ingest-card: async func(card: list<u8>) -> result<u32, string>;
+
     /// `level` is one of "read", "edit", "admin" (authors need "edit":
-    /// subduction's put policy requires it).
-    kh-add-member: async func(doc-id: list<u8>, peer-id: list<u8>, level: string) -> result<_, string>;
-    kh-revoke-member: async func(doc-id: list<u8>, peer-id: list<u8>) -> result<_, string>;
+    /// subduction's put policy requires it). The agent may be an
+    /// individual or a group (transitive members get CGKA leaves).
+    kh-add-member: async func(doc-id: list<u8>, agent-id: list<u8>, level: string) -> result<_, string>;
+    kh-revoke-member: async func(doc-id: list<u8>, agent-id: list<u8>) -> result<_, string>;
 
     // --- the iroh wire + subduction sync (from the skeleton) ---
 

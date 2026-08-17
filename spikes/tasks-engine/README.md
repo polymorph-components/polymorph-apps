@@ -1,4 +1,4 @@
-# Tasks-engine spike (#20 G1 + G2)
+# Tasks-engine spike (#20 G1 + G2 + G3)
 
 The walking skeleton's content spine generalized from a linear chain to
 the **real automerge change DAG**, with the first data service —
@@ -38,23 +38,73 @@ schema-authority contract (NOTES.md, "System services"): apps bind
 spike serves it from the same component as the engine; splitting it into
 its own component later is a wac refactor, not a contract change.
 
+## Users are groups of devices (G3, #10's minimal slice)
+
+"Alice" and "bob" are keyhive **groups**; devices are individuals
+enrolled in them. The partition is delegated to the groups (never to
+devices); effective access is transitive (individual → user group →
+doc), and subduction's policies resolve it transitively too
+(`transitive_members`). The two demo failure stories are the same
+mechanic at different nodes of the delegation graph:
+
+- **Removed collaborator**: revoke bob's *group* from the *doc*.
+- **Lost phone**: revoke the *phone* from Alice's *group* — every doc
+  containing the group drops CGKA leaves for individuals no longer
+  reachable.
+
+Cross-user linking is by **card**: an agent's card carries the
+memberships it can reach (bob's card = his prekeys + his group's
+constitutive ops). Bob pastes his card to Alice (QR/link in the
+product; the host carries it here), and it must be distributed to
+*every* member instance — see findings.
+
 ## Scenario (host/src/main.rs)
 
 Three engine instances over a real iroh relay: Alice's **laptop** and
-**phone** (both direct members — device = key stand-in until #11's
-device tree) and **bob**, a collaborator. Laptop is the wire hub.
+**phone** (enrolled in her user group) and **bob**, a collaborator with
+his own user group. Laptop is the wire hub.
 
 1. Wires up (two tagged QUIC streams per connection: 'S' subduction,
    'K' keyhive bridge); contact cards travel over the bridge.
-2. Partition lifecycle: create → add members (**edit** — subduction's
-   put policy requires it) → seal; members adopt and first-sync.
-3. Tasks flow + the concurrency fork/merge + three-way convergence.
-4. Collaborator edit propagates.
-5. Revocation: bob is cut off; **phone rides the rotation** (~100 ms)
-   and sees the post-revocation task; bob never does.
+2. Groups: laptop creates Alice's group and enrolls the phone; bob
+   creates his; cards are exchanged (bob's to laptop AND phone,
+   Alice's to bob).
+3. Partition lifecycle: create → delegate to the two groups (**edit** —
+   subduction's put policy requires it) → seal; members adopt,
+   first-sync, and decrypt transitively.
+4. Tasks flow + the concurrency fork/merge + three-way convergence.
+5. Collaborator edit propagates (transitive put authority).
+6. Revocation flavor 1: bob's group revoked from the doc; **phone rides
+   the rotation** (~100 ms); bob never sees the new task (and received
+   none of its bytes).
+7. Revocation flavor 2 (lost phone): phone revoked from Alice's group;
+   laptop's next task never becomes readable at the phone (ciphertext
+   arrived, decrypt refused — `undecryptable: 1`).
 
 ## Findings
 
+- **Cards must be distributed to every member instance; the wire will
+  not do it.** The bridge's reachability model offers a group's
+  constitutive ops only to that group's members, in both directions of
+  every pair sync. So after Alice pastes bob's card on her laptop, her
+  phone can never learn bob's group over the wire — it holds a
+  `doc → bob-group` delegation whose delegate never materializes. Runs
+  with partially distributed cards failed intermittently (~1/3): the
+  member wedged at `KeyNotFound` for the creation chunk and ~100
+  phone-initiated re-sync rounds never healed it (op-arrival order
+  varies run to run; whether a pending foreign-group delegation wedges
+  epoch derivation permanently is an open upstream question worth a
+  minimal repro). With cards distributed to all members: 8/8 green.
+  Product consequence: received cards are state that must replicate to
+  the user's other devices (e.g. inside a doc the devices share), not a
+  one-device paste.
+- **Group-card export is "events for my individual", not "events for
+  the group".** `static_events_for_agent(group)` walks memberships the
+  *group* can reach (upward), which excludes the group's own
+  constitutive ops. Exporting for the *individual* yields the useful
+  card: prekeys + every membership the person can reach. (It also
+  carries every group/doc the person can reach — a privacy surface to
+  scope before the product exposes it.)
 - **`KeyhiveProtocol`'s event cache must be refreshed after local ops.**
   `sync_keyhive` serves each peer's event set from a
   `PeriodicEventCache` once one exists. Upstream's runtime refreshes it
@@ -69,14 +119,18 @@ device tree) and **bob**, a collaborator. Laptop is the wire hub.
   periodic loop. The spike nudges a refreshed re-sync from read polls
   that find themselves waiting (missing keyhive doc, undecryptable
   chunks), rate-limited to ~every 20th poll.
-- **The skeleton's post-revocation push observation is
-  timing-dependent.** With the cache refreshed, the revoked subscriber
-  did *not* receive the post-revocation ciphertext (0 extra bytes at
-  bob), unlike the skeleton run where the subscription pushed it. The
-  crypto layer held in both. Relevant context for the #17 draft: the
-  bypass is not unconditional.
+- **Push behavior after the two revocation flavors differs, and both
+  are safe.** Doc-level group revocation: the revoked member received
+  *no bytes* of the next chunk (the push policy filtered him).
+  Group-membership revocation: the revoked device still received the
+  ciphertext but cannot decrypt it. Context for the #17 draft: the
+  skeleton's "subscription bypasses the pull gate" observation is
+  timing-dependent, not unconditional.
 - Ordering (from the skeleton, still load-bearing): create → add
-  members → **first seal**. BeeKEM adds are not retroactive.
+  members → **first seal**. BeeKEM adds are not retroactive. Enrolling
+  a device into a group propagates CGKA adds to docs containing the
+  group from the next epoch onward — same non-retroactivity,
+  transitively.
 
 ## Running
 

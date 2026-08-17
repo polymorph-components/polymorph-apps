@@ -637,11 +637,29 @@ declared otherwise (see the status note at the top).
   post-cache local op, e.g. the post-revocation rotation, is silently
   never offered to peers), and **one-shot bridge syncs need a retry
   discipline** (the spike re-syncs from read polls that find
-  themselves waiting; upstream intends a periodic loop). With the
+  themselves waiting; upstream intends a periodic loop).   With the
   cache refreshed, the post-revocation ciphertext did *not* reach the
   revoked subscriber — the 3b "subscriptions bypass the pull gate"
   observation is timing-dependent, not unconditional (context for the
-  #17 draft).
+  #17 draft). **G3 executed 2026-08-16 and passed** (same spike): users
+  are keyhive GROUPS of device individuals — the partition is delegated
+  to groups, devices decrypt transitively, subduction's policies
+  resolve access transitively, and the two demo failure stories are one
+  mechanic at different graph nodes (removed collaborator = revoke
+  bob's group from the doc, zero ciphertext bytes even reached him;
+  lost phone = revoke the device from the user group, ciphertext
+  arrives and decrypt refuses). Cross-user linking is by **card**
+  (export the *individual's* reachable events — the group-agent export
+  excludes the group's own constitutive ops); the bridge's reachability
+  model offers a group's ops only to its members, so **cards must be
+  distributed to every member instance** — a one-device paste
+  intermittently wedged the un-carded device at `KeyNotFound`
+  permanently (~1/3 of runs; op-arrival order dependent; open upstream
+  question whether a pending foreign-group delegation should wedge
+  epoch derivation). Product consequence for #10: received cards are
+  replicated state (carry them in a doc the user's devices share), and
+  the individual-card export leaks every membership the person can
+  reach — scope before product exposure.
 - **Topology leaning: one engine composite, one keyhive instance.**
   `subduction_keyhive` is an in-process wrapper that *holds* the
   `Keyhive` instance, implementing subduction's connection/storage

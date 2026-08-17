@@ -37,11 +37,12 @@ use polymorph_webcrypto_guest::{ed25519, SigningKey, SigningKeyOptions};
 
 use beekem::encrypted::EncryptedContent;
 use keyhive_core::access::Access;
+use keyhive_core::event::static_event::StaticEvent;
 use keyhive_core::keyhive::Keyhive;
 use keyhive_core::listener::no_listener::NoListener;
 use keyhive_core::principal::document::id::DocumentId;
+use keyhive_core::principal::group::id::GroupId;
 use keyhive_core::principal::identifier::Identifier;
-use keyhive_core::principal::individual::id::IndividualId;
 use keyhive_core::principal::membered::Membered;
 use keyhive_core::store::ciphertext::memory::MemoryCiphertextStore;
 use keyhive_crypto::signed::SigningError;
@@ -419,15 +420,22 @@ fn arr32(bytes: &[u8], what: &str) -> Result<[u8; 32], String> {
 }
 
 fn kh_doc_id(bytes: &[u8]) -> Result<DocumentId, String> {
-    let arr = arr32(bytes, "doc id")?;
-    let vk = DalekVerifyingKey::from_bytes(&arr).map_err(|e| format!("bad doc id: {e:?}"))?;
-    Ok(DocumentId::from(Identifier::from(vk)))
+    Ok(DocumentId::from(identifier(bytes)?))
 }
 
-fn individual_id(bytes: &[u8]) -> Result<IndividualId, String> {
-    let arr = arr32(bytes, "peer id")?;
-    let vk = DalekVerifyingKey::from_bytes(&arr).map_err(|e| format!("bad peer id: {e:?}"))?;
-    Ok(Identifier::from(vk).into())
+fn identifier(bytes: &[u8]) -> Result<Identifier, String> {
+    let arr = arr32(bytes, "agent id")?;
+    let vk = DalekVerifyingKey::from_bytes(&arr).map_err(|e| format!("bad agent id: {e:?}"))?;
+    Ok(Identifier::from(vk))
+}
+
+fn parse_access(level: &str) -> Result<Access, String> {
+    match level {
+        "read" => Ok(Access::Read),
+        "edit" => Ok(Access::Edit),
+        "admin" => Ok(Access::Admin),
+        other => Err(format!("unknown access level {other}")),
+    }
 }
 
 fn tree_id(bytes: &[u8]) -> Result<SedimentreeId, String> {
@@ -669,6 +677,10 @@ async fn apply_new_chunks(id: &[u8]) -> Result<(), String> {
     let Some(kh_doc) = kh.get_document(did).await else {
         // Commits are here but keyhive hasn't learned the doc yet: not an
         // error, just not-synced-yet. Ask the bridge to try again.
+        eprintln!(
+            "[apply] {} commits waiting, keyhive doc unknown; nudging",
+            pending.len()
+        );
         nudge_keyhive_sync().await;
         return Ok(());
     };
@@ -882,27 +894,91 @@ impl DriverGuest for Component {
         Ok(hex::encode(verifying.to_bytes()))
     }
 
-    async fn kh_knows_peer(peer: Vec<u8>) -> Result<bool, String> {
+    async fn kh_knows_agent(agent: Vec<u8>) -> Result<bool, String> {
         breathe().await;
         let kh = with_state(|s| s.kh.clone())?;
-        let iid = individual_id(&peer)?;
-        Ok(kh.get_agent(iid.into()).await.is_some())
+        Ok(kh.get_agent(identifier(&agent)?).await.is_some())
     }
 
-    async fn kh_add_member(doc_id: Vec<u8>, peer: Vec<u8>, level: String) -> Result<(), String> {
-        let access = match level.as_str() {
-            "read" => Access::Read,
-            "edit" => Access::Edit,
-            "admin" => Access::Admin,
-            other => return Err(format!("unknown access level {other}")),
-        };
+    async fn kh_create_group() -> Result<Vec<u8>, String> {
+        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+        let group = kh
+            .generate_group(vec![])
+            .await
+            .map_err(|e| format!("generate group: {e:?}"))?;
+        let id = { group.lock().await.group_id().to_bytes().to_vec() };
+        refreshed_sync(&proto, None).await?;
+        Ok(id)
+    }
+
+    async fn kh_add_to_group(
+        group_id: Vec<u8>,
+        member: Vec<u8>,
+        level: String,
+    ) -> Result<(), String> {
+        let access = parse_access(&level)?;
+        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+        let gid = GroupId::new(identifier(&group_id)?);
+        let group = kh
+            .get_group(gid)
+            .await
+            .ok_or("group not found".to_string())?;
+        let agent = kh
+            .get_agent(identifier(&member)?)
+            .await
+            .ok_or("member agent not found (no card yet)".to_string())?;
+        kh.add_member(agent, &Membered::Group(gid, group), access, &[])
+            .await
+            .map_err(|e| format!("add to group: {e:?}"))?;
+        refreshed_sync(&proto, None).await?;
+        Ok(())
+    }
+
+    async fn kh_revoke_from_group(group_id: Vec<u8>, member: Vec<u8>) -> Result<(), String> {
+        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+        let gid = GroupId::new(identifier(&group_id)?);
+        let group = kh
+            .get_group(gid)
+            .await
+            .ok_or("group not found".to_string())?;
+        kh.revoke_member(identifier(&member)?, true, &Membered::Group(gid, group))
+            .await
+            .map_err(|e| format!("revoke from group: {e:?}"))?;
+        refreshed_sync(&proto, None).await?;
+        Ok(())
+    }
+
+    async fn kh_export_card(agent_id: Vec<u8>) -> Result<Vec<u8>, String> {
+        let kh = with_state(|s| s.kh.clone())?;
+        let agent = kh
+            .get_agent(identifier(&agent_id)?)
+            .await
+            .ok_or("agent not found".to_string())?;
+        let events: Vec<StaticEvent<T>> = kh
+            .static_events_for_agent(&agent)
+            .await
+            .into_values()
+            .collect();
+        bincode::serialize(&events).map_err(|e| format!("serialize card: {e}"))
+    }
+
+    async fn kh_ingest_card(card: Vec<u8>) -> Result<u32, String> {
+        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+        let events: Vec<StaticEvent<T>> =
+            bincode::deserialize(&card).map_err(|e| format!("bad card: {e}"))?;
+        let pending = kh.ingest_unsorted_static_events(events).await;
+        refreshed_sync(&proto, None).await?;
+        Ok(pending.len() as u32)
+    }
+
+    async fn kh_add_member(doc_id: Vec<u8>, agent_id: Vec<u8>, level: String) -> Result<(), String> {
+        let access = parse_access(&level)?;
         let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
         let did = kh_doc_id(&doc_id)?;
-        let iid = individual_id(&peer)?;
         let agent = kh
-            .get_agent(iid.into())
+            .get_agent(identifier(&agent_id)?)
             .await
-            .ok_or("agent not found (bridge has not synced its contact card yet)".to_string())?;
+            .ok_or("agent not found (bridge has not synced its card yet)".to_string())?;
         let doc = kh
             .get_document(did)
             .await
@@ -914,15 +990,14 @@ impl DriverGuest for Component {
         Ok(())
     }
 
-    async fn kh_revoke_member(doc_id: Vec<u8>, peer: Vec<u8>) -> Result<(), String> {
+    async fn kh_revoke_member(doc_id: Vec<u8>, agent_id: Vec<u8>) -> Result<(), String> {
         let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
         let did = kh_doc_id(&doc_id)?;
-        let iid = individual_id(&peer)?;
         let doc = kh
             .get_document(did)
             .await
             .ok_or("doc not found".to_string())?;
-        kh.revoke_member(iid.into(), true, &Membered::Document(did, doc))
+        kh.revoke_member(identifier(&agent_id)?, true, &Membered::Document(did, doc))
             .await
             .map_err(|e| format!("revoke member: {e:?}"))?;
         refreshed_sync(&proto, None).await?;

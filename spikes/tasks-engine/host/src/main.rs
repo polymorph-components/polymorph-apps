@@ -274,11 +274,11 @@ async fn scenario(
     let mut known = false;
     for _ in 0..2000 {
         let kp = l
-            .call_kh_knows_peer(acc, p_id_bytes.clone())
+            .call_kh_knows_agent(acc, p_id_bytes.clone())
             .await?
             .map_err(|e| format_err!("{e}"))?;
         let kb = l
-            .call_kh_knows_peer(acc, b_id_bytes.clone())
+            .call_kh_knows_agent(acc, b_id_bytes.clone())
             .await?
             .map_err(|e| format_err!("{e}"))?;
         if kp && kb {
@@ -292,15 +292,81 @@ async fn scenario(
     }
     println!("[{:>9.2?}] contact cards exchanged over the bridge", t.elapsed());
 
-    // 2. Partition lifecycle: create → add members (edit) → seal.
+    // 2. Users are groups of devices (G3, #10's minimal slice).
+    // Alice: laptop creates her user group and enrolls the phone (its
+    // contact card arrived over the bridge). Bob: his own user group.
+    let alice_g = step!("laptop.kh-create-group (user 'alice')", l.call_kh_create_group(acc));
+    step!(
+        "laptop.kh-add-to-group(phone, edit) [enrollment]",
+        l.call_kh_add_to_group(acc, alice_g.clone(), p_id_bytes.clone(), "edit".into())
+    );
+    let bob_g = step!("bob.kh-create-group (user 'bob')", b.call_kh_create_group(acc));
+
+    // The bridge only offers a group's ops to its members, so Alice can't
+    // resolve Bob's group from the wire alone. Bob exports HIS OWN card
+    // (an agent's card carries the memberships it can reach — for bob:
+    // his user group's constitutive ops plus his prekeys) and Alice
+    // ingests it. QR/paste in the product; the host carries it here.
+    let bob_card = step!(
+        "bob.kh-export-card(bob) [self card: individual + group]",
+        b.call_kh_export_card(acc, b_id_bytes.clone())
+    );
+    println!("            card: {} bytes", bob_card.len());
+    let pending = step!(
+        "laptop.kh-ingest-card(bob-group)",
+        l.call_kh_ingest_card(acc, bob_card.clone())
+    );
+    println!("            events pending after ingest: {pending}");
+    // The card must ALSO reach Alice's other devices: the bridge's
+    // reachability model never offers a foreign group's constitutive ops
+    // to non-members, so a paste on one device cannot propagate to the
+    // rest over the wire. (Design note for the product: carry received
+    // cards inside a doc the user's devices share.)
+    let pending_p = step!(
+        "phone.kh-ingest-card(bob-group)",
+        p.call_kh_ingest_card(acc, bob_card)
+    );
+    println!("            events pending after ingest (phone): {pending_p}");
+    // Contact exchange is mutual: bob gets Alice's card (her individual
+    // reaches alice-group, so the card carries the group's ops).
+    let alice_card = step!(
+        "laptop.kh-export-card(alice) [self card]",
+        l.call_kh_export_card(acc, l_id_bytes.clone())
+    );
+    let pending_b = step!(
+        "bob.kh-ingest-card(alice-group)",
+        b.call_kh_ingest_card(acc, alice_card)
+    );
+    println!("            events pending after ingest (bob): {pending_b}");
+    let t = Instant::now();
+    let mut known = false;
+    for _ in 0..2000 {
+        if l
+            .call_kh_knows_agent(acc, bob_g.clone())
+            .await?
+            .map_err(|e| format_err!("{e}"))?
+        {
+            known = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    }
+    if !known {
+        bail!("laptop never resolved bob's group from the ingested card");
+    }
+    println!("[{:>9.2?}] laptop resolves bob's group as an agent", t.elapsed());
+
+    // 3. Partition lifecycle: create → delegate to GROUPS → seal. Phone
+    // and bob get access transitively (individual → user group → doc);
+    // the epoch at seal time covers all transitive individuals.
     let part = step!("laptop.create-partition", l.call_create_partition(acc));
     step!(
-        "laptop.kh-add-member(phone, edit)",
-        l.call_kh_add_member(acc, part.clone(), p_id_bytes.clone(), "edit".into())
+        "laptop.kh-add-member(alice-group, edit)",
+        l.call_kh_add_member(acc, part.clone(), alice_g.clone(), "edit".into())
     );
     step!(
-        "laptop.kh-add-member(bob, edit)",
-        l.call_kh_add_member(acc, part.clone(), b_id_bytes.clone(), "edit".into())
+        "laptop.kh-add-member(bob-group, edit)",
+        l.call_kh_add_member(acc, part.clone(), bob_g.clone(), "edit".into())
     );
     step!("laptop.seal-partition", l.call_seal_partition(acc, part.clone()));
     step!("phone.adopt-partition", p.call_adopt_partition(acc, part.clone()));
@@ -428,10 +494,11 @@ async fn scenario(
     })
     .await?;
 
-    // 6. Revocation: bob is cut off from the new epoch; devices ride it.
+    // 7. Revocation, flavor 1 — collaborator: revoke BOB'S GROUP from the
+    // doc. Bob is cut off from the new epoch; Alice's devices ride it.
     step!(
-        "laptop.kh-revoke-member(bob)",
-        l.call_kh_revoke_member(acc, part.clone(), b_id_bytes.clone())
+        "laptop.kh-revoke-member(bob-group)",
+        l.call_kh_revoke_member(acc, part.clone(), bob_g.clone())
     );
     step!(
         "laptop.tasks.add('secret task') [post-revocation]",
@@ -457,10 +524,34 @@ async fn scenario(
     let b_stats = b.call_stats(acc).await?;
     println!("            bob still sees 4 tasks; {b_stats}");
 
-    for (name, d) in [("laptop", l), ("phone", p)] {
-        let s = d.call_stats(acc).await?;
-        println!("{name}: {s}");
+    // 8. Revocation, flavor 2 — lost phone: revoke the PHONE from Alice's
+    // user group. Same mechanic, different node of the delegation graph.
+    step!(
+        "laptop.kh-revoke-from-group(alice-group, phone) [lost phone]",
+        l.call_kh_revoke_from_group(acc, alice_g.clone(), p_id_bytes.clone())
+    );
+    step!(
+        "laptop.tasks.add('post-lost-phone task')",
+        lt.call_add(acc, "post-lost-phone task".into())
+    );
+    wait_items(acc, lt, "laptop sees all 6 tasks", |i| i.len() == 6).await?;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let snap = pt
+        .call_items(acc)
+        .await?
+        .map_err(|e| format_err!("phone items: {e}"))?;
+    if snap.items.iter().any(|x| x.title == "post-lost-phone task") {
+        bail!("LOST-PHONE FAILURE: the revoked phone reads the new task");
     }
+    if snap.items.len() != 5 {
+        bail!("phone's view changed unexpectedly: {:?}", snap.items);
+    }
+    let p_stats = p.call_stats(acc).await?;
+    println!("            phone still sees 5 tasks; {p_stats}");
+
+    let l_stats = l.call_stats(acc).await?;
+    println!("laptop: {l_stats}");
     println!("\nSPIKE PASSED");
     Ok(())
 }
