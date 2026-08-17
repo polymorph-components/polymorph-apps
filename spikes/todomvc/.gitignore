@@ -1,4 +1,3 @@
-/target
-guest/target/
+target/
 build/
 node_modules/

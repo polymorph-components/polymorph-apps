@@ -1,1 +1,0 @@
-/home/lmartin/.paseo/worktrees/3neqjqbr/powerful-puma/spikes/todomvc/lab/target/wasm32-unknown-unknown/release/lab_guest.wasm: /home/lmartin/.paseo/worktrees/3neqjqbr/powerful-puma/spikes/todomvc/lab/src/lib.rs /home/lmartin/.paseo/worktrees/3neqjqbr/powerful-puma/spikes/todomvc/wit/todomvc.wit
