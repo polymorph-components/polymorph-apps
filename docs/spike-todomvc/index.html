@@ -20,7 +20,13 @@
       transition: grid-template-rows 700ms cubic-bezier(.2, .8, .2, 1);
     }
     #chrome-drawer.chrome-open { grid-template-rows: 1fr; }
-    #chrome-drawer > div { overflow: hidden; min-height: 0; }
+    /* Bottom-anchor the content inside the clip so it slides DOWN in
+       lockstep with the strip — a drawer being pulled open, not a
+       curtain being raised. */
+    #chrome-drawer > div {
+      overflow: hidden; min-height: 0;
+      display: flex; flex-direction: column; justify-content: flex-end;
+    }
     @media (prefers-reduced-motion: reduce) {
       #chrome-drawer { transition: none; }
     }
