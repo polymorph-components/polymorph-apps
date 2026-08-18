@@ -92,6 +92,45 @@ per pane (×3, one browser page):
   `kh-knows-agent(doc)` → subscriptions → bucket grant/flush → tablet
   cold boot → apps mounted.
 
+## Chrome, and where untrusted pixels live
+
+Two changes make the trust boundary legible rather than implied.
+
+**A persistent chrome strip** (#22) carries identity in the one region a
+component can never paint. Its background is the **user's own colour** —
+randomised on first run, changeable from a constrained palette (fixed
+lightness/chroma in OKLCH, so contrast cannot be customised away), and
+never disclosed to components. It stays CONSTANT while secondary
+surfaces come and go: an anchor that changed per component would stop
+being an anchor. While a provider panel is open, the strip names it — a
+colour chip derived from the component's own bytes (assigned, so a
+component cannot choose how it is labelled), its name QUOTED and
+clamped, then chrome's own words ("drawn by the component, not by
+chrome"). The same derived colour edges the panel region, so the
+rectangle and its label visibly agree. A reset (storage eviction) is
+ANNOUNCED, never silent — an anchor that quietly changes trains the user
+that it changes.
+
+This is deliberately NOT the personalization secret #22 dropped: it
+demands no user action at a decision point and no per-prompt
+verification, so it fails toward "something looks off" rather than "I
+forgot to check". It is a SECONDARY anchor behind position.
+
+**Component surfaces run in real sandboxed iframes** (#16):
+`sandbox="allow-scripts"` with no `allow-same-origin`, so each surface
+has an opaque origin, and the op protocol crosses a `MessagePort` to a
+frame-side applier that re-validates independently. Apps and panels no
+longer render into chrome's document at all. `__demo.frameProbe()`
+asserts the property (`sameOriginReachable: false`), and the anchor is
+now out of reach by construction rather than by allowlist — verified:
+`--chrome-bg` is scoped to the strip ELEMENT, not `:root`, so it does
+not even inherit into a region.
+
+Chrome also owns the **commit**: Save/Cancel live outside the granted
+region and call the panel's `commit()`, which returns a config or
+refuses with its own reason. A panel owning its own Save button owns the
+user's sense of what saving means.
+
 ## Deployment
 
 The hosted build is **continuously deployed**: `.github/workflows/pages.yml`
@@ -270,6 +309,37 @@ reports background queue depth and per-timer skip counts.
   as it is read, and `stats()` publishes the guest's table sizes
   (`tables syncs=… conns=… parts=…`) precisely because a growth bug in
   them is invisible from outside the component.
+- **Four bugs surfaced by moving surfaces into frames**, all of the same
+  family — a surface's lifetime and its measurements stop being things
+  the shell can observe directly:
+  1. **A component frame outlived its dialog.** Mounting is async
+     (artifact fetch + frame handshake) and `<dialog>` closes natively on
+     ESC, so a late mount, or any close path other than the buttons,
+     left a LIVE component holding a granted rectangle nobody could see.
+     Fixed with a generation counter checked after every await, plus
+     retirement hung off the dialog's `close` event — the one place that
+     sees every path.
+  2. **Height reporting raced the render-blocking stylesheet.** The
+     frame's first (and only) height report was taken before layout
+     existed, so it truthfully said 0, the shell clamped to its floor,
+     and a quiet app never corrected it. Now a `ResizeObserver` reports
+     continuously.
+  3. **`scrolling="no"` collapses `scrollHeight`.** Under
+     `overflow:hidden` it equals the clipped viewport, so the frame kept
+     reporting the shell's own clamp back to it. Measure the body's flow
+     box instead.
+  4. **The frame accepted a port from any sender.** Sibling frames are
+     reachable via `parent.frames[i]`, so the first sibling to post a
+     port could have become another frame's shell. The embedder check is
+     `e.source === window.parent`; origin cannot be used, because every
+     sandboxed frame reports "null".
+- **Isolation costs the old verification path**: chrome (and any test
+  driver) can no longer read into surfaces, and `browser_snapshot` stops
+  at the iframe. Driving is now engine-level assertions plus frame
+  self-reports; UI-level driving needs an explicit frame-side hook.
+- **A diagnostic that dies with the handshake reports "no faults" for a
+  frame that is on fire**: the fault channel first hung off the same
+  window listener the handshake removed. It gets its own listener now.
 - **Panel teardown is a deltic open question** (same one #22 lists for
   app kill): switching provider tabs clears the region and drops the
   references, but there is no explicit instance-terminate API — the

@@ -172,8 +172,14 @@ interface oauth-broker {
 /// provider code.
 ///
 /// Protocol: chrome calls `seed` (current config JSON, "" for none),
-/// then `run`; pumps `on-event`; polls `outcome` after each event.
-/// Some("") = cancelled; Some(json) = completed.
+/// then `run`; pumps `on-event`. COMMIT IS CHROME'S: the Save/Cancel
+/// affordances live outside the granted region, in chrome's own pixels,
+/// and chrome calls `commit` when the user saves. A panel that owned its
+/// own Save button would own the user's sense of what saving means —
+/// exactly the borrowed-authority hazard #22 is about.
+///
+/// `outcome` remains in the world for the cancelled/completed protocol,
+/// but chrome now drives it: panels return none.
 ///
 /// The S3 panel is PURE — dom/events/shell only, no egress: the
 /// #21 capability-profile contrast made visible next to its sibling.
@@ -188,6 +194,12 @@ world s3-panel {
   export run: async func();
   export on-event: async func(ev: event);
   export outcome: async func() -> option<string>;
+
+  /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
+  /// live outside the granted region), and asks the panel to produce its
+  /// configuration when the user commits. `none` = not valid yet; the
+  /// panel should render its own reason.
+  export commit: async func() -> option<string>;
 }
 
 /// The Dropbox panel carries two granted capabilities the S3 panel does
@@ -208,4 +220,10 @@ world dropbox-panel {
   export run: async func();
   export on-event: async func(ev: event);
   export outcome: async func() -> option<string>;
+
+  /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
+  /// live outside the granted region), and asks the panel to produce its
+  /// configuration when the user commits. `none` = not valid yet; the
+  /// panel should render its own reason.
+  export commit: async func() -> option<string>;
 }
