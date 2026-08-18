@@ -101,6 +101,11 @@
       <div id="tablet-app"></div>
     </div>
   </div>
-  <script type="module" src="./demo.js"></script>
+  <!-- Build stamp: the copy step rewrites 1a94ffd-1787054037 (see the justfile).
+       Unversioned assets meant returning visitors ran a cached bundle
+       against fresh artifacts — the miniature of NOTES §Release
+       integrity's rule: a tiny mutable root, everything else versioned. -->
+  <meta name="pm-build" content="1a94ffd-1787054037">
+  <script type="module" src="./demo.js?v=1a94ffd-1787054037"></script>
 </body>
 </html>

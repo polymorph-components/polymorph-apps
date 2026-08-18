@@ -74,7 +74,7 @@ site: translate app panels
     cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json serve/
     cp ../tasks-engine/target/composed.wasm serve/engine.component.wasm
     cp build/engine.plan.json serve/engine.plan.json
-    cp web/index.html serve/
+    sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > serve/index.html
     cp ../todomvc/web/todomvc-app.css serve/
 
 # Serve the demo (needs `just infra` in another terminal).
@@ -94,5 +94,5 @@ pages: translate app panels
     cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json ../../docs/spike-demo/
     cp ../tasks-engine/target/composed.wasm ../../docs/spike-demo/engine.component.wasm
     cp build/engine.plan.json ../../docs/spike-demo/
-    cp web/index.html ../../docs/spike-demo/
+    sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > ../../docs/spike-demo/index.html
     cp ../todomvc/web/todomvc-app.css ../../docs/spike-demo/

@@ -1,0 +1,103 @@
+# Continuous deployment of the demo site to GitHub Pages.
+#
+# The site was previously BUILT ON A LAPTOP and committed: every rebuild
+# added an ~11 MB engine composite to git history, and "keep Pages
+# updated" was a manual step that could silently drift from the source.
+# Here the artifact is built from the source tree on every push instead,
+# so the deployed demo is always the committed spike.
+#
+# Build runs on PRs too (a broken demo build should fail the PR, not the
+# deploy); only main deploys.
+#
+# CUTOVER, in this order — the committed docs/spike-demo/ is still what
+# serves today, and is deliberately NOT deleted by the change that
+# introduced this workflow:
+#   1. land this workflow and confirm a green `build` job on main;
+#   2. switch Pages source from "branch: main /docs" to "GitHub Actions"
+#      (repo settings, or `gh api -X POST .../pages -f build_type=workflow`)
+#      and confirm the `deploy` job publishes the same site;
+#   3. THEN delete docs/spike-demo/ from git and gitignore it — the
+#      artifacts stop accruing in history only once nothing serves them.
+# Doing (3) first would take the demo offline for the length of the gap.
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One deploy at a time; a superseded run is cancelled rather than
+  # racing another deployment of the same site.
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # The engine composite pulls keyhive + subduction + automerge from
+    # source; a cold cache is a long build.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Deno (the deltic host; stock, no flags)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.9.5"
+
+      - name: Set up siblings and tools
+        # Same script developers run: sibling ports pinned by commit, the
+        # toolchain from rust-toolchain.toml, wasm-tools/wac/just pinned.
+        run: ./scripts/setup.sh
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            spikes/tasks-engine
+            spikes/demo/guest-app
+            spikes/demo/guest-panel-s3
+            spikes/demo/guest-panel-dropbox
+
+      - name: Build the demo site
+        working-directory: spikes/demo
+        env:
+          IROH_CHECKOUT: ../../../polymorph-iroh
+        run: just pages
+
+      - name: Assemble the site
+        # docs/ is the site root: the index and the todomvc spike are
+        # committed builds; spike-demo is the one this workflow rebuilds.
+        run: |
+          test -f docs/spike-demo/engine.component.wasm
+          test -f docs/spike-demo/panel-dropbox.component.wasm
+          test -f docs/index.html
+          du -sh docs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+  deploy:
+    # Only the default branch deploys; PR builds stop at the artifact.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

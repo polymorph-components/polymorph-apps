@@ -107,13 +107,21 @@ Storage… dialog and is optional for boot.`;
 
 // --- artifacts -----------------------------------------------------------------
 
+/** Build stamp from the page's tiny mutable root; artifacts carry it so a
+ * cached bundle can never be paired with fresh components (or vice
+ * versa). Empty in a dev tree that skipped the rewrite. */
+const BUILD =
+  (document.querySelector('meta[name="pm-build"]') as HTMLMetaElement | null)
+    ?.content ?? "";
+const stamp = (path: string) => (BUILD && BUILD !== "__BUILD__" ? `${path}?v=${BUILD}` : path);
+
 async function fetchArtifacts(name: string): Promise<EngineArtifacts> {
   const [envelope, bytes] = await Promise.all([
-    fetch(`./${name}.plan.json`).then((r) => {
+    fetch(stamp(`./${name}.plan.json`)).then((r) => {
       if (!r.ok) throw new Error(`${name} plan: HTTP ${r.status}`);
       return r.text();
     }),
-    fetch(`./${name}.component.wasm`).then((r) => {
+    fetch(stamp(`./${name}.component.wasm`)).then((r) => {
       if (!r.ok) throw new Error(`${name} wasm: HTTP ${r.status}`);
       return r.arrayBuffer();
     }),
@@ -287,6 +295,8 @@ interface Pane {
   id: Uint8Array;
   runner?: Runner;
   app?: AppExports;
+  /** Polls dropped because the previous one was still in flight. */
+  pollSkips?: number;
   status: (line: string, sticky?: boolean) => void;
 }
 
@@ -341,9 +351,25 @@ async function mountApp(pane: Pane, appArtifacts: EngineArtifacts) {
   await runner.call(() => app.run());
   pane.app = app;
   pane.runner = runner;
-  // Remote changes surface as revision bumps; poll on a UI cadence.
+  // Remote changes surface as revision bumps; poll on a UI cadence —
+  // but SKIP a tick whose predecessor is still running. `runner.call`
+  // is an unbounded promise chain, so a poll that outlives its 400 ms
+  // period (routine while the engine is busy syncing) would otherwise
+  // append forever: the queue grows, latency grows with it, and the
+  // page ends up wedged with every tick's closure still retained.
+  let polling = false;
+  pane.pollSkips = 0;
   setInterval(() => {
-    runner.call(() => app.poll()).catch(() => {});
+    if (polling) {
+      pane.pollSkips!++;
+      return;
+    }
+    polling = true;
+    runner.call(() => app.poll())
+      .catch(() => {})
+      .finally(() => {
+        polling = false;
+      });
   }, 400);
 }
 
@@ -421,10 +447,35 @@ async function boot() {
   // itself (a wedged overlap of interval-driven driver calls froze the
   // page once; recorded).
   let bg: Promise<unknown> = Promise.resolve();
+  let bgDepth = 0;
   const enqueue = (f: () => Promise<unknown>) => {
-    const next = bg.then(f).catch(() => {});
+    bgDepth++;
+    const next = bg.then(f).catch(() => {}).finally(() => {
+      bgDepth--;
+    });
     bg = next;
     return next;
+  };
+  /** Periodic work must never QUEUE: if the previous tick is still
+   * running (consumer-API syncs take seconds, well past these periods),
+   * appending another job grows the chain without bound — the queue
+   * itself becomes the leak, and the page dies sluggish-then-locked.
+   * Ticks are skipped instead, which is the correct semantics anyway:
+   * a reconciliation pull is a refresh, not a transaction. */
+  const periodic = (name: string, everyMs: number, f: () => Promise<unknown>) => {
+    let running = false;
+    let skipped = 0;
+    setInterval(() => {
+      if (running) {
+        skipped++;
+        return;
+      }
+      running = true;
+      enqueue(f).finally(() => {
+        running = false;
+      });
+    }, everyMs);
+    return { name, skips: () => skipped };
   };
 
   // --- controls -------------------------------------------------------------
@@ -432,10 +483,10 @@ async function boot() {
   // Subscriptions carry the realtime path; a background reconciliation
   // pull bounds any missed push (one in-browser push miss was observed;
   // recorded as a finding).
-  setInterval(() => {
-    enqueue(() => pull(bob.engine, alice.id));
-    enqueue(() => pull(alice.engine, bob.id));
-  }, 2500);
+  const reconcile = periodic("reconcile", 2500, async () => {
+    await pull(bob.engine, alice.id);
+    await pull(alice.engine, bob.id);
+  });
 
   // --- the bucket leg: user-configured, activates the tablet ---------------
 
@@ -457,10 +508,36 @@ async function boot() {
    * collide with a fresh one's. */
   const sessionSuffix = () => `/run-${randomHex(4)}`;
 
-  const setupBucket = (cfg: StorageConfig) =>
-    enqueue(async () => {
+  // Storage setup is ~20 sequential provider calls (consumer APIs run
+  // ~0.5-1.5 s each), so a single "configuring…" line looks wedged for
+  // half a minute. Each step announces itself instead, and a failure
+  // says WHICH step died — the engine's transport errors now name the
+  // request, so the two compose into an actionable message.
+  // Guard against a SECOND setup while one is in flight. The 20 s
+  // configure window makes "click Save again" the natural user response,
+  // and a duplicate run re-mints container links and republishes pickup
+  // objects underneath the first one — the failure mode is confusing
+  // rather than harmless, so it is refused rather than queued.
+  let setupInFlight = false;
+
+  const setupBucket = (cfg: StorageConfig) => {
+    // The flag is claimed SYNCHRONOUSLY, not inside the job: the
+    // background chain serializes work, so a guard checked inside it
+    // would always find the previous run finished and would happily
+    // redo the whole thing. Verified by driving two calls in a row.
+    if (setupInFlight) {
+      tablet.status("storage setup already running — wait for it", true);
+      return Promise.resolve();
+    }
+    setupInFlight = true;
+    return enqueue(async () => {
+      let step = "init";
+      const at = (s: string) => {
+        step = s;
+        tablet.status(`configuring storage: ${s}…`, true);
+      };
       try {
-        tablet.status("configuring storage…");
+        at("provider config");
         currentProvider = cfg.provider;
         bobPickup = undefined;
         if (cfg.provider === "s3") {
@@ -481,7 +558,9 @@ async function boot() {
           await alice.engine.driver.initStore(owner);
           await tablet.engine.driver.initStore(owner);
           await bob.engine.driver.initStore(reader);
+          at("bucket + policy");
           await alice.engine.driver.ensureBucket();
+          at("grants");
           for (const m of [alice.id, bob.id, tablet.id]) {
             await alice.engine.driver.storeGrant(part, m); // S3: none
           }
@@ -504,40 +583,59 @@ async function boot() {
           await alice.engine.driver.initStore(owner);
           await tablet.engine.driver.initStore(owner);
           await bob.engine.driver.initStore(reader);
+          at("folders");
           await alice.engine.driver.ensureBucket();
+          at("grant: alice");
           await alice.engine.driver.storeGrant(part, alice.id);
+          at("grant: tablet");
           await alice.engine.driver.storeGrant(part, tablet.id);
+          at("grant: bob (pickup link)");
           bobPickup = await alice.engine.driver.storeGrant(part, bob.id);
         }
+        at("flush");
         await alice.engine.driver.bucketFlush(part);
-        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined));
+        at("tablet cold pull");
+        tablet.status(
+          await tablet.engine.driver.bucketPull(part, alice.id, undefined),
+          true,
+        );
         bucketReady = true;
         syncBtn.disabled = false;
         autoBox.disabled = false;
         pullBtn.disabled = false;
       } catch (e) {
-        tablet.status(`storage setup failed: ${err(e)} — check endpoint + CORS`);
+        // Name the step: a half-configured store is recoverable (every
+        // provider call is idempotent), so "retry Save & connect" is
+        // honest advice rather than a shrug.
+        tablet.status(
+          `storage setup failed at ${step}: ${err(e)} — check the endpoint/token and CORS, then Save & connect again`,
+          true,
+        );
+      } finally {
+        setupInFlight = false;
       }
     });
-
-  const bucketSync = () =>
-    enqueue(async () => {
-      if (!bucketReady) return;
-      try {
-        await alice.engine.driver.bucketFlush(part);
-        await tablet.engine.driver.bucketFlush(part);
-        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined));
-        alice.status(await alice.engine.driver.bucketPull(part, alice.id, undefined));
-      } catch (e) {
-        tablet.status(`bucket: ${err(e)}`);
-      }
-    });
-  syncBtn.onclick = () => {
-    bucketSync();
   };
-  setInterval(() => {
-    if (autoBox.checked) bucketSync();
-  }, 4000);
+
+  // The body, callable both from the button (queued once) and from the
+  // periodic driver (which skips rather than queues).
+  const bucketSyncOnce = async () => {
+    if (!bucketReady) return;
+    try {
+      await alice.engine.driver.bucketFlush(part);
+      await tablet.engine.driver.bucketFlush(part);
+      tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined), true);
+      alice.status(await alice.engine.driver.bucketPull(part, alice.id, undefined), true);
+    } catch (e) {
+      tablet.status(`bucket: ${err(e)}`, true);
+    }
+  };
+  syncBtn.onclick = () => {
+    enqueue(bucketSyncOnce);
+  };
+  const autoSync = periodic("auto-sync", 4000, async () => {
+    if (autoBox.checked) await bucketSyncOnce();
+  });
 
   // Bob pulling from the bucket is the revocation beat: S3 shows the
   // cooperative darkness (his K_p is gone), Dropbox the hard server-side
@@ -693,16 +791,14 @@ async function boot() {
 
   // Live stats footer per pane (the tablet keeps its setup hint until
   // storage is configured).
-  setInterval(() => {
-    enqueue(async () => {
-      for (const p of panes) {
-        if (p === tablet && !bucketReady) continue;
-        try {
-          p.status(await p.engine.driver.stats());
-        } catch { /* pane dead */ }
-      }
-    });
-  }, 4000);
+  const statsTick = periodic("stats", 4000, async () => {
+    for (const p of panes) {
+      if (p === tablet && !bucketReady) continue;
+      try {
+        p.status(await p.engine.driver.stats());
+      } catch { /* pane dead */ }
+    }
+  });
 
   // Debug/validation handles (the paseo browser driver uses these).
   (globalThis as unknown as Record<string, unknown>).__demo = {
@@ -713,6 +809,20 @@ async function boot() {
     pull,
     bobPull: () => bobPull(),
     openStorage: () => openStorage(),
+    // Exposed for driving: re-running setup is also how the in-flight
+    // guard is exercised without racing a 20 s consumer-API window.
+    setupBucket: (cfg: StorageConfig) => setupBucket(cfg),
+    // Backpressure telemetry: queue depth plus per-timer skip counts.
+    // If depth climbs monotonically, a periodic driver is queueing.
+    health: () => ({
+      bgDepth,
+      skips: {
+        reconcile: reconcile.skips(),
+        autoSync: autoSync.skips(),
+        stats: statsTick.skips(),
+        poll: Object.fromEntries(panes.map((p) => [p.name, p.pollSkips ?? 0])),
+      },
+    }),
     authorize,
     // The panel's granted fetch, exposed so the DENIAL side of the
     // per-destination grant is demonstrable and not merely asserted.

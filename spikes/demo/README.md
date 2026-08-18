@@ -92,6 +92,24 @@ per pane (×3, one browser page):
   `kh-knows-agent(doc)` → subscriptions → bucket grant/flush → tablet
   cold boot → apps mounted.
 
+## Deployment
+
+The hosted build is **continuously deployed**: `.github/workflows/pages.yml`
+runs `scripts/setup.sh` (sibling ports pinned by commit, toolchain from
+`rust-toolchain.toml`, `wasm-tools`/`wac`/`just` pinned), builds the site
+from source on every push, and deploys `docs/` to Pages from `main`. PRs
+build the site too but do not deploy — a broken demo fails the PR
+instead of the site.
+
+`docs/spike-demo/` is **still committed for now** — the cutover order is
+in the workflow header: prove the Actions build, switch the Pages source
+to GitHub Actions, and only then stop committing the artifacts (four
+rebuilds of an ~11 MB engine composite are already in history). Deleting
+them first would take the live demo offline for the length of the gap.
+`just pages` writes the same tree locally for preview. Bumping a sibling
+pin in `scripts/setup.sh` is deliberate: those ports carry embedder
+conventions that have broken this demo before.
+
 ## Run it
 
 ```
@@ -118,6 +136,19 @@ and the `spikes/tasks-engine` MinIO fetch (run that spike once).
 Headless bring-up phases (`just bringup solo|wire|bucket`) retire the
 platform layers one at a time under Deno; `wire soak` runs a 30 s
 post-revocation stress loop.
+
+Memory/backpressure probes (added while chasing a reported lockup):
+
+```sh
+deno run -A host/leak-probe.ts 90 pulls   # engines + live subscriptions, RSS
+deno run -A host/table-probe.ts           # 400 pulls, guest table sizes + RSS
+deno run -A host/cdp-heap.ts <url> 300    # real headless Chromium heap via CDP
+```
+
+`cdp-heap.ts` needs a Chromium binary (`CHROME=…`, or the Playwright
+cache default) and forces a GC at the end — the only reading that
+separates retention from uncollected garbage. In-page, `__demo.health()`
+reports background queue depth and per-timer skip counts.
 
 ## Findings
 
@@ -169,6 +200,76 @@ post-revocation stress loop.
   (stats stand down). Worth carrying into the framework's chrome: a
   status surface that mixes ambient telemetry with consequential
   one-shot messages needs priority, not last-writer-wins.
+- **A bare transport error is undiagnosable, and one of them killed the
+  whole setup.** A live run failed with
+  `fetch: send: ErrorCode::InternalError(Some("NetworkError…"))` — no
+  method, no host, no operation — after ~20 s of a single
+  "configuring storage…" line. Three fixes, all in this commit: every
+  provider request **names itself** in transport errors
+  (`PUT host/path: transport failed after 3 attempts: …`); transport
+  failures (never statuses — 429/5xx go to the caller untouched) **retry
+  up to 3×**, which is safe because every provider call here is
+  idempotent by construction; and setup **announces each step**
+  (`configuring storage: grant: bob (pickup link)…`), so a failure says
+  *which* of the ~20 sequential calls died and the remaining message is
+  actionable advice rather than "check endpoint + CORS".
+- **A duplicate "Save & connect" re-ran the entire setup**, re-minting
+  container links and republishing pickups under the first run. The
+  guard's placement is the subtle part: the background chain serializes
+  work, so a flag checked *inside* the job always finds the previous run
+  finished — it has to be claimed **synchronously at call time**.
+  (Verified by driving two calls in one tick; the second is refused.)
+- **Unversioned assets served returning visitors a stale bundle.** The
+  page loaded `demo.js` by bare name, so a rebuilt demo kept running the
+  cached script against fresh components — it cost an hour of chasing a
+  fix that was already deployed. The build now stamps a mutable root
+  (`<meta name="pm-build">` + `demo.js?v=…`) and artifacts inherit the
+  stamp: NOTES §Release integrity's bootloader shape in miniature, and
+  the thing that makes a Pages republish actually take effect.
+- **Console-generated Dropbox tokens expire in ~4 h**, and the failure
+  is now legible (`create_folder_v2 …: 401 expired_access_token`). The
+  OAuth path is the real fix: PKCE with `token_access_type=offline`
+  returns a refresh token, and the engine refreshes on 401 and retries
+  once. Paste-a-token remains the dev fallback with a stated cliff.
+- **Fixed-rate timers with no in-flight guard were the lockup.** Every
+  periodic driver — app `poll` (400 ms x 3 panes), reconciliation pulls
+  (2.5 s), auto bucket-sync (4 s), stats (4 s) — appended to an
+  unbounded promise chain unconditionally, while the work behind them
+  routinely outlives the period (consumer-API storage runs 1-3 s/op).
+  Fixed-rate scheduling + slower-than-period work diverges: the queue
+  *is* the leak, and user input ends up behind hundreds of pending jobs
+  (sluggish, then wedged, then dead). All periodic work now **skips a
+  tick whose predecessor is still running** — correct semantics anyway:
+  a reconciliation pull is a refresh, not a transaction. Measured with a
+  1.5 s/op delay proxy in front of MinIO: **180 ticks skipped in 3
+  minutes** (jobs the old code would have queued), background depth
+  bounded at 3-4, and a UI-path task add still completing in **3 ms**
+  while storage churns. `__demo.health()` exposes depth + per-timer skip
+  counts.
+- **The "leak" was the queue, plus a measurement artifact — chased to
+  ground.** After the backpressure fix, growth persisted in the paseo
+  webview (~1 MB/s, monotonic over 5 minutes), so it was bisected:
+  500 driver/tasks calls leak nothing; app polls at 400 ms x 3 for 75 s
+  are flat; **reconciliation pulls leak** (35 MB / 75 s). Two independent
+  checks then cleared the engine: `host/table-probe.ts` runs 400 pulls
+  headless and shows every guest table flat with **RSS plateauing at
+  ~300 MB**, and a real headless **Chromium via CDP** (`cdp-heap.ts`)
+  runs the identical page for 150 s — heap sawtooths normally and
+  **returns to 7.5 MB after a forced GC, net -1.5 MB**. So there is no
+  leak in the engine, in subduction, or in the deltic browser ports; the
+  unbounded growth was (a) the queue divergence above, which retains one
+  closure per queued job, and (b) the paseo webview's own instrumentation
+  retaining objects (and/or never idling long enough to GC). **Measure
+  memory in a real browser, not in the automation webview** — the
+  earlier version of this section blamed the port layer on the strength
+  of webview numbers, and was wrong.
+- **One real leak was found and fixed on the way**: the engine's `syncs`
+  table inserted a result per sync and never removed it, while
+  `sync-status` only read it — unbounded by construction at ~48 syncs a
+  minute. Statuses are one-shot by contract, so the entry is now removed
+  as it is read, and `stats()` publishes the guest's table sizes
+  (`tables syncs=… conns=… parts=…`) precisely because a growth bug in
+  them is invisible from outside the component.
 - **Panel teardown is a deltic open question** (same one #22 lists for
   app kill): switching provider tabs clears the region and drops the
   references, but there is no explicit instance-terminate API — the
