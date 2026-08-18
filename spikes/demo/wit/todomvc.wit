@@ -143,3 +143,69 @@ world demo-app {
   /// Returns true when a re-render happened (host may adapt cadence).
   export poll: async func() -> bool;
 }
+
+/// Chrome-brokered OAuth (#22 × #7): navigation and redirect handling are
+/// CHROME capabilities — a sandboxed panel cannot open popups or follow
+/// redirects, and must not see the authorization ceremony at all. The
+/// panel names the provider client it wants authorized; chrome runs the
+/// provider's PKCE dance outside the sandbox and returns only the
+/// resulting tokens. (In the framework this is a powerbox flow: the
+/// dialog chrome shows WHAT is being authorized; the panel receives the
+/// capability, never the ceremony.)
+interface oauth-broker {
+  record tokens {
+    access-token: string,
+    refresh-token: string,
+  }
+
+  authorize: async func(client-id: string) -> result<tokens, string>;
+}
+
+/// Storage-provider config panels (#19 × #22). The #22 provisional
+/// ruling, verbatim: "third-party chrome-ish things (a storage backend's
+/// config panel) are APPS — own sandboxed region, own grants, launched
+/// FROM chrome, never rendered AS chrome." So each provider ships a
+/// panel component: chrome owns the dialog frame and mounts the panel in
+/// a granted subtree; the panel renders provider-specific fields and
+/// returns an opaque config blob which chrome carries to the engine's
+/// init-store. Credentials never touch app code OR chrome-rendered
+/// provider code.
+///
+/// Protocol: chrome calls `seed` (current config JSON, "" for none),
+/// then `run`; pumps `on-event`; polls `outcome` after each event.
+/// Some("") = cancelled; Some(json) = completed.
+///
+/// The S3 panel is PURE — dom/events/shell only, no egress: the
+/// #21 capability-profile contrast made visible next to its sibling.
+world s3-panel {
+  import dom;
+  import events;
+  import shell;
+
+  use events.{event};
+
+  export seed: async func(config: string);
+  export run: async func();
+  export on-event: async func(ev: event);
+  export outcome: async func() -> option<string>;
+}
+
+/// The Dropbox panel carries two granted capabilities the S3 panel does
+/// not: a fetch import chrome scopes to api.dropboxapi.com (the
+/// per-destination network grant, used by "test connection") and the
+/// OAuth broker. Its capability profile is visibly non-pure — the #21
+/// egress-badge story in one dialog.
+world dropbox-panel {
+  import dom;
+  import events;
+  import shell;
+  import oauth-broker;
+  import polymorph:fetchspike/fetch@0.1.0;
+
+  use events.{event};
+
+  export seed: async func(config: string);
+  export run: async func();
+  export on-event: async func(ev: event);
+  export outcome: async func() -> option<string>;
+}

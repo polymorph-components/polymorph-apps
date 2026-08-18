@@ -10,7 +10,11 @@
 // `polymorph-data:tasks` import is wired DIRECTLY to the engine
 // instance's export — the framework-links-apps-to-services topology.
 
-import { artifactsFromEnvelope, instantiate } from "@deltic/runtime/embedder";
+import {
+  artifactsFromEnvelope,
+  ComponentException,
+  instantiate,
+} from "@deltic/runtime/embedder";
 import { createBackend, createRunner, type Runner } from "../../todomvc/host/app.ts";
 import { createSurface } from "../../todomvc/host/surface.ts";
 import type { UiEvent } from "../../todomvc/host/events.ts";
@@ -19,6 +23,7 @@ import {
   type Engine,
   type EngineArtifacts,
   newEngine,
+  type StoreConfig,
   unhex,
   until,
 } from "./engine.ts";
@@ -29,21 +34,48 @@ import {
 const params = new URLSearchParams(location.search);
 const RELAY = params.get("relay") ?? "https://use1-1.relay.n0.iroh.link";
 
-// The bucket (non-realtime path + the tablet pane) is USER-CONFIGURED:
-// any S3-compatible endpoint whose CORS admits this origin. Stored in
-// localStorage; query params (?s3=&bucket=&access=&secret=) pre-seed it.
-interface S3Config {
-  endpoint: string;
-  bucket: string;
-  access: string;
-  secret: string;
+// --- the OAuth redirect landing (chrome-owned; #22 × #7) ------------------------
+//
+// The provider redirects the popup back to THIS page with ?code=&state=.
+// That window's only job is to relay the code to the opener and go away:
+// it must not boot a second demo (three more engines, a second wire).
+// Navigation and redirect handling are chrome capabilities — the panel
+// never sees this at all.
+const relayedCode = params.get("code");
+const isAuthPopup = !!relayedCode && !!window.opener;
+if (isAuthPopup) {
+  window.opener.postMessage(
+    { pmDropboxCode: relayedCode, state: params.get("state") },
+    location.origin,
+  );
+  const el = document.getElementById("banner");
+  if (el) el.textContent = "authorization relayed — close this window";
+  window.close();
 }
 
-const S3_KEY = "pm-demo-s3";
+// The bucket (non-realtime path + the tablet pane) is USER-CONFIGURED,
+// per provider. Stored in localStorage; the s3 query params
+// (?s3=&bucket=&access=&secret=) still pre-seed an S3 config.
+type StorageConfig =
+  | { provider: "s3"; endpoint: string; bucket: string; access: string; secret: string }
+  | {
+    provider: "dropbox";
+    appKey: string;
+    appSecret: string;
+    accessToken: string;
+    refreshToken: string;
+    root: string;
+  };
 
-function loadS3(): S3Config | null {
+const STORAGE_KEY = "pm-demo-storage";
+/** Pre-provider-split key; read once as an S3 config so a configured
+ * browser keeps working across the rework. */
+const LEGACY_S3_KEY = "pm-demo-s3";
+
+function loadStorage(): StorageConfig | null {
   if (params.get("s3")) {
     return {
+      provider: "s3",
       endpoint: params.get("s3")!,
       bucket: params.get("bucket") ?? "pm-demo",
       access: params.get("access") ?? "",
@@ -51,8 +83,19 @@ function loadS3(): S3Config | null {
     };
   }
   try {
-    const raw = localStorage.getItem(S3_KEY);
-    return raw ? JSON.parse(raw) as S3Config : null;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as StorageConfig;
+    const legacy = localStorage.getItem(LEGACY_S3_KEY);
+    if (legacy) {
+      const s3 = JSON.parse(legacy) as {
+        endpoint: string;
+        bucket: string;
+        access: string;
+        secret: string;
+      };
+      return { provider: "s3", ...s3 };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -78,6 +121,147 @@ async function fetchArtifacts(name: string): Promise<EngineArtifacts> {
   return { envelope, bytes: new Uint8Array(bytes) };
 }
 
+// --- chrome capabilities the panels do NOT have -------------------------------
+
+/** `throw new ComponentException(payload)` is the err side of a
+ * `result<_, string>` (embedder-api §"Error model"; same brand the
+ * webcrypto/websocket ports use). An UNBRANDED throw would trap the
+ * panel instead of letting it render the refusal. */
+function witErr(message: string): never {
+  throw new ComponentException(message);
+}
+
+function b64url(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomHex(n: number): string {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+const AUTH_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * `polymorph:todomvc-spike/oauth-broker@0.0.1` — the PKCE ceremony runs
+ * HERE, in chrome: a sandboxed panel can neither open a popup nor follow
+ * a redirect, and must not see the ceremony at all. It names the client
+ * it wants authorized; it receives only the resulting tokens (the
+ * powerbox shape: chrome shows WHAT is authorized, the panel gets the
+ * capability).
+ */
+async function authorize(
+  clientId: string,
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const verifierBytes = new Uint8Array(32);
+  crypto.getRandomValues(verifierBytes);
+  const verifier = b64url(verifierBytes);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(verifier),
+  );
+  const challenge = b64url(new Uint8Array(digest));
+  const state = randomHex(8);
+  const redirectUri = location.origin + location.pathname;
+
+  const url = `https://www.dropbox.com/oauth2/authorize?client_id=${
+    encodeURIComponent(clientId)
+  }&response_type=code&code_challenge=${challenge}&code_challenge_method=S256` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}&token_access_type=offline&state=${state}`;
+  const popup = window.open(url, "pm-dropbox-auth", "width=680,height=760");
+  if (!popup) witErr("could not open the authorization window (popup blocked)");
+
+  const code = await new Promise<string>((resolve, reject) => {
+    const done = (f: () => void) => {
+      globalThis.removeEventListener("message", onMessage);
+      clearInterval(closedTimer);
+      clearTimeout(deadline);
+      f();
+    };
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== location.origin) return;
+      const d = e.data as { pmDropboxCode?: unknown; state?: unknown } | null;
+      if (!d || typeof d.pmDropboxCode !== "string") return;
+      // The state binding: a relay from another ceremony is ignored.
+      if (d.state !== state) return;
+      const c = d.pmDropboxCode;
+      done(() => resolve(c));
+    };
+    globalThis.addEventListener("message", onMessage);
+    const closedTimer = setInterval(() => {
+      if (popup.closed) done(() => reject(new Error("authorization window closed")));
+    }, 500);
+    const deadline = setTimeout(
+      () => done(() => reject(new Error("authorization timed out"))),
+      AUTH_TIMEOUT_MS,
+    );
+  }).catch((e: unknown) => witErr(e instanceof Error ? e.message : String(e)));
+
+  try {
+    popup.close();
+  } catch { /* already gone */ }
+
+  // Token exchange: PKCE public client — the verifier, never a secret.
+  const res = await fetch("https://api.dropboxapi.com/oauth2/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      grant_type: "authorization_code",
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+    }),
+  });
+  if (!res.ok) witErr(`token exchange: HTTP ${res.status}: ${await res.text()}`);
+  const json = await res.json() as { access_token?: string; refresh_token?: string };
+  if (!json.access_token) witErr("token exchange: no access_token in the response");
+  return { accessToken: json.access_token, refreshToken: json.refresh_token ?? "" };
+}
+
+/**
+ * `polymorph:fetchspike/fetch@0.1.0`, scoped to one host. THIS SHIM IS
+ * THE PER-DESTINATION NETWORK GRANT: the panel holds no ambient network
+ * capability, only this closure, and the closure will not carry a
+ * request anywhere but the Dropbox API. The refusal is a WIT err, not a
+ * trap — a panel is entitled to observe (and render) a denied egress.
+ */
+const dropboxFetchImports = {
+  "polymorph:fetchspike/fetch@0.1.0": {
+    async request(
+      method: string,
+      url: string,
+      headers: Array<[string, string]>,
+      body: Uint8Array,
+    ): Promise<{ status: number; body: Uint8Array }> {
+      let host: string;
+      try {
+        host = new URL(url).host;
+      } catch {
+        witErr("fetch: host not granted to this panel");
+      }
+      if (host !== "api.dropboxapi.com") {
+        witErr("fetch: host not granted to this panel");
+      }
+      const empty = method === "GET" || method === "HEAD" || body.length === 0;
+      const res = await fetch(url, {
+        method,
+        headers,
+        // Copy out of the guest's view before it crosses back (and the
+        // dom lib wants a plain ArrayBuffer, not a Uint8Array view).
+        body: empty ? undefined : body.buffer.slice(
+          body.byteOffset,
+          body.byteOffset + body.byteLength,
+        ) as ArrayBuffer,
+      });
+      const buf = new Uint8Array(await res.arrayBuffer());
+      return { status: res.status, body: buf };
+    },
+  },
+};
+
 // --- panes ---------------------------------------------------------------------
 
 interface AppExports {
@@ -87,18 +271,36 @@ interface AppExports {
   poll(): Promise<boolean>;
 }
 
+/** The `s3-panel` / `dropbox-panel` worlds: seed → run → on-event pump,
+ * polling `outcome` after each event. some("") = cancelled,
+ * some(json) = completed. */
+interface PanelExports {
+  seed(config: string): Promise<void>;
+  run(): Promise<void>;
+  onEvent(ev: UiEvent): Promise<void>;
+  outcome(): Promise<string | undefined>;
+}
+
 interface Pane {
   name: string;
   engine: Engine;
   id: Uint8Array;
   runner?: Runner;
   app?: AppExports;
-  status: (line: string) => void;
+  status: (line: string, sticky?: boolean) => void;
 }
 
-function statusLine(name: string): (line: string) => void {
+// Beat results (pull outcomes, revocation guarantee notes) are the point
+// of the demo, and the 4s stats refresh used to erase them within one
+// tick. A beat status is STICKY: stats stand down until it expires.
+const STICKY_MS = 12_000;
+const stickyUntil = new Map<string, number>();
+
+function statusLine(name: string): (line: string, sticky?: boolean) => void {
   const div = document.getElementById(`${name}-status`)!;
-  return (line) => {
+  return (line, sticky = false) => {
+    if (!sticky && (stickyUntil.get(name) ?? 0) > performance.now()) return;
+    if (sticky) stickyUntil.set(name, performance.now() + STICKY_MS);
     div.textContent = line;
   };
 }
@@ -238,27 +440,81 @@ async function boot() {
   // --- the bucket leg: user-configured, activates the tablet ---------------
 
   let bucketReady = false;
+  let currentProvider: "s3" | "dropbox" = loadStorage()?.provider ?? "s3";
+  // Dropbox link tier: Bob's standing pickup capability. Chrome carries
+  // it here in lieu of the E2E channel the framework would use.
+  let bobPickup: string | undefined;
   const syncBtn = document.getElementById("bucket-sync") as HTMLButtonElement;
   const autoBox = document.getElementById("bucket-auto") as HTMLInputElement;
+  const pullBtn = document.getElementById("bob-pull") as HTMLButtonElement;
   syncBtn.disabled = true;
   autoBox.disabled = true;
+  pullBtn.disabled = true;
   tablet.status("no storage configured — use Storage… to activate this pane");
 
-  const setupBucket = (cfg: S3Config) =>
+  /** 4 random bytes of namespace: re-runs of the demo mint their own
+   * folder (and their own links), so a stale run's revoked links never
+   * collide with a fresh one's. */
+  const sessionSuffix = () => `/run-${randomHex(4)}`;
+
+  const setupBucket = (cfg: StorageConfig) =>
     enqueue(async () => {
       try {
         tablet.status("configuring storage…");
-        await alice.engine.driver.initStore(cfg.endpoint, cfg.bucket, cfg.access, cfg.secret);
-        await tablet.engine.driver.initStore(cfg.endpoint, cfg.bucket, cfg.access, cfg.secret);
-        await alice.engine.driver.ensureBucket();
-        for (const m of [alice.id, bob.id, tablet.id]) {
-          await alice.engine.driver.storeGrant(part, m);
+        currentProvider = cfg.provider;
+        bobPickup = undefined;
+        if (cfg.provider === "s3") {
+          const owner: StoreConfig = {
+            kind: "s3",
+            value: {
+              endpoint: cfg.endpoint,
+              bucket: cfg.bucket,
+              accessKey: cfg.access,
+              secretKey: cfg.secret,
+            },
+          };
+          // Bob is the recipient tier: no credentials, pulls only.
+          const reader: StoreConfig = {
+            kind: "s3",
+            value: { endpoint: cfg.endpoint, bucket: cfg.bucket, accessKey: "", secretKey: "" },
+          };
+          await alice.engine.driver.initStore(owner);
+          await tablet.engine.driver.initStore(owner);
+          await bob.engine.driver.initStore(reader);
+          await alice.engine.driver.ensureBucket();
+          for (const m of [alice.id, bob.id, tablet.id]) {
+            await alice.engine.driver.storeGrant(part, m); // S3: none
+          }
+        } else {
+          const root = cfg.root + sessionSuffix();
+          const val = {
+            appKey: cfg.appKey,
+            appSecret: cfg.appSecret,
+            accessToken: cfg.accessToken,
+            refreshToken: cfg.refreshToken,
+            root,
+          };
+          // The tablet is Alice's OWN device: owner tier, same token.
+          const owner: StoreConfig = { kind: "dropbox", value: val };
+          // Bob is the link tier: no token, pulls ride his pickup link.
+          const reader: StoreConfig = {
+            kind: "dropbox",
+            value: { ...val, accessToken: "", refreshToken: "" },
+          };
+          await alice.engine.driver.initStore(owner);
+          await tablet.engine.driver.initStore(owner);
+          await bob.engine.driver.initStore(reader);
+          await alice.engine.driver.ensureBucket();
+          await alice.engine.driver.storeGrant(part, alice.id);
+          await alice.engine.driver.storeGrant(part, tablet.id);
+          bobPickup = await alice.engine.driver.storeGrant(part, bob.id);
         }
         await alice.engine.driver.bucketFlush(part);
-        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id));
+        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined));
         bucketReady = true;
         syncBtn.disabled = false;
         autoBox.disabled = false;
+        pullBtn.disabled = false;
       } catch (e) {
         tablet.status(`storage setup failed: ${err(e)} — check endpoint + CORS`);
       }
@@ -270,8 +526,8 @@ async function boot() {
       try {
         await alice.engine.driver.bucketFlush(part);
         await tablet.engine.driver.bucketFlush(part);
-        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id));
-        alice.status(await alice.engine.driver.bucketPull(part, alice.id));
+        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined));
+        alice.status(await alice.engine.driver.bucketPull(part, alice.id, undefined));
       } catch (e) {
         tablet.status(`bucket: ${err(e)}`);
       }
@@ -283,54 +539,151 @@ async function boot() {
     if (autoBox.checked) bucketSync();
   }, 4000);
 
-  // The storage dialog: prefill from stored config (or local-MinIO
-  // defaults), persist on save, run setup once.
-  const dialog = document.getElementById("s3-dialog") as HTMLDialogElement;
-  const field = (id: string) => document.getElementById(id) as HTMLInputElement;
-  (document.getElementById("s3-open") as HTMLButtonElement).onclick = () => {
-    const cur = loadS3() ?? {
-      endpoint: "http://127.0.0.1:9000",
-      bucket: "pm-demo",
-      access: "minioadmin",
-      secret: "minioadmin",
-    };
-    field("s3-endpoint").value = cur.endpoint;
-    field("s3-bucket").value = cur.bucket;
-    field("s3-access").value = cur.access;
-    field("s3-secret").value = cur.secret;
-    dialog.showModal();
+  // Bob pulling from the bucket is the revocation beat: S3 shows the
+  // cooperative darkness (his K_p is gone), Dropbox the hard server-side
+  // refusal (his link is revoked, and it was revoked retroactively).
+  const bobPull = () =>
+    enqueue(async () => {
+      if (!bucketReady) return;
+      try {
+        const out = await bob.engine.driver.bucketPull(
+          part,
+          alice.id,
+          currentProvider === "dropbox" ? bobPickup : undefined,
+        );
+        bob.status(`bucket: ${out}`, true);
+      } catch (e) {
+        bob.status(`bucket: ${err(e)}`, true);
+      }
+    });
+  pullBtn.onclick = () => {
+    bobPull();
   };
-  (document.getElementById("s3-save") as HTMLButtonElement).onclick = (ev) => {
-    ev.preventDefault();
-    const cfg: S3Config = {
-      endpoint: field("s3-endpoint").value.trim().replace(/\/$/, ""),
-      bucket: field("s3-bucket").value.trim(),
-      access: field("s3-access").value,
-      secret: field("s3-secret").value,
-    };
-    localStorage.setItem(S3_KEY, JSON.stringify(cfg));
+
+  // --- the storage dialog: chrome frame, sandboxed provider panel ----------
+  //
+  // #22's provisional ruling: a provider's config panel is an APP — its
+  // own region, its own grants, launched FROM chrome, never rendered AS
+  // chrome. Chrome owns the dialog, the tabs and the OAuth ceremony; the
+  // panel owns the fields and hands back an opaque config blob.
+  // Credentials never touch app code or chrome-rendered provider code.
+
+  const dialog = document.getElementById("storage-dialog") as HTMLDialogElement;
+  const region = document.getElementById("panel-region") as HTMLElement;
+  const tabs: Record<"s3" | "dropbox", HTMLButtonElement> = {
+    s3: document.getElementById("prov-s3") as HTMLButtonElement,
+    dropbox: document.getElementById("prov-dropbox") as HTMLButtonElement,
+  };
+  const panelArtifacts = new Map<string, EngineArtifacts>();
+  let panelMounted: "s3" | "dropbox" | null = null;
+  let panelDispatch: (ev: UiEvent) => void = () => {};
+
+  /** Drop the panel: clear its granted subtree and cut the event path.
+   * (Instance teardown proper is an OPEN deltic question — there is no
+   * `drop`/`dispose` on an instantiated component yet; dropping our refs
+   * and its DOM is the whole of the retirement we can express today.) */
+  const teardownPanel = () => {
+    panelDispatch = () => {};
+    region.innerHTML = "";
+    panelMounted = null;
+  };
+
+  const finishPanel = (outcome: string) => {
+    teardownPanel();
     dialog.close();
-    if (bucketReady) {
-      tablet.status("storage changed — reload the page to reconfigure");
-    } else {
-      setupBucket(cfg);
+    if (outcome === "") return; // some("") = cancelled
+    try {
+      const cfg = JSON.parse(outcome) as StorageConfig;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+      if (bucketReady) {
+        tablet.status("storage changed — reload the page to reconfigure");
+      } else {
+        setupBucket(cfg);
+      }
+    } catch (e) {
+      tablet.status(`storage config unreadable: ${err(e)}`);
     }
   };
-  (document.getElementById("s3-cancel") as HTMLButtonElement).onclick = (ev) => {
+
+  const mountPanel = async (provider: "s3" | "dropbox") => {
+    teardownPanel();
+    for (const [k, btn] of Object.entries(tabs)) {
+      btn.classList.toggle("active", k === provider);
+    }
+    const name = provider === "s3" ? "panel-s3" : "panel-dropbox";
+    let art = panelArtifacts.get(name);
+    if (!art) {
+      art = await fetchArtifacts(name);
+      panelArtifacts.set(name, art);
+    }
+    const backend = createBackend("direct", region, (ev) => panelDispatch(ev));
+    const surface = createSurface(backend, () => "");
+    // The capability profiles, side by side (#21): the S3 panel is PURE —
+    // surface only, no egress. The Dropbox panel additionally holds the
+    // broker and one host-scoped fetch.
+    const imports = provider === "s3" ? { ...surface.imports } : {
+      ...surface.imports,
+      "polymorph:todomvc-spike/oauth-broker@0.0.1": { authorize },
+      ...dropboxFetchImports,
+    };
+    const instance = await instantiate(
+      artifactsFromEnvelope(art.envelope, art.bytes),
+      imports,
+    );
+    const panel = instance.exports as unknown as PanelExports;
+    const runner = createRunner(surface);
+    panelMounted = provider;
+    panelDispatch = (ev) => {
+      if (panelMounted !== provider) return;
+      runner.call(() => panel.onEvent(ev))
+        .then(() => runner.call(() => panel.outcome()))
+        .then((out) => {
+          if (out !== undefined && panelMounted === provider) finishPanel(out);
+        })
+        .catch((e) => console.warn(`[panel] event: ${err(e)}`));
+    };
+    const stored = loadStorage();
+    const seedJson = stored && stored.provider === provider ? JSON.stringify(stored) : "";
+    await runner.call(() => panel.seed(seedJson));
+    await runner.call(() => panel.run());
+  };
+
+  const openStorage = () => {
+    dialog.showModal();
+    mountPanel(loadStorage()?.provider ?? "s3").catch((e) => {
+      region.textContent = `panel failed to mount: ${err(e)}`;
+    });
+  };
+
+  (document.getElementById("storage-open") as HTMLButtonElement).onclick = openStorage;
+  for (const provider of ["s3", "dropbox"] as const) {
+    tabs[provider].onclick = (ev) => {
+      ev.preventDefault();
+      if (panelMounted === provider) return;
+      mountPanel(provider).catch((e) => {
+        region.textContent = `panel failed to mount: ${err(e)}`;
+      });
+    };
+  }
+  (document.getElementById("storage-cancel") as HTMLButtonElement).onclick = (ev) => {
     ev.preventDefault();
+    teardownPanel();
     dialog.close();
   };
 
-  const stored = loadS3();
+  const stored = loadStorage();
   if (stored) setupBucket(stored);
 
   (document.getElementById("revoke-bob") as HTMLButtonElement).onclick = () => {
     enqueue(async () => {
       try {
         await alice.engine.driver.khRevokeMember(part, bob.id);
-        await alice.engine.driver.storeRevoke(part, bob.id);
+        // The guarantee note is the point of the beat: cooperative-now
+        // (S3) vs. hard + retroactive (Dropbox), in the provider's words.
+        const note = await alice.engine.driver.storeRevoke(part, bob.id);
         await alice.engine.driver.bucketFlush(part);
-        bob.status("REVOKED: new epochs are dark from here");
+        alice.status(`revoke: ${note}`, true);
+        bob.status("REVOKED: new epochs are dark from here", true);
         (document.getElementById("bob-pane") as HTMLElement).classList.add("revoked");
       } catch (e) {
         alice.status(`revoke: ${err(e)}`);
@@ -352,7 +705,19 @@ async function boot() {
   }, 4000);
 
   // Debug/validation handles (the paseo browser driver uses these).
-  (globalThis as unknown as Record<string, unknown>).__demo = { alice, bob, tablet, part, pull };
+  (globalThis as unknown as Record<string, unknown>).__demo = {
+    alice,
+    bob,
+    tablet,
+    part,
+    pull,
+    bobPull: () => bobPull(),
+    openStorage: () => openStorage(),
+    authorize,
+    // The panel's granted fetch, exposed so the DENIAL side of the
+    // per-destination grant is demonstrable and not merely asserted.
+    panelFetch: dropboxFetchImports["polymorph:fetchspike/fetch@0.1.0"],
+  };
   say("ready — E2E-encrypted, three replicas, two sync paths");
 }
 

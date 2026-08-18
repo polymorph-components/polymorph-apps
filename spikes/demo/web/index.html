@@ -23,47 +23,66 @@
     .todoapp h1 { font-size: 40px; top: -40px; }
     .new-todo, .edit { font-size: 18px; }
     .todo-list li { font-size: 18px; }
+
+    /* The storage dialog: chrome frame vs. sandboxed panel. The boundary
+       is deliberately VISIBLE — #22's position-based trust says the user
+       must be able to see WHERE untrusted provider content lives. */
+    #storage-dialog { border: 1px solid #2a2a44; border-radius: 4px; padding: 0;
+                      background: #16213e; color: #ddd; min-width: 30em; }
+    #storage-dialog::backdrop { background: rgba(10,10,20,.55); }
+    .chrome-head { display: flex; flex-direction: column; gap: .25em;
+                   padding: .7em .9em; border-bottom: 1px solid #2a2a44; }
+    .chrome-head strong { font-size: 14px; }
+    .chrome-note { font-size: 11px; color: #8b93b0; }
+    .provider-tabs { display: flex; gap: .4em; padding: .6em .9em 0; }
+    .provider-tabs button { padding: .3em .8em; font-size: 12px; cursor: pointer;
+                            background: #1a1a2e; color: #bbb;
+                            border: 1px solid #2a2a44; border-bottom: none;
+                            border-radius: 3px 3px 0 0; }
+    .provider-tabs button.active { background: #0f1424; color: #fff; border-color: #3d5a99; }
+    /* The granted subtree itself: inset, differently lit, and labelled. */
+    #panel-region { position: relative; margin: 0 .9em .3em;
+                    min-height: 9em; padding: 1.5em .9em .9em;
+                    background: #0f1424; color: #ddd; font-size: 13px;
+                    border: 1px dashed #3d5a99; border-radius: 0 3px 3px 3px;
+                    box-shadow: inset 0 0 0 1px #0a0d18; }
+    #panel-region::before { content: "sandboxed panel"; position: absolute;
+                            top: 0; right: 0; padding: .1em .5em;
+                            font-size: 10px; letter-spacing: .04em;
+                            color: #0f1424; background: #3d5a99;
+                            border-radius: 0 0 0 3px; }
+    #panel-region input { background: #16213e; color: #eee;
+                          border: 1px solid #2a2a44; padding: .25em; }
+    #panel-region button { padding: .25em .7em; }
+    #storage-dialog form { display: flex; justify-content: flex-end;
+                           padding: .3em .9em .8em; margin: 0; }
   </style>
 </head>
 <body>
   <div id="banner">booting…</div>
   <div id="controls">
-    <button id="s3-open">Storage…</button>
+    <button id="storage-open">Storage…</button>
     <button id="bucket-sync" title="flush alice+tablet, pull tablet+alice">Sync via bucket</button>
     <label><input type="checkbox" id="bucket-auto"> auto (4s)</label>
+    <button id="bob-pull" disabled>Bob: bucket pull</button>
     <button id="revoke-bob">Revoke Bob</button>
     <span style="margin-left:auto; font-size:11px">
-      alice⇄bob: live (public iroh relay) · tablet: your S3 bucket only · all E2E-encrypted (BeeKEM epochs)
+      alice⇄bob: live (public iroh relay) · tablet: your bucket only · bob can also try the bucket — revocation shows the pull tier · all E2E-encrypted
     </span>
   </div>
-  <dialog id="s3-dialog">
-    <form method="dialog" style="display:flex; flex-direction:column; gap:.6em; min-width: 26em">
-      <strong>Storage (S3-compatible)</strong>
-      <p style="margin:0; font-size:12px; color:#555">
-        Activates the tablet pane and the non-realtime sync path. Objects
-        are E2E-encrypted and HMAC-named before they reach the bucket —
-        the provider stores ciphertext at unguessable names. The bucket's
-        CORS must admit this origin (local MinIO:
-        <code>MINIO_API_CORS_ALLOW_ORIGIN='*'</code>, or
-        <code>just infra</code> in <code>spikes/demo</code>).
-      </p>
-      <label style="font-size:12px">Endpoint
-        <input id="s3-endpoint" type="text" style="width:100%" placeholder="http://127.0.0.1:9000">
-      </label>
-      <label style="font-size:12px">Bucket
-        <input id="s3-bucket" type="text" style="width:100%" placeholder="pm-demo">
-      </label>
-      <label style="font-size:12px">Access key <small>(owner devices sign PUTs; Bob-style readers need none)</small>
-        <input id="s3-access" type="text" style="width:100%">
-      </label>
-      <label style="font-size:12px">Secret key <small>(stays in this browser's localStorage)</small>
-        <input id="s3-secret" type="password" style="width:100%">
-      </label>
-      <div style="display:flex; gap:.6em; justify-content:flex-end">
-        <button id="s3-cancel">Cancel</button>
-        <button id="s3-save"><b>Save &amp; connect</b></button>
-      </div>
-    </form>
+  <!-- Chrome owns this frame; the provider's panel is a component with
+       its own grants, mounted into #panel-region (#22). -->
+  <dialog id="storage-dialog">
+    <div class="chrome-head">
+      <strong>Storage</strong>
+      <span class="chrome-note">chrome owns this frame; the provider's config panel below is a sandboxed component with its own grants</span>
+    </div>
+    <div class="provider-tabs">
+      <button id="prov-s3">S3-compatible</button>
+      <button id="prov-dropbox">Dropbox</button>
+    </div>
+    <div id="panel-region"></div>
+    <form method="dialog"><button id="storage-cancel">Cancel</button></form>
   </dialog>
   <div id="panes">
     <div class="pane" id="alice-pane">
