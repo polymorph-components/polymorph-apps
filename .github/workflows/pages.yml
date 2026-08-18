@@ -8,6 +8,17 @@
 #
 # Build runs on PRs too (a broken demo build should fail the PR, not the
 # deploy); only main deploys.
+#
+# CUTOVER, in this order — the committed docs/spike-demo/ is still what
+# serves today, and is deliberately NOT deleted by the change that
+# introduced this workflow:
+#   1. land this workflow and confirm a green `build` job on main;
+#   2. switch Pages source from "branch: main /docs" to "GitHub Actions"
+#      (repo settings, or `gh api -X POST .../pages -f build_type=workflow`)
+#      and confirm the `deploy` job publishes the same site;
+#   3. THEN delete docs/spike-demo/ from git and gitignore it — the
+#      artifacts stop accruing in history only once nothing serves them.
+# Doing (3) first would take the demo offline for the length of the gap.
 
 name: Pages
 

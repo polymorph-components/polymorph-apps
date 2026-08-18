@@ -1,6 +1,0 @@
-# The demo site is BUILT by CI (.github/workflows/pages.yml) from the
-# spike sources and deployed straight to Pages, so its artifacts are no
-# longer committed — four rebuilds of an ~11 MB engine composite were
-# already in history before this changed. `just pages` still writes here
-# for local preview.
-/docs/spike-demo/
