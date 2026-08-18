@@ -18,6 +18,26 @@ import { socketsImports } from "./stubs.ts";
 const DRIVER = "polymorph:engine-spike/driver@0.1.0";
 const TASKS = "polymorph-data:tasks/tasks@0.1.0";
 
+/** `store-config` — a WIT variant; `{tag, val}` per the value-mapping
+ * table. Two provider strategies behind one surface (spike.wit's bucket
+ * path): S3 credentials vs. a Dropbox app + token pair, where an empty
+ * access/refresh token pair marks a link-tier recipient. */
+export type StoreConfig =
+  | {
+    kind: "s3";
+    value: { endpoint: string; bucket: string; accessKey: string; secretKey: string };
+  }
+  | {
+    kind: "dropbox";
+    value: {
+      appKey: string;
+      appSecret: string;
+      accessToken: string;
+      refreshToken: string;
+      root: string;
+    };
+  };
+
 // WIT `result<T, string>` returns resolve T / throw ComponentException.
 export interface Driver {
   init(exportableIdentity: boolean): Promise<string>;
@@ -45,12 +65,20 @@ export interface Driver {
   sealPartition(id: Uint8Array): Promise<void>;
   adoptPartition(id: Uint8Array): Promise<void>;
   chunkStats(id: Uint8Array): Promise<[number, number]>;
-  initStore(endpoint: string, bucket: string, accessKey: string, secretKey: string): Promise<void>;
+  initStore(config: StoreConfig): Promise<void>;
   ensureBucket(): Promise<void>;
-  storeGrant(docId: Uint8Array, memberId: Uint8Array): Promise<void>;
-  storeRevoke(docId: Uint8Array, memberId: Uint8Array): Promise<void>;
+  /** S3: none. Dropbox: the member's minted pickup link — their standing
+   * capability, carried by the caller in lieu of the E2E channel. */
+  storeGrant(docId: Uint8Array, memberId: Uint8Array): Promise<string | undefined>;
+  /** Human-readable guarantee note (cooperative vs. server-side hard). */
+  storeRevoke(docId: Uint8Array, memberId: Uint8Array): Promise<string>;
   bucketFlush(docId: Uint8Array): Promise<string>;
-  bucketPull(docId: Uint8Array, ownerId: Uint8Array): Promise<string>;
+  /** `pickup` is the link-tier standing capability; owner tiers ignore it. */
+  bucketPull(
+    docId: Uint8Array,
+    ownerId: Uint8Array,
+    pickup: string | undefined,
+  ): Promise<string>;
   identityExport(
     label: string,
     passphrase: string | undefined,

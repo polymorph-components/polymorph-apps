@@ -498,6 +498,60 @@ isolated in its own fetch component composed via `wac plug` — the
 component model resolving runtime-version conflicts, and the fetch
 import doubling as the per-destination network-grant seam.
 
+**The provider contract generalized 2026-08-17** (capability profile and
+per-backend analysis on the [#19 thread](../../issues/19)): what varies
+across consumer backends is which *pull-tier mechanics* they can enforce
+— client-chosen names, derivable addresses, anonymous fetch, revocable
+bearer capabilities, per-identity grants, expiring URLs. The pull tier
+becomes a strategy chosen per profile; the E2E-travelling capability
+becomes a tagged union; revocation-shaped operations report their
+guarantee class (hard/cooperative × immediate/eventual) so the
+cooperative-revocation UX rule is machine-carried. Draft WIT:
+[wit/blobstore.wit](wit/blobstore.wit) — required floor (put/delete with
+overwrite-in-place at stable addresses, fetch-under-capability,
+owner-only listing) plus profiled `pull`, with the name-secrecy strategy
+as a framework-core component composed above floor-only providers.
+**Dropbox spike executed 2026-08-17 and passed**
+([spikes/dropbox/](spikes/dropbox/README.md)): the link-capability
+strategy over live consumer Dropbox — folder shared link as container
+capability, plain derivable names beneath it, pickup objects as stable
+per-recipient files with their own revocable links, overwritten in place
+on rotation. Revocation is **hard, retroactive, sub-second**: a cracked
+image that deliberately hoarded the container link (labeled no-persist
+violation) reads before revocation and retrieves nothing after — the
+assertion name secrecy cannot make; pull-now + pull-past collapse into
+one `revoke_shared_link`, pull-forward is a re-mint on the same folder
+(zero data movement, relocation/compaction unnecessary for revocation on
+this backend). A 27-assertion raw-HTTP probe suite pins the platform
+facts (ancestor-link leaf rule; no existence oracle; refusal statuses
+wobble 400/401 — assert classes, not codes; API-host CORS clean for
+browser recipients; app secret degrades to a public identifier in any
+shipped client; free tier gates expiring links and caps at 2 GB).
+Provider order updated: Dropbox and OneDrive lead the consumer-drive
+tier (path-addressable, revocable links; OneDrive adds
+`redeemSharingLink` durable grants — Azure-signup friction gates its
+probe); **Google Drive drops to last** — server-assigned fileIds break
+derivable addresses, and its candidate shapes (Apps-Script adapter
+restoring GET-by-derived-name with no OAuth surface; account-ACL
+folders; link-shared folders with fileId indirection) are recorded on
+the #19 thread.
+
+**Both strategies now run under the engine, in the browser**
+(2026-08-17, [spikes/demo/](spikes/demo/README.md)): the engine's
+storage surface takes a `store-config` **variant** (`s3 | dropbox`),
+`store-grant` returns an optional pull capability (none under name
+secrecy; the minted pickup link under Dropbox), `store-revoke` returns
+its **guarantee note** as prose (the blobstore draft's guarantee class,
+surfaced to the UI), and `bucket-pull` takes an optional pickup link so
+a link-tier recipient can pull with no storage account. Verified live in
+the page: three replicas converge over Dropbox + iroh; the tablet cold
+boots from the bucket with `iroh conns: 0`; a *collaborator* pulls the
+bucket through his standing pickup link under app auth alone
+(`pulled dropbox(link)`); and after revocation the same button reports
+`pickup link refused (409)` — hard, provider-enforced — while the same
+peer holds live-wire ciphertext he cannot decrypt (`undecryptable: 1`).
+Both exclusions, both tiers, in one UI.
+
 **Provider order.** First: one **S3-compatible provider component**
 (R2 and B2 as documented defaults — real 10 GB free tiers, R2 free
 egress; MinIO/Garage cover self-host) — no external approval gates,
@@ -996,6 +1050,29 @@ the first data service; the follow-on demo is **three apps, one
 service** (todomvc + kanban + velocity chart over one shared task
 partition — the chart reading automerge history), which exhibits the
 differentiator no platform has.
+
+**The config-panel exception, executed 2026-08-17**
+([spikes/demo/](spikes/demo/README.md)): #22's named exception — a
+storage backend's config panel is an *app*, not chrome — is now real in
+the browser demo, and it is the first place the capability story is
+visible in UI. Chrome owns the Storage dialog frame and provider tabs;
+each provider ships a **panel component** mounted through the same
+curated-DOM surface as the app (the dialog region is its `root()`
+grant), which returns an opaque config blob chrome carries to the
+engine. Two panels, deliberately unequal: the S3 panel imports only
+dom/events/shell (**pure — cannot reach the network**, and says so),
+while the Dropbox panel additionally holds a `fetch` import chrome
+scopes to `api.dropboxapi.com` (refusing every other host with a WIT
+err — the per-destination grant *is* the import) plus an
+**oauth-broker** import, because navigation/popups/redirect handling
+are chrome capabilities: chrome runs the entire PKCE ceremony and hands
+back only tokens. That is the powerbox shape at the provider boundary —
+the sensitive authority (a network destination, an authorization
+ceremony) stays outside the sandbox, and what crosses in is exactly the
+capability. Recorded UI finding with framework reach: a status surface
+mixing ambient telemetry with consequential one-shot messages needs
+**priority, not last-writer-wins** (the revocation guarantee note was
+being erased by a 4 s stats tick).
 
 **The consent surface and kernel capabilities** (2026-08-17). Does the
 unification extend to the permission dialog itself — a regular

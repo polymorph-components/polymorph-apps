@@ -20,12 +20,17 @@
     </li>
     <li>
       <a href="spike-demo/">End-to-end TodoMVC demo</a> — the surface app over
-      the real engine (automerge + keyhive + subduction + bucket) under
+      the real engine (automerge + keyhive + subduction + storage) under
       deltic: three replicas, two sync paths, live revocation. The live
-      path rides n0's public relay; the bucket pane takes your own
-      S3-compatible endpoint via the Storage… dialog
+      path rides n0's public relay; the storage pane takes your own
+      S3-compatible endpoint or a Dropbox app via the Storage… dialog,
+      whose provider config panels are themselves sandboxed components
       (<a href="https://github.com/polymorph-components/polymorph-apps/issues/20">design</a>,
+      <a href="https://github.com/polymorph-components/polymorph-apps/issues/22">chrome</a>,
       <a href="https://github.com/polymorph-components/polymorph-apps/tree/main/spikes/demo">source</a>).
+      Dropbox note: the <em>Connect Dropbox</em> (OAuth) button needs this
+      page's URL registered as a redirect URI in your Dropbox app console;
+      pasting a console-generated access token works without that.
     </li>
   </ul>
 </body>

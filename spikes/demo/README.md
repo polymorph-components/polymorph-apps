@@ -10,16 +10,59 @@ endpoint — running **under deltic in the page**. Three panes, one page:
 | pane | role | sync path |
 |---|---|---|
 | Alice — laptop | wire hub, bucket owner | live (n0's public relay by default) + bucket |
-| Bob | collaborator | live (n0's public relay by default) |
-| Alice — tablet | second device, **zero connections ever** | your S3 bucket (Storage… dialog) |
+| Bob | collaborator | live (n0's public relay by default) + bucket (link tier) |
+| Alice — tablet | second device, **zero connections ever** | your bucket (Storage… dialog) |
+
+**Two storage providers behind one engine surface** (#19): S3-compatible
+(name secrecy + K_p, cooperative revocation) and **Dropbox** (shared
+links as pull capabilities, hard server-side revocation) — chosen in a
+dialog, same beats either way.
 
 Demo beats, all driven through the real UIs and verified:
 adds/toggles/edits converge across all three replicas; the tablet cold
-boots from the bucket and authors through it; **Revoke Bob** mid-demo:
-alice's next task reaches the tablet (K_p republish + epoch rotation)
-while bob's pane holds the ciphertext it can no longer decrypt
-(`undecryptable: 1` in his status line) — cryptographic exclusion,
+boots from the bucket and authors through it; **Bob: bucket pull** shows
+the pull tier directly (he holds no storage account — S3: unsigned GETs
+by derived name; Dropbox: his standing pickup link under app auth);
+**Revoke Bob** mid-demo: alice's next task reaches the tablet while
+bob's pane holds ciphertext it can no longer decrypt (`undecryptable: 1`
+in his status line) *and* his bucket pull is refused — on S3 the
+cooperative K_p darkness, on Dropbox a hard `pickup link refused (409)`
+from the provider. Cryptographic exclusion and pull-tier exclusion,
 visible in a todo list.
+
+## Storage config as a sandboxed component (#22)
+
+The #22 provisional ruling says chrome is trusted shell code, with one
+named exception: *"third-party chrome-ish things (a storage backend's
+config panel) are **apps** — own sandboxed region, own grants, launched
+from chrome, never rendered as chrome."* This demo implements exactly
+that, and it is the first place the framework's capability story is
+visible in UI:
+
+```
+chrome (page JS, trusted)          panel component (sandboxed, per-provider)
+  Storage… button                    guest-panel-s3       — dom/events/shell ONLY
+  dialog frame + provider tabs         "pure component: cannot reach the network"
+  #panel-region (the grant) ────────►  guest-panel-dropbox — + oauth-broker
+  carries the returned config                                + fetch scoped to
+  to engine.init-store                                         api.dropboxapi.com
+```
+
+- The panel is mounted through the **same curated-DOM surface machinery
+  as the app** (`createBackend`/`createSurface`, a `root()` grant that
+  is the dialog region) — position, not style, marks the boundary; the
+  region is visibly inset and labeled "sandboxed panel".
+- **Chrome brokers OAuth.** Navigation, popups and redirect handling are
+  chrome capabilities a sandboxed panel must not have, so the Dropbox
+  panel calls `oauth-broker.authorize(app-key)` and chrome runs the
+  whole PKCE ceremony (S256 challenge, popup, `postMessage` relay
+  through the redirect, code exchange) and returns only the tokens. The
+  panel never sees the ceremony; the app guests never see any of it.
+- The panel's `fetch` import **is** the per-destination network grant:
+  chrome's shim refuses any host but `api.dropboxapi.com` with a WIT err
+  (`__demo.panelFetch` exposes it so the refusal is demonstrable, not
+  merely asserted). Its S3 sibling gets no fetch import at all — the
+  #21 pure-vs-egress capability-profile contrast, in one dialog.
 
 ## Architecture
 
@@ -27,7 +70,7 @@ visible in a todo list.
 per pane (×3, one browser page):
   app component (109 KB)            engine composite (10.8 MB)
   todomvc surface guest             keyhive+automerge+subduction+
-  imports: dom/events/shell         bridge+SigV4+iroh endpoint
+  imports: dom/events/shell         bridge+S3/Dropbox client+iroh
   + polymorph-data:tasks  ────────► exports: tasks + driver
         │  (import wired DIRECTLY to the engine instance's export —
         │   same embedder, same value conventions, same exception brand)
@@ -57,9 +100,14 @@ just serve    # build engine+app, translate, bundle, serve on :8600
 
 Open http://127.0.0.1:8600/. The live path rides n0's public relay
 (`?relay=…` overrides, e.g. a local `iroh-relay --dev`); the bucket
-pane activates through the **Storage…** dialog with any S3-compatible
-endpoint whose CORS admits the page origin (`just infra` runs a local
-MinIO with open CORS, plus a local relay). Hosted build:
+pane activates through the **Storage…** dialog — either an
+S3-compatible endpoint whose CORS admits the page origin (`just infra`
+runs a local MinIO with open CORS, plus a local relay), or **Dropbox**:
+paste an app key + secret from a Dropbox app (App folder access;
+scopes `files.content.*`, `sharing.*`, `account_info.read`) and press
+*Connect Dropbox* for the PKCE flow, or paste a console-generated
+access token. Add `http://127.0.0.1:8600/` as an OAuth redirect URI in
+the app console for the Connect path. Hosted build:
 https://polymorph-components.github.io/polymorph-apps/spike-demo/
 — same story: public relay out of the box, bring your own bucket.
 
@@ -105,6 +153,31 @@ post-revocation stress loop.
   serialize until understood.
 - Screenshot/capture tooling against the page (paseo webview) times out
   — background tabs never paint; validation is DOM-assertion-based.
+- **The `{kind, value}` variant envelope bit again.** The rename was
+  already recorded above, and the first cut of the new `store-config`
+  variant still shipped `{tag, val}` (a TS union modeled on a *port's*
+  internal error type, not on the embedder's wire convention). It
+  surfaced only at the first live `init-store`:
+  `expected a { kind, value? } value, got a Object`. Host-side variant
+  construction has no type-level protection against this — the
+  embedder's convention is a runtime contract, so the check belongs in
+  a smoke path, not in review.
+- **Transient beat results were being erased by the stats refresh.**
+  Pull outcomes and the revocation guarantee note are the *payload* of
+  those beats, and a 4 s `stats()` tick overwrote them within one frame.
+  Status lines are now **sticky for 12 s** when a beat writes them
+  (stats stand down). Worth carrying into the framework's chrome: a
+  status surface that mixes ambient telemetry with consequential
+  one-shot messages needs priority, not last-writer-wins.
+- **Panel teardown is a deltic open question** (same one #22 lists for
+  app kill): switching provider tabs clears the region and drops the
+  references, but there is no explicit instance-terminate API — the
+  panel's engine-side resources are released by GC, not by contract.
+- **Dropbox provider timings in-page**: `store-grant` (seal pickup +
+  upload + mint link) ~1.5–2 s, `bucket-flush` ~1.5 s, link-tier pull
+  ~2 s, revoke (revoke pickup link + delete + revoke container link +
+  re-mint + rewrite remaining pickups) ~5 s — consumer-API latency, on
+  the deliberately non-realtime path.
 
 ## Scope cuts (deliberate, recorded)
 

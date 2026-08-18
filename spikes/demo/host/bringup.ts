@@ -190,7 +190,7 @@ async function bucket() {
     await owner.driver.sealPartition(part);
     step("partition sealed with cold member");
 
-    await owner.driver.initStore(S3.endpoint, S3.bucket, S3.access, S3.secret);
+    await owner.driver.initStore({ kind: "s3", value: { endpoint: S3.endpoint, bucket: S3.bucket, accessKey: S3.access, secretKey: S3.secret } });
     await owner.driver.ensureBucket();
     await owner.driver.storeGrant(part, ownerId);
     await owner.driver.storeGrant(part, coldId);
@@ -201,9 +201,9 @@ async function bucket() {
     console.log("  flush:", await owner.driver.bucketFlush(part));
     step("authored + flushed");
 
-    await cold.driver.initStore(S3.endpoint, S3.bucket, "", "");
+    await cold.driver.initStore({ kind: "s3", value: { endpoint: S3.endpoint, bucket: S3.bucket, accessKey: "", secretKey: "" } });
     await cold.driver.adoptPartition(part);
-    console.log("  pull:", await cold.driver.bucketPull(part, ownerId));
+    console.log("  pull:", await cold.driver.bucketPull(part, ownerId, undefined));
     const snap = await cold.tasks.items();
     step(`cold pull: rev=${snap.revision} items=${snap.items.length}`);
     if (snap.items.length !== 2) throw new Error("cold boot incomplete");

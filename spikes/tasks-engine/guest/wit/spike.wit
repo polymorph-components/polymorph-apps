@@ -60,32 +60,78 @@ interface driver {
     kh-contact-card: async func() -> result<list<u8>, string>;
     kh-ingest-contact: async func(card: list<u8>) -> result<_, string>;
 
-    // --- the bucket path (#19's pull layer under this engine; G4) ---
+    // --- the bucket path (#19's pull layer under this engine; G4, plus
+    // --- the spikes/dropbox link-capability strategy) ---
     //
-    // The same keyhive envelope bytes that feed sedimentree feed bucket
-    // objects; object names are HMAC-derived from per-epoch name-keys;
-    // members bootstrap from a per-member K_p pickup object wrapped to
-    // keyhive contact-card prekeys; the keyhive op stream is stored as
-    // name-keyed blobs so a cold device can join from the bucket alone.
+    // Two provider strategies behind one surface (wit/blobstore.wit is
+    // the generalized draft). S3: object names HMAC-derived from
+    // per-epoch name-keys; members bootstrap from a per-member K_p pickup
+    // object wrapped to keyhive contact-card prekeys; the keyhive op
+    // stream is stored as name-keyed blobs so a cold device can join from
+    // the bucket alone. Dropbox: plain derivable paths under a per-doc
+    // folder whose shared link is the pull capability; pickup objects are
+    // per-member sealed files with their own revocable links; revocation
+    // is server-side, hard, and retroactive.
 
-    init-store: async func(endpoint: string, bucket: string, access-key: string, secret-key: string) -> result<_, string>;
+    record s3-config {
+        endpoint: string,
+        bucket: string,
+        access-key: string,
+        secret-key: string,
+    }
+
+    /// Consumer Dropbox (app-folder app). An empty access-token = a
+    /// link-tier recipient: no write path, pulls ride a pickup link with
+    /// app auth alone (the app key/secret are public identifiers in any
+    /// shipped client). A non-empty refresh-token lets the guest refresh
+    /// an expired access token in place (PKCE public client: the token
+    /// endpoint wants only the app key).
+    record dropbox-config {
+        app-key: string,
+        app-secret: string,
+        access-token: string,
+        refresh-token: string,
+        root: string,
+    }
+
+    variant store-config {
+        s3(s3-config),
+        dropbox(dropbox-config),
+    }
+
+    init-store: async func(config: store-config) -> result<_, string>;
+
+    /// S3: create the bucket + public-read-no-list policy. Dropbox:
+    /// ensure the root folders (doc folders + links are minted lazily).
     ensure-bucket: async func() -> result<_, string>;
 
-    /// Publish/refresh the member's K_p (name-key keychain + author
-    /// device list), sealed to a keyhive prekey DH.
-    store-grant: async func(doc-id: list<u8>, member-id: list<u8>) -> result<_, string>;
+    /// Publish/refresh the member's pickup object, sealed to a keyhive
+    /// contact-card prekey DH. S3: K_p (name-key keychain + author
+    /// device list) at the derivable location — returns none. Dropbox:
+    /// the sealed pickup file (doc folder link + device list), plus the
+    /// file's own minted link, returned — the member's standing
+    /// capability, carried by the caller in lieu of the E2E channel.
+    store-grant: async func(doc-id: list<u8>, member-id: list<u8>) -> result<option<string>, string>;
 
-    /// Delete the member's K_p and rotate the name-key epoch; republish
-    /// K_p for the remaining grantees and re-place oplog + manifest.
-    store-revoke: async func(doc-id: list<u8>, member-id: list<u8>) -> result<_, string>;
+    /// Revoke the member's pickup and rotate the pull tier. S3: delete
+    /// K_p + rotate the name-key epoch, republish for the remaining
+    /// grantees (cooperative now, hard forward). Dropbox: revoke +
+    /// delete their pickup link, revoke + re-mint the doc folder link,
+    /// rewrite remaining pickups in place (hard + retroactive,
+    /// server-side). Returns a human-readable guarantee note for the UI
+    /// — the blobstore draft's guarantee class, as prose for now.
+    store-revoke: async func(doc-id: list<u8>, member-id: list<u8>) -> result<string, string>;
 
     /// Push new chunks (envelope bytes), the op-stream blob, and the
-    /// signed manifest.
+    /// signed manifest. Owner tier (S3 credentials / Dropbox token).
     bucket-flush: async func(doc-id: list<u8>) -> result<string, string>;
 
-    /// Pull via K_p: op stream into keyhive, chunks into the
-    /// sedimentree, then apply. Works with zero live connections.
-    bucket-pull: async func(doc-id: list<u8>, owner-id: list<u8>) -> result<string, string>;
+    /// Pull: op stream into keyhive, chunks into the sedimentree, then
+    /// apply. Works with zero live connections. `pickup` is the standing
+    /// pickup link for link-tier recipients (Dropbox without a token);
+    /// S3 derives the K_p location instead, and Dropbox owner-tier pulls
+    /// by path — both ignore it.
+    bucket-pull: async func(doc-id: list<u8>, owner-id: list<u8>, pickup: option<string>) -> result<string, string>;
 
     // --- the identity bundle (#20 G5; #11's persistence slice) ---
     //

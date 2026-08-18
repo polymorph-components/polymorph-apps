@@ -32,7 +32,7 @@ mod bindings {
     });
 }
 
-use bindings::exports::polymorph::engine_spike::driver::Guest as Driver;
+use bindings::exports::polymorph::engine_spike::driver::{Guest as Driver, S3Config, StoreConfig};
 use bindings::exports::polymorph_data::tasks::tasks::{Guest as Tasks, TodoItem};
 
 struct Ctx {
@@ -587,10 +587,12 @@ async fn scenario(
     ] {
         d.call_init_store(
             acc,
-            s3.endpoint.clone(),
-            s3.bucket.clone(),
-            ak.to_string(),
-            sk.to_string(),
+            StoreConfig::S3(S3Config {
+                endpoint: s3.endpoint.clone(),
+                bucket: s3.bucket.clone(),
+                access_key: ak.to_string(),
+                secret_key: sk.to_string(),
+            }),
         )
         .await?
         .map_err(|e| format_err!("{name} init-store: {e}"))?;
@@ -603,7 +605,9 @@ async fn scenario(
         (t_id_bytes.clone(), "tablet"),
         (b_id_bytes.clone(), "bob"),
     ] {
-        step!(
+        // S3 returns no capability: the K_p sits at a location the
+        // member derives. (Dropbox returns the minted pickup link.)
+        let _ = step!(
             format!("laptop.store-grant({name})"),
             l.call_store_grant(acc, part.clone(), member)
         );
@@ -614,7 +618,7 @@ async fn scenario(
     // Cold start: the tablet joins from the bucket alone.
     let summary = step!(
         "tablet.bucket-pull [cold start, zero connections]",
-        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone(), None)
     );
     println!("            {summary}");
     let ti = wait_items(acc, tt, "tablet reads the full task list from the bucket", |i| {
@@ -645,7 +649,7 @@ async fn scenario(
     println!("            {summary}");
     let summary = step!(
         "laptop.bucket-pull",
-        l.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        l.call_bucket_pull(acc, part.clone(), l_id_bytes.clone(), None)
     );
     println!("            {summary}");
     wait_items(acc, lt, "laptop sees the tablet task (via bucket)", |i| i.len() == 5).await?;
@@ -662,10 +666,11 @@ async fn scenario(
         "laptop.kh-revoke-member(bob-group)",
         l.call_kh_revoke_member(acc, part.clone(), bob_g.clone())
     );
-    step!(
+    let note = step!(
         "laptop.store-revoke(bob)",
         l.call_store_revoke(acc, part.clone(), b_id_bytes.clone())
     );
+    println!("            {note}");
     step!(
         "laptop.tasks.add('secret task') [post-revocation]",
         lt.call_add(acc, "secret task".into())
@@ -678,7 +683,7 @@ async fn scenario(
     .await?;
     let summary = step!(
         "tablet.bucket-pull [rides the rotation via K_p republish]",
-        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone(), None)
     );
     println!("            {summary}");
     wait_items(acc, tt, "tablet sees the post-revocation task", |i| {
@@ -700,7 +705,7 @@ async fn scenario(
         bail!("bob's view changed unexpectedly: {:?}", snap.items);
     }
     match b
-        .call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        .call_bucket_pull(acc, part.clone(), l_id_bytes.clone(), None)
         .await?
     {
         Err(e) if e.contains("kp missing") => {
@@ -727,7 +732,7 @@ async fn scenario(
     println!("            {summary}");
     let summary = step!(
         "tablet.bucket-pull",
-        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone(), None)
     );
     println!("            {summary}");
     wait_items(acc, tt, "tablet sees all 7 tasks", |i| i.len() == 7).await?;
@@ -787,16 +792,18 @@ async fn scenario(
     println!("            restored identity == laptop identity");
     l2.call_init_store(
         acc,
-        s3.endpoint.clone(),
-        s3.bucket.clone(),
-        s3.access.clone(),
-        s3.secret.clone(),
+        StoreConfig::S3(S3Config {
+            endpoint: s3.endpoint.clone(),
+            bucket: s3.bucket.clone(),
+            access_key: s3.access.clone(),
+            secret_key: s3.secret.clone(),
+        }),
     )
     .await?
     .map_err(|e| format_err!("laptop2 init-store: {e}"))?;
     let summary = step!(
         "laptop2.bucket-pull [rehydrate: bundle + bucket only]",
-        l2.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        l2.call_bucket_pull(acc, part.clone(), l_id_bytes.clone(), None)
     );
     println!("            {summary}");
     wait_items(acc, l2t, "laptop2 reads all 7 tasks", |i| i.len() == 7).await?;
@@ -811,7 +818,7 @@ async fn scenario(
     println!("            {summary}");
     let summary = step!(
         "tablet.bucket-pull",
-        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone())
+        tb.call_bucket_pull(acc, part.clone(), l_id_bytes.clone(), None)
     );
     println!("            {summary}");
     wait_items(acc, tt, "tablet sees the restored device's task (8 total)", |i| {

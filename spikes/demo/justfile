@@ -48,12 +48,30 @@ app:
     deno run --allow-read --allow-write tools/translate.ts \
         build/app.component.wasm build/app.plan.json
 
+# Build the storage-provider config panels (#19 × #22: provider config
+# UI as sandboxed components, launched from chrome).
+panels:
+    cd guest-panel-s3 && cargo build --release --target wasm32-unknown-unknown
+    cd guest-panel-dropbox && cargo build --release --target wasm32-unknown-unknown
+    wasm-tools component new \
+        guest-panel-s3/target/wasm32-unknown-unknown/release/demo_panel_s3_guest.wasm \
+        -o build/panel-s3.component.wasm
+    wasm-tools component new \
+        guest-panel-dropbox/target/wasm32-unknown-unknown/release/demo_panel_dropbox_guest.wasm \
+        -o build/panel-dropbox.component.wasm
+    deno run --allow-read --allow-write tools/translate.ts \
+        build/panel-s3.component.wasm build/panel-s3.plan.json
+    deno run --allow-read --allow-write tools/translate.ts \
+        build/panel-dropbox.component.wasm build/panel-dropbox.plan.json
+
 # Assemble the servable demo directory.
-site: translate app
+site: translate app panels
     mkdir -p serve
     deno check host/demo.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/demo.js host/demo.ts
     cp build/app.component.wasm build/app.plan.json serve/
+    cp build/panel-s3.component.wasm build/panel-s3.plan.json serve/
+    cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json serve/
     cp ../tasks-engine/target/composed.wasm serve/engine.component.wasm
     cp build/engine.plan.json serve/engine.plan.json
     cp web/index.html serve/
@@ -67,11 +85,13 @@ serve: site
 # todomvc spike: docs/ is served by GitHub Pages, the build is
 # committed). The page still needs LOCAL infra (relay + MinIO) or
 # ?relay=&s3= overrides — Pages hosts the artifact, not the network.
-pages: translate app
+pages: translate app panels
     mkdir -p ../../docs/spike-demo
     deno check host/demo.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o ../../docs/spike-demo/demo.js host/demo.ts
     cp build/app.component.wasm build/app.plan.json ../../docs/spike-demo/
+    cp build/panel-s3.component.wasm build/panel-s3.plan.json ../../docs/spike-demo/
+    cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json ../../docs/spike-demo/
     cp ../tasks-engine/target/composed.wasm ../../docs/spike-demo/engine.component.wasm
     cp build/engine.plan.json ../../docs/spike-demo/
     cp web/index.html ../../docs/spike-demo/
