@@ -200,6 +200,34 @@ post-revocation stress loop.
   OAuth path is the real fix: PKCE with `token_access_type=offline`
   returns a refresh token, and the engine refreshes on 401 and retries
   once. Paste-a-token remains the dev fallback with a stated cliff.
+- **Fixed-rate timers with no in-flight guard were the lockup.** Every
+  periodic driver — app `poll` (400 ms x 3 panes), reconciliation pulls
+  (2.5 s), auto bucket-sync (4 s), stats (4 s) — appended to an
+  unbounded promise chain unconditionally, while the work behind them
+  routinely outlives the period (consumer-API storage runs 1-3 s/op).
+  Fixed-rate scheduling + slower-than-period work diverges: the queue
+  *is* the leak, and user input ends up behind hundreds of pending jobs
+  (sluggish, then wedged, then dead). All periodic work now **skips a
+  tick whose predecessor is still running** — correct semantics anyway:
+  a reconciliation pull is a refresh, not a transaction. Measured with a
+  1.5 s/op delay proxy in front of MinIO: **180 ticks skipped in 3
+  minutes** (jobs the old code would have queued), background depth
+  bounded at 3-4, and a UI-path task add still completing in **3 ms**
+  while storage churns. `__demo.health()` exposes depth + per-timer skip
+  counts.
+- **A residual browser-only leak remains, and it is NOT the engine.**
+  With every page timer cleared and the wire up, the tab still grows
+  ~2.4 MB/s (78 MB -> 428 MB in 60 s of idle with timers running; ~4 GB
+  heap cap, so minutes to OOM). Isolation, in order: 500 driver/tasks
+  calls leak nothing; 10 sync pulls leak nothing; boot with an
+  unreachable relay (no connection, no apps) is flat; and
+  `host/leak-probe.ts` — the SAME engine composite under Deno with the
+  same live subscriptions, idling 90 s — is **flat (-1.8 MB)**. So the
+  growth needs a live wire *in a browser*: it belongs to the deltic
+  browser port layer (websocket/webrtc) or the embedder's browser glue,
+  not to the engine, subduction, keyhive, or in-guest iroh. Needs its
+  own investigation with a real Chromium/Firefox profile (the numbers
+  above come from paseo's webview, which is itself instrumented).
 - **Panel teardown is a deltic open question** (same one #22 lists for
   app kill): switching provider tabs clears the region and drops the
   references, but there is no explicit instance-terminate API — the
