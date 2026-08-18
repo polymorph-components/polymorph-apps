@@ -92,6 +92,21 @@ per pane (×3, one browser page):
   `kh-knows-agent(doc)` → subscriptions → bucket grant/flush → tablet
   cold boot → apps mounted.
 
+## Deployment
+
+The hosted build is **continuously deployed**: `.github/workflows/pages.yml`
+runs `scripts/setup.sh` (sibling ports pinned by commit, toolchain from
+`rust-toolchain.toml`, `wasm-tools`/`wac`/`just` pinned), builds the site
+from source on every push, and deploys `docs/` to Pages from `main`. PRs
+build the site too but do not deploy — a broken demo fails the PR
+instead of the site.
+
+`docs/spike-demo/` is therefore **generated, not committed** (four
+rebuilds of an ~11 MB engine composite had already landed in history
+before that changed). `just pages` still writes it locally for preview.
+Bumping a sibling pin in `scripts/setup.sh` is deliberate: those ports
+carry embedder conventions that have broken this demo before.
+
 ## Run it
 
 ```
