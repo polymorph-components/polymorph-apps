@@ -59,7 +59,20 @@ await until("alice subscribe", () => alice.driver.syncStatus(ha));
 
 await alice.tasks.add("one task, then silence");
 
-console.log(`\nsubscriptions live; idling ${IDLE_S}s with NO further calls\n`);
+// Mode: "idle" holds subscriptions open and does nothing; "pulls" runs the
+// demo's reconciliation loop (a pull pair every 2.5 s), which is what the
+// browser does and what the first version of this probe failed to model.
+const MODE = Deno.args[1] ?? "idle";
+if (MODE === "pulls") {
+  setInterval(async () => {
+    try {
+      await pull(bob, aliceId);
+      await pull(alice, bobId);
+    } catch { /* ignore */ }
+  }, 2500);
+}
+
+console.log(`\nsubscriptions live; ${MODE} for ${IDLE_S}s\n`);
 const first = sample("idle t=0");
 for (let t = 10; t <= IDLE_S; t += 10) {
   await new Promise((r) => setTimeout(r, 10_000));
