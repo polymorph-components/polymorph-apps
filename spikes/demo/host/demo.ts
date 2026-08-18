@@ -107,13 +107,21 @@ Storage… dialog and is optional for boot.`;
 
 // --- artifacts -----------------------------------------------------------------
 
+/** Build stamp from the page's tiny mutable root; artifacts carry it so a
+ * cached bundle can never be paired with fresh components (or vice
+ * versa). Empty in a dev tree that skipped the rewrite. */
+const BUILD =
+  (document.querySelector('meta[name="pm-build"]') as HTMLMetaElement | null)
+    ?.content ?? "";
+const stamp = (path: string) => (BUILD && BUILD !== "__BUILD__" ? `${path}?v=${BUILD}` : path);
+
 async function fetchArtifacts(name: string): Promise<EngineArtifacts> {
   const [envelope, bytes] = await Promise.all([
-    fetch(`./${name}.plan.json`).then((r) => {
+    fetch(stamp(`./${name}.plan.json`)).then((r) => {
       if (!r.ok) throw new Error(`${name} plan: HTTP ${r.status}`);
       return r.text();
     }),
-    fetch(`./${name}.component.wasm`).then((r) => {
+    fetch(stamp(`./${name}.component.wasm`)).then((r) => {
       if (!r.ok) throw new Error(`${name} wasm: HTTP ${r.status}`);
       return r.arrayBuffer();
     }),
@@ -457,10 +465,36 @@ async function boot() {
    * collide with a fresh one's. */
   const sessionSuffix = () => `/run-${randomHex(4)}`;
 
-  const setupBucket = (cfg: StorageConfig) =>
-    enqueue(async () => {
+  // Storage setup is ~20 sequential provider calls (consumer APIs run
+  // ~0.5-1.5 s each), so a single "configuring…" line looks wedged for
+  // half a minute. Each step announces itself instead, and a failure
+  // says WHICH step died — the engine's transport errors now name the
+  // request, so the two compose into an actionable message.
+  // Guard against a SECOND setup while one is in flight. The 20 s
+  // configure window makes "click Save again" the natural user response,
+  // and a duplicate run re-mints container links and republishes pickup
+  // objects underneath the first one — the failure mode is confusing
+  // rather than harmless, so it is refused rather than queued.
+  let setupInFlight = false;
+
+  const setupBucket = (cfg: StorageConfig) => {
+    // The flag is claimed SYNCHRONOUSLY, not inside the job: the
+    // background chain serializes work, so a guard checked inside it
+    // would always find the previous run finished and would happily
+    // redo the whole thing. Verified by driving two calls in a row.
+    if (setupInFlight) {
+      tablet.status("storage setup already running — wait for it", true);
+      return Promise.resolve();
+    }
+    setupInFlight = true;
+    return enqueue(async () => {
+      let step = "init";
+      const at = (s: string) => {
+        step = s;
+        tablet.status(`configuring storage: ${s}…`, true);
+      };
       try {
-        tablet.status("configuring storage…");
+        at("provider config");
         currentProvider = cfg.provider;
         bobPickup = undefined;
         if (cfg.provider === "s3") {
@@ -481,7 +515,9 @@ async function boot() {
           await alice.engine.driver.initStore(owner);
           await tablet.engine.driver.initStore(owner);
           await bob.engine.driver.initStore(reader);
+          at("bucket + policy");
           await alice.engine.driver.ensureBucket();
+          at("grants");
           for (const m of [alice.id, bob.id, tablet.id]) {
             await alice.engine.driver.storeGrant(part, m); // S3: none
           }
@@ -504,21 +540,39 @@ async function boot() {
           await alice.engine.driver.initStore(owner);
           await tablet.engine.driver.initStore(owner);
           await bob.engine.driver.initStore(reader);
+          at("folders");
           await alice.engine.driver.ensureBucket();
+          at("grant: alice");
           await alice.engine.driver.storeGrant(part, alice.id);
+          at("grant: tablet");
           await alice.engine.driver.storeGrant(part, tablet.id);
+          at("grant: bob (pickup link)");
           bobPickup = await alice.engine.driver.storeGrant(part, bob.id);
         }
+        at("flush");
         await alice.engine.driver.bucketFlush(part);
-        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined));
+        at("tablet cold pull");
+        tablet.status(
+          await tablet.engine.driver.bucketPull(part, alice.id, undefined),
+          true,
+        );
         bucketReady = true;
         syncBtn.disabled = false;
         autoBox.disabled = false;
         pullBtn.disabled = false;
       } catch (e) {
-        tablet.status(`storage setup failed: ${err(e)} — check endpoint + CORS`);
+        // Name the step: a half-configured store is recoverable (every
+        // provider call is idempotent), so "retry Save & connect" is
+        // honest advice rather than a shrug.
+        tablet.status(
+          `storage setup failed at ${step}: ${err(e)} — check the endpoint/token and CORS, then Save & connect again`,
+          true,
+        );
+      } finally {
+        setupInFlight = false;
       }
     });
+  };
 
   const bucketSync = () =>
     enqueue(async () => {
@@ -713,6 +767,9 @@ async function boot() {
     pull,
     bobPull: () => bobPull(),
     openStorage: () => openStorage(),
+    // Exposed for driving: re-running setup is also how the in-flight
+    // guard is exercised without racing a 20 s consumer-API window.
+    setupBucket: (cfg: StorageConfig) => setupBucket(cfg),
     authorize,
     // The panel's granted fetch, exposed so the DENIAL side of the
     // per-destination grant is demonstrable and not merely asserted.

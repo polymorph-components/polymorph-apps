@@ -897,17 +897,64 @@ fn host_of(endpoint: &str) -> String {
         .to_string()
 }
 
+/// A short, non-secret label for a request: method plus host and path.
+/// Query strings are dropped — on the S3 path they can carry signing
+/// material, and no diagnostic needs them.
+fn request_label(method: &str, url: &str) -> String {
+    let rest = url
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or(url)
+        .split('?')
+        .next()
+        .unwrap_or(url);
+    format!("{method} {rest}")
+}
+
+/// One HTTP request, with **transient-failure retry and named errors**.
+///
+/// Both properties were bought by a live browser failure: a storage
+/// setup makes ~23 sequential requests, and a single dropped connection
+/// aborted the whole thing, leaving a half-configured store behind an
+/// error message (`fetch: send: NetworkError…`) that named neither the
+/// operation nor the host. Every provider call in this file is idempotent
+/// by construction (overwrite uploads, tolerated-conflict folder
+/// creation, adopted-if-exists link minting, reads), so retrying a
+/// transport failure is safe; a response — any status — is never retried
+/// here, because status handling belongs to the caller.
 async fn do_fetch(
     method: &str,
     url: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 ) -> Result<(u16, Vec<u8>), String> {
-    let _ = with_state(|s| s.fetches += 1);
-    let resp = fetch::request(method.to_string(), url, headers, body)
+    const ATTEMPTS: u32 = 3;
+    let label = request_label(method, &url);
+    let mut last = String::new();
+    for attempt in 1..=ATTEMPTS {
+        let _ = with_state(|s| s.fetches += 1);
+        match fetch::request(
+            method.to_string(),
+            url.clone(),
+            headers.clone(),
+            body.clone(),
+        )
         .await
-        .map_err(|e| format!("fetch: {e}"))?;
-    Ok((resp.status, resp.body))
+        {
+            Ok(resp) => return Ok((resp.status, resp.body)),
+            Err(e) => {
+                last = e.to_string();
+                // No backoff, deliberately: only TRANSPORT failures retry
+                // here (a status — including 429/5xx — returns to the
+                // caller untouched), so there is no rate limiter to
+                // hammer, and the attempt count is bounded at 3.
+                let _ = attempt;
+            }
+        }
+    }
+    Err(format!(
+        "{label}: transport failed after {ATTEMPTS} attempts: {last}"
+    ))
 }
 
 async fn s3_signed(

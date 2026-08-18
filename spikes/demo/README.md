@@ -169,6 +169,37 @@ post-revocation stress loop.
   (stats stand down). Worth carrying into the framework's chrome: a
   status surface that mixes ambient telemetry with consequential
   one-shot messages needs priority, not last-writer-wins.
+- **A bare transport error is undiagnosable, and one of them killed the
+  whole setup.** A live run failed with
+  `fetch: send: ErrorCode::InternalError(Some("NetworkError…"))` — no
+  method, no host, no operation — after ~20 s of a single
+  "configuring storage…" line. Three fixes, all in this commit: every
+  provider request **names itself** in transport errors
+  (`PUT host/path: transport failed after 3 attempts: …`); transport
+  failures (never statuses — 429/5xx go to the caller untouched) **retry
+  up to 3×**, which is safe because every provider call here is
+  idempotent by construction; and setup **announces each step**
+  (`configuring storage: grant: bob (pickup link)…`), so a failure says
+  *which* of the ~20 sequential calls died and the remaining message is
+  actionable advice rather than "check endpoint + CORS".
+- **A duplicate "Save & connect" re-ran the entire setup**, re-minting
+  container links and republishing pickups under the first run. The
+  guard's placement is the subtle part: the background chain serializes
+  work, so a flag checked *inside* the job always finds the previous run
+  finished — it has to be claimed **synchronously at call time**.
+  (Verified by driving two calls in one tick; the second is refused.)
+- **Unversioned assets served returning visitors a stale bundle.** The
+  page loaded `demo.js` by bare name, so a rebuilt demo kept running the
+  cached script against fresh components — it cost an hour of chasing a
+  fix that was already deployed. The build now stamps a mutable root
+  (`<meta name="pm-build">` + `demo.js?v=…`) and artifacts inherit the
+  stamp: NOTES §Release integrity's bootloader shape in miniature, and
+  the thing that makes a Pages republish actually take effect.
+- **Console-generated Dropbox tokens expire in ~4 h**, and the failure
+  is now legible (`create_folder_v2 …: 401 expired_access_token`). The
+  OAuth path is the real fix: PKCE with `token_access_type=offline`
+  returns a refresh token, and the engine refreshes on 401 and retries
+  once. Paste-a-token remains the dev fallback with a stated cliff.
 - **Panel teardown is a deltic open question** (same one #22 lists for
   app kill): switching provider tabs clears the region and drops the
   references, but there is no explicit instance-terminate API — the
