@@ -15,7 +15,8 @@ import {
   ComponentException,
   instantiate,
 } from "@deltic/runtime/embedder";
-import { createBackend, createRunner, type Runner } from "../../todomvc/host/app.ts";
+import { createRunner, type Runner } from "../../todomvc/host/app.ts";
+import { createFrameBackend } from "./frame-backend.ts";
 import { createSurface } from "../../todomvc/host/surface.ts";
 import type { UiEvent } from "../../todomvc/host/events.ts";
 import {
@@ -68,6 +69,77 @@ type StorageConfig =
   };
 
 const STORAGE_KEY = "pm-demo-storage";
+
+// --- chrome appearance: the personal, undisclosed anchor -----------------------
+//
+// The strip's colour is the user's own: RANDOMISED on first run, pickable
+// from a constrained palette, and never handed to app code. It is a
+// SECONDARY anchor — position is the primary one (apps cannot paint the
+// strip at all) — and it is deliberately NOT the dropped #22
+// personalization secret: it demands no user action at a decision point
+// and no per-prompt verification, so it fails toward "something looks
+// off" rather than "I forgot to check".
+//
+// Why the palette is constrained: fixed lightness and chroma in OKLCH
+// means every choice keeps the same text contrast, so the anchor can
+// never be customised into an unreadable or a look-alike state.
+//
+// Why apps cannot learn it: nothing in the surface API carries a colour;
+// the app rectangle is opaque so chrome pixels and app pixels never
+// composite (blend/backdrop-filter pixel-stealing has nothing to
+// sample); and the framework's curated DOM must additionally withhold
+// blend modes, backdrop filters, CSSOM read-back and system-colour
+// keywords — see the #5 ruling table. The demo enforces the structural
+// half: this value is never passed to a guest, and the component tint
+// below is derived from component bytes instead.
+const CHROME_HUES = [265, 210, 175, 140, 95, 60, 35, 10, 330, 300];
+const CHROME_KEY = "pm-demo-chrome-hue";
+
+function chromeHue(): { hue: number; fresh: boolean } {
+  try {
+    const raw = localStorage.getItem(CHROME_KEY);
+    if (raw !== null) {
+      const hue = Number(raw);
+      if (CHROME_HUES.includes(hue)) return { hue, fresh: false };
+    }
+  } catch { /* storage unavailable: fall through to a fresh pick */ }
+  // First run (or eviction). A silently-reset anchor would train users
+  // that "chrome colour changes sometimes", which inverts the training —
+  // so a reset is ANNOUNCED, never quiet. In the framework this value
+  // belongs with durable device state (#11's identity bundle).
+  const hue = CHROME_HUES[Math.floor(Math.random() * CHROME_HUES.length)];
+  try {
+    localStorage.setItem(CHROME_KEY, String(hue));
+  } catch { /* nothing durable to write to */ }
+  return { hue, fresh: true };
+}
+
+function applyChromeHue(hue: number) {
+  // Scoped to the strip ELEMENT, never to :root. A custom property on the
+  // document root is ambient authority: it inherits into every app
+  // region, so a component that ever gained a `style` attribute (or a
+  // chrome class resolving var(--chrome-bg)) could paint chrome's exact
+  // colour without ever reading it. Keeping the value out of scope makes
+  // the secrecy structural instead of a property of the allowlist.
+  const strip = document.getElementById("chrome-strip");
+  if (!strip) return;
+  strip.style.setProperty("--chrome-bg", `oklch(38% .07 ${hue})`);
+  strip.style.setProperty("--chrome-fg", "#f4f6fc");
+}
+
+/** The component's assigned colour: derived from the component's own
+ * bytes, so a component cannot CHOOSE how it is labelled (it aids
+ * continuity — "the same component as last time" — and is not an
+ * authenticator). Distinct from chrome's personal colour by
+ * construction: this one is public, that one is not. */
+async function componentHue(bytes: Uint8Array): Promise<number> {
+  // Copy into a plain ArrayBuffer: the dom lib's BufferSource excludes
+  // SharedArrayBuffer-backed views.
+  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+  return ((digest[0] << 8) | digest[1]) % 360;
+}
+
 /** Pre-provider-split key; read once as an S3 config so a configured
  * browser keeps working across the rework. */
 const LEGACY_S3_KEY = "pm-demo-s3";
@@ -287,6 +359,8 @@ interface PanelExports {
   run(): Promise<void>;
   onEvent(ev: UiEvent): Promise<void>;
   outcome(): Promise<string | undefined>;
+  /** Chrome-driven: produce the config, or none if not yet valid. */
+  commit(): Promise<string | undefined>;
 }
 
 interface Pane {
@@ -330,7 +404,15 @@ async function newPane(
 async function mountApp(pane: Pane, appArtifacts: EngineArtifacts) {
   const container = document.getElementById(`${pane.name}-app`)!;
   let dispatch: (ev: UiEvent) => void = () => {};
-  const backend = createBackend("direct", container as HTMLElement, (ev) => dispatch(ev));
+  // A REAL sandboxed frame per app surface (#16), not the `direct`
+  // backend: the app's nodes never enter chrome's document, so chrome's
+  // personal strip colour is unreachable by construction rather than by
+  // allowlist. See frame-backend.ts.
+  const frameBackend = createFrameBackend(
+    container as HTMLElement,
+    (ev) => dispatch(ev),
+  );
+  const backend = await frameBackend.backend;
   const surface = createSurface(backend, () => "");
   const imports = {
     ...surface.imports,
@@ -380,12 +462,83 @@ function err(e: unknown): string {
   return typeof p === "string" ? p : String(e);
 }
 
+/** Chrome's context slot: what secondary surface, if any, is on screen.
+ * Called with null for "no secondary surface". The strip's own colour is
+ * NOT touched here — it is the constant anchor; only the label changes. */
+let setChromeContext: (surface: { name: string; hue: number } | null) => void =
+  () => {};
+
+function initChrome() {
+  const { hue, fresh } = chromeHue();
+  applyChromeHue(hue);
+  const context = document.getElementById("chrome-context")!;
+  const swatches = document.getElementById("chrome-swatches")!;
+  const appearance = document.getElementById("chrome-appearance") as HTMLButtonElement;
+
+  setChromeContext = (surface) => {
+    context.replaceChildren();
+    if (!surface) {
+      const idle = document.createElement("span");
+      idle.className = "said";
+      idle.textContent = "3 app regions · alice · bob · tablet";
+      context.append(idle);
+      return;
+    }
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.background = `oklch(62% .16 ${surface.hue})`;
+    // Untrusted-string discipline: the component's name is QUOTED,
+    // clamped by CSS, and never joined into chrome's own sentence.
+    const name = document.createElement("q");
+    name.className = "foreign";
+    name.textContent = surface.name.slice(0, 40);
+    const said = document.createElement("span");
+    said.className = "said";
+    said.textContent = "— provider configuration panel · drawn by the component, not by chrome";
+    context.append(chip, name, said);
+  };
+  setChromeContext(null);
+
+  // Constrained customisation: same lightness and chroma for every
+  // choice, so contrast cannot be customised away.
+  appearance.onclick = () => {
+    if (swatches.classList.toggle("open")) {
+      swatches.replaceChildren();
+      for (const h of CHROME_HUES) {
+        const b = document.createElement("button");
+        b.style.background = `oklch(38% .07 ${h})`;
+        b.title = `hue ${h}`;
+        b.onclick = () => {
+          applyChromeHue(h);
+          try {
+            localStorage.setItem(CHROME_KEY, String(h));
+          } catch { /* not durable here */ }
+          swatches.classList.remove("open");
+        };
+        swatches.append(b);
+      }
+    }
+  };
+  return { fresh };
+}
+
 async function boot() {
   const banner = document.getElementById("banner")!;
   const say = (s: string) => {
     banner.textContent = s;
     console.log(`[boot] ${s}`);
   };
+
+  // An anchor that resets silently trains the user that it changes; a
+  // reset is therefore announced.
+  const { fresh } = initChrome();
+  if (fresh) {
+    const note = document.getElementById("chrome-rule")!;
+    note.textContent = "new chrome colour set for this device — remember it";
+    setTimeout(() => {
+      note.textContent = "chrome never asks for your provider password";
+    }, 15000);
+  }
 
   say("fetching artifacts…");
   const [engineArt, appArt] = await Promise.all([
@@ -674,16 +827,40 @@ async function boot() {
   };
   const panelArtifacts = new Map<string, EngineArtifacts>();
   let panelMounted: "s3" | "dropbox" | null = null;
+  let activePanel:
+    | { provider: "s3" | "dropbox"; panel: PanelExports; runner: Runner }
+    | null = null;
   let panelDispatch: (ev: UiEvent) => void = () => {};
+  /** The live panel surface's sandboxed frame, if any (see
+   * frame-backend.ts). Teardown must destroy it explicitly: clearing the
+   * region would orphan the port and the window listener. */
+  let panelFrame: { destroy(): void } | null = null;
 
   /** Drop the panel: clear its granted subtree and cut the event path.
    * (Instance teardown proper is an OPEN deltic question — there is no
    * `drop`/`dispose` on an instantiated component yet; dropping our refs
    * and its DOM is the whole of the retirement we can express today.) */
+  // Every mount takes a generation; teardown bumps it. Mounting is
+  // async (artifact fetch + frame handshake), so without this a mount
+  // that completes AFTER its dialog closed would append a live
+  // component frame to a region nobody is looking at — an invisible
+  // surface holding a granted rectangle.
+  let panelGeneration = 0;
   const teardownPanel = () => {
+    panelGeneration++;
     panelDispatch = () => {};
+    // Close the port and drop the frame BEFORE clearing the region, so
+    // the frame's window listener and MessagePort go with it rather than
+    // being left holding a detached document.
+    panelFrame?.destroy();
+    panelFrame = null;
     region.innerHTML = "";
     panelMounted = null;
+    activePanel = null;
+    // No secondary surface on screen: the strip goes back to naming the
+    // app regions. (The strip's COLOUR never changed — it is the anchor.)
+    setChromeContext(null);
+    region.style.removeProperty("--component-color");
   };
 
   const finishPanel = (outcome: string) => {
@@ -705,6 +882,8 @@ async function boot() {
 
   const mountPanel = async (provider: "s3" | "dropbox") => {
     teardownPanel();
+    const generation = ++panelGeneration;
+    if (!dialog.open) return;
     for (const [k, btn] of Object.entries(tabs)) {
       btn.classList.toggle("active", k === provider);
     }
@@ -714,7 +893,27 @@ async function boot() {
       art = await fetchArtifacts(name);
       panelArtifacts.set(name, art);
     }
-    const backend = createBackend("direct", region, (ev) => panelDispatch(ev));
+    if (generation !== panelGeneration) return;
+    // Bind the surface's identity into the strip BEFORE it can draw: the
+    // hue is derived from the component's own bytes (assigned, not
+    // chosen), and the same value tints the region's edge so the
+    // untrusted rectangle and its chrome label visibly agree.
+    const hue = await componentHue(art.bytes);
+    // The component's colour is public (derived from its own bytes), but
+    // scope it to the region anyway: chrome's document root stays clean.
+    region.style.setProperty("--component-color", `oklch(62% .16 ${hue})`);
+    setChromeContext({ name, hue });
+
+    // Same sandboxed-frame treatment as the app panes: the panel handles
+    // provider credentials, so the argument for keeping it out of
+    // chrome's document is if anything stronger here.
+    const frameBackend = createFrameBackend(region, (ev) => panelDispatch(ev), "dark");
+    panelFrame = frameBackend;
+    const backend = await frameBackend.backend;
+    if (generation !== panelGeneration) {
+      frameBackend.destroy();
+      return;
+    }
     const surface = createSurface(backend, () => "");
     // The capability profiles, side by side (#21): the S3 panel is PURE —
     // surface only, no egress. The Dropbox panel additionally holds the
@@ -728,16 +927,19 @@ async function boot() {
       artifactsFromEnvelope(art.envelope, art.bytes),
       imports,
     );
+    if (generation !== panelGeneration) {
+      frameBackend.destroy();
+      return;
+    }
     const panel = instance.exports as unknown as PanelExports;
     const runner = createRunner(surface);
     panelMounted = provider;
+    // Chrome keeps the handles it needs to COMMIT; the panel only ever
+    // gets events and answers questions.
+    activePanel = { provider, panel, runner };
     panelDispatch = (ev) => {
       if (panelMounted !== provider) return;
       runner.call(() => panel.onEvent(ev))
-        .then(() => runner.call(() => panel.outcome()))
-        .then((out) => {
-          if (out !== undefined && panelMounted === provider) finishPanel(out);
-        })
         .catch((e) => console.warn(`[panel] event: ${err(e)}`));
     };
     const stored = loadStorage();
@@ -745,6 +947,11 @@ async function boot() {
     await runner.call(() => panel.seed(seedJson));
     await runner.call(() => panel.run());
   };
+
+  // <dialog> closes natively on ESC, which used to leave the component
+  // running in a hidden region. The close event is the one place that
+  // sees every path, so retirement hangs off it.
+  dialog.addEventListener("close", () => teardownPanel());
 
   const openStorage = () => {
     dialog.showModal();
@@ -763,6 +970,21 @@ async function boot() {
       });
     };
   }
+  // Chrome's Save: the commit belongs to the shell, so it is chrome that
+  // asks the panel for a configuration and chrome that decides the
+  // dialog is done. A panel refusing (none) leaves the dialog open with
+  // its own explanation showing inside its region.
+  (document.getElementById("storage-save") as HTMLButtonElement).onclick = (ev) => {
+    ev.preventDefault();
+    const active = activePanel;
+    if (!active) return;
+    active.runner.call(() => active.panel.commit())
+      .then((out) => {
+        if (out === undefined || out === "") return;
+        finishPanel(out);
+      })
+      .catch((e) => console.warn(`[panel] commit: ${err(e)}`));
+  };
   (document.getElementById("storage-cancel") as HTMLButtonElement).onclick = (ev) => {
     ev.preventDefault();
     teardownPanel();
@@ -824,6 +1046,26 @@ async function boot() {
       },
     }),
     authorize,
+    // The isolation claim, made checkable instead of asserted: every
+    // surface frame on the page must be UNREACHABLE from chrome's realm.
+    // A sandboxed frame without `allow-same-origin` has an opaque origin,
+    // so `contentDocument` is null (or throws) — if this ever reports
+    // `sameOriginReachable: true`, the sandbox attribute has regressed
+    // and chrome's pixels are once again in reach of component code.
+    frameProbe: () => {
+      const frames = Array.from(document.querySelectorAll("iframe"));
+      let reachable = false;
+      for (const f of frames) {
+        try {
+          if (f.contentDocument !== null) reachable = true;
+        } catch { /* opaque origin: the expected outcome */ }
+      }
+      return {
+        appFrames: frames.length,
+        sameOriginReachable: reachable,
+        sandbox: frames.map((f) => f.getAttribute("sandbox")),
+      };
+    },
     // The panel's granted fetch, exposed so the DENIAL side of the
     // per-destination grant is demonstrable and not merely asserted.
     panelFetch: dropboxFetchImports["polymorph:fetchspike/fetch@0.1.0"],

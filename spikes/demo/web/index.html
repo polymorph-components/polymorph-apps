@@ -7,6 +7,41 @@
   <link rel="stylesheet" href="./todomvc-app.css">
   <style>
     body { margin: 0; background: #f5f5f5; font: 14px 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+
+    /* THE CHROME STRIP (#22). The one region an app can never paint, so
+       it is where identity lives. Its background is the user's own
+       colour: randomised on first run, changeable, and never disclosed
+       to app code — a SECONDARY anchor behind position, defending the
+       case where an app mimics chrome inside its own rectangle. It stays
+       CONSTANT while secondary surfaces come and go: an anchor that
+       changes per component would stop being an anchor. */
+    #chrome-strip { display: flex; align-items: center; gap: .8em;
+                    padding: .45em .9em; font-size: 12px;
+                    background: var(--chrome-bg, oklch(38% .07 260));
+                    color: var(--chrome-fg, #f2f4fb);
+                    border-bottom: 1px solid rgba(0,0,0,.35); }
+    #chrome-strip .mark { font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+    #chrome-context { display: flex; align-items: center; gap: .5em; min-width: 0; }
+    #chrome-context .chip { width: .8em; height: .8em; border-radius: 2px;
+                            border: 1px solid rgba(255,255,255,.5); flex: none; }
+    /* App-supplied text is quoted, clamped and styled as foreign — never
+       part of chrome's own sentence (#22's untrusted-string rule). */
+    #chrome-context q.foreign { font-family: ui-monospace, monospace;
+                                max-width: 22em; overflow: hidden;
+                                text-overflow: ellipsis; white-space: nowrap; }
+    #chrome-context .said { opacity: .85; }
+    #chrome-strip .spacer { flex: 1 1 auto; }
+    #chrome-rule { opacity: .8; white-space: nowrap; }
+    #chrome-appearance { font: inherit; color: inherit; cursor: pointer;
+                         background: rgba(255,255,255,.12);
+                         border: 1px solid rgba(255,255,255,.3);
+                         border-radius: 3px; padding: .1em .5em; }
+    #chrome-swatches { display: none; gap: .3em; }
+    #chrome-swatches.open { display: flex; }
+    #chrome-swatches button { width: 1.1em; height: 1.1em; padding: 0;
+                              border-radius: 2px; cursor: pointer;
+                              border: 1px solid rgba(255,255,255,.55); }
+
     #banner { padding: .6em 1em; background: #1a1a2e; color: #eee; font-size: 13px; }
     #controls { padding: .5em 1em; background: #16213e; color: #ccc; display: flex; gap: 1em; align-items: center; }
     #controls button { padding: .3em .8em; }
@@ -41,10 +76,16 @@
                             border-radius: 3px 3px 0 0; }
     .provider-tabs button.active { background: #0f1424; color: #fff; border-color: #3d5a99; }
     /* The granted subtree itself: inset, differently lit, and labelled. */
+    /* The granted subtree. Its top border carries the COMPONENT's
+       assigned colour (derived from the component's own bytes, so the
+       component cannot choose it); chrome's personal colour is never
+       used here, so a component can never sample or imitate it. */
     #panel-region { position: relative; margin: 0 .9em .3em;
                     min-height: 9em; padding: 1.5em .9em .9em;
                     background: #0f1424; color: #ddd; font-size: 13px;
-                    border: 1px dashed #3d5a99; border-radius: 0 3px 3px 3px;
+                    border: 1px dashed #3d5a99;
+                    border-top: 3px solid var(--component-color, #3d5a99);
+                    border-radius: 0 3px 3px 3px;
                     box-shadow: inset 0 0 0 1px #0a0d18; }
     #panel-region::before { content: "sandboxed panel"; position: absolute;
                             top: 0; right: 0; padding: .1em .5em;
@@ -54,11 +95,25 @@
     #panel-region input { background: #16213e; color: #eee;
                           border: 1px solid #2a2a44; padding: .25em; }
     #panel-region button { padding: .25em .7em; }
+    .chrome-actions { display: flex; align-items: center; gap: .8em;
+                      padding: .6em .9em .8em; border-top: 1px solid #2a2a44; }
+    .chrome-actions .spacer { flex: 1 1 auto; }
+    .chrome-actions .chrome-note { max-width: 26em; line-height: 1.35; }
     #storage-dialog form { display: flex; justify-content: flex-end;
                            padding: .3em .9em .8em; margin: 0; }
   </style>
 </head>
 <body>
+  <!-- Chrome strip: trusted shell pixels, always present, never a mount
+       point for any component (#22). -->
+  <div id="chrome-strip">
+    <span class="mark">⛨ polymorph</span>
+    <span id="chrome-context"></span>
+    <span class="spacer"></span>
+    <span id="chrome-rule">chrome never asks for your provider password</span>
+    <button id="chrome-appearance" title="your chrome colour: randomised on first run, never visible to apps">appearance</button>
+    <span id="chrome-swatches"></span>
+  </div>
   <div id="banner">booting…</div>
   <div id="controls">
     <button id="storage-open">Storage…</button>
@@ -82,7 +137,15 @@
       <button id="prov-dropbox">Dropbox</button>
     </div>
     <div id="panel-region"></div>
-    <form method="dialog"><button id="storage-cancel">Cancel</button></form>
+    <!-- Chrome's own affordances: OUTSIDE the granted region, so committing
+         is an act of the shell rather than of the component (#22). -->
+    <div class="chrome-actions">
+      <span class="chrome-note">Sign-in opens a browser window showing the provider's address.
+        Chrome never asks for your provider password — anything below that does is fake.</span>
+      <span class="spacer"></span>
+      <button id="storage-save"><b>Save &amp; connect</b></button>
+      <button id="storage-cancel">Cancel</button>
+    </div>
   </dialog>
   <div id="panes">
     <div class="pane" id="alice-pane">
