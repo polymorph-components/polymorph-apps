@@ -119,6 +119,19 @@ Headless bring-up phases (`just bringup solo|wire|bucket`) retire the
 platform layers one at a time under Deno; `wire soak` runs a 30 s
 post-revocation stress loop.
 
+Memory/backpressure probes (added while chasing a reported lockup):
+
+```sh
+deno run -A host/leak-probe.ts 90 pulls   # engines + live subscriptions, RSS
+deno run -A host/table-probe.ts           # 400 pulls, guest table sizes + RSS
+deno run -A host/cdp-heap.ts <url> 300    # real headless Chromium heap via CDP
+```
+
+`cdp-heap.ts` needs a Chromium binary (`CHROME=…`, or the Playwright
+cache default) and forces a GC at the end — the only reading that
+separates retention from uncollected garbage. In-page, `__demo.health()`
+reports background queue depth and per-timer skip counts.
+
 ## Findings
 
 - **deltic 0.1.0 renamed the embedder conventions** (`WitError` →
@@ -215,19 +228,30 @@ post-revocation stress loop.
   bounded at 3-4, and a UI-path task add still completing in **3 ms**
   while storage churns. `__demo.health()` exposes depth + per-timer skip
   counts.
-- **A residual browser-only leak remains, and it is NOT the engine.**
-  With every page timer cleared and the wire up, the tab still grows
-  ~2.4 MB/s (78 MB -> 428 MB in 60 s of idle with timers running; ~4 GB
-  heap cap, so minutes to OOM). Isolation, in order: 500 driver/tasks
-  calls leak nothing; 10 sync pulls leak nothing; boot with an
-  unreachable relay (no connection, no apps) is flat; and
-  `host/leak-probe.ts` — the SAME engine composite under Deno with the
-  same live subscriptions, idling 90 s — is **flat (-1.8 MB)**. So the
-  growth needs a live wire *in a browser*: it belongs to the deltic
-  browser port layer (websocket/webrtc) or the embedder's browser glue,
-  not to the engine, subduction, keyhive, or in-guest iroh. Needs its
-  own investigation with a real Chromium/Firefox profile (the numbers
-  above come from paseo's webview, which is itself instrumented).
+- **The "leak" was the queue, plus a measurement artifact — chased to
+  ground.** After the backpressure fix, growth persisted in the paseo
+  webview (~1 MB/s, monotonic over 5 minutes), so it was bisected:
+  500 driver/tasks calls leak nothing; app polls at 400 ms x 3 for 75 s
+  are flat; **reconciliation pulls leak** (35 MB / 75 s). Two independent
+  checks then cleared the engine: `host/table-probe.ts` runs 400 pulls
+  headless and shows every guest table flat with **RSS plateauing at
+  ~300 MB**, and a real headless **Chromium via CDP** (`cdp-heap.ts`)
+  runs the identical page for 150 s — heap sawtooths normally and
+  **returns to 7.5 MB after a forced GC, net -1.5 MB**. So there is no
+  leak in the engine, in subduction, or in the deltic browser ports; the
+  unbounded growth was (a) the queue divergence above, which retains one
+  closure per queued job, and (b) the paseo webview's own instrumentation
+  retaining objects (and/or never idling long enough to GC). **Measure
+  memory in a real browser, not in the automation webview** — the
+  earlier version of this section blamed the port layer on the strength
+  of webview numbers, and was wrong.
+- **One real leak was found and fixed on the way**: the engine's `syncs`
+  table inserted a result per sync and never removed it, while
+  `sync-status` only read it — unbounded by construction at ~48 syncs a
+  minute. Statuses are one-shot by contract, so the entry is now removed
+  as it is read, and `stats()` publishes the guest's table sizes
+  (`tables syncs=… conns=… parts=…`) precisely because a growth bug in
+  them is invisible from outside the component.
 - **Panel teardown is a deltic open question** (same one #22 lists for
   app kill): switching provider tabs clears the region and drops the
   references, but there is no explicit instance-terminate API — the

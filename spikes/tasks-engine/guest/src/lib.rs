@@ -3190,7 +3190,11 @@ impl DriverGuest for Component {
 
     async fn sync_status(handle: u32) -> Result<Option<String>, String> {
         breathe().await;
-        match with_state(|s| s.syncs.get(&handle).cloned())? {
+        // One-shot by contract (see the note on `syncs`): the outcome is
+        // REMOVED as it is read, so the table holds only in-flight syncs.
+        // Leaving completed entries in made the map grow without bound —
+        // the demo starts ~48 syncs/minute, forever.
+        match with_state(|s| s.syncs.remove(&handle))? {
             Some(Ok(summary)) => Ok(Some(summary)),
             Some(Err(e)) => Err(e),
             None => Ok(None),
@@ -3278,10 +3282,20 @@ impl DriverGuest for Component {
                 .and_then(|id| s.partitions.get(id))
                 .map(|p| (p.revision, p.undecryptable))
                 .unwrap_or((0, 0));
+            // Table sizes are part of the line on purpose: a growth bug
+            // in any of these is invisible from outside the guest, and
+            // one (the syncs map) already shipped.
             format!(
-                "webcrypto sign calls: {}; iroh conns: {}; revision: {rev}; undecryptable: {undec}",
+                "webcrypto sign calls: {}; iroh conns: {}; revision: {rev}; undecryptable: {undec}; \
+                 tables syncs={} conns={} parts={} pending={} buckets={} fetches={}",
                 s.signer.0.sign_count.get(),
                 s.iroh_conns.len(),
+                s.syncs.len(),
+                s.conn_results.len(),
+                s.partitions.len(),
+                s.pending.len(),
+                s.buckets.len(),
+                s.fetches,
             )
         })
         .unwrap_or_else(|e| e)
