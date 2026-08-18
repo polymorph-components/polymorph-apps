@@ -295,6 +295,8 @@ interface Pane {
   id: Uint8Array;
   runner?: Runner;
   app?: AppExports;
+  /** Polls dropped because the previous one was still in flight. */
+  pollSkips?: number;
   status: (line: string, sticky?: boolean) => void;
 }
 
@@ -349,9 +351,25 @@ async function mountApp(pane: Pane, appArtifacts: EngineArtifacts) {
   await runner.call(() => app.run());
   pane.app = app;
   pane.runner = runner;
-  // Remote changes surface as revision bumps; poll on a UI cadence.
+  // Remote changes surface as revision bumps; poll on a UI cadence —
+  // but SKIP a tick whose predecessor is still running. `runner.call`
+  // is an unbounded promise chain, so a poll that outlives its 400 ms
+  // period (routine while the engine is busy syncing) would otherwise
+  // append forever: the queue grows, latency grows with it, and the
+  // page ends up wedged with every tick's closure still retained.
+  let polling = false;
+  pane.pollSkips = 0;
   setInterval(() => {
-    runner.call(() => app.poll()).catch(() => {});
+    if (polling) {
+      pane.pollSkips!++;
+      return;
+    }
+    polling = true;
+    runner.call(() => app.poll())
+      .catch(() => {})
+      .finally(() => {
+        polling = false;
+      });
   }, 400);
 }
 
@@ -429,10 +447,35 @@ async function boot() {
   // itself (a wedged overlap of interval-driven driver calls froze the
   // page once; recorded).
   let bg: Promise<unknown> = Promise.resolve();
+  let bgDepth = 0;
   const enqueue = (f: () => Promise<unknown>) => {
-    const next = bg.then(f).catch(() => {});
+    bgDepth++;
+    const next = bg.then(f).catch(() => {}).finally(() => {
+      bgDepth--;
+    });
     bg = next;
     return next;
+  };
+  /** Periodic work must never QUEUE: if the previous tick is still
+   * running (consumer-API syncs take seconds, well past these periods),
+   * appending another job grows the chain without bound — the queue
+   * itself becomes the leak, and the page dies sluggish-then-locked.
+   * Ticks are skipped instead, which is the correct semantics anyway:
+   * a reconciliation pull is a refresh, not a transaction. */
+  const periodic = (name: string, everyMs: number, f: () => Promise<unknown>) => {
+    let running = false;
+    let skipped = 0;
+    setInterval(() => {
+      if (running) {
+        skipped++;
+        return;
+      }
+      running = true;
+      enqueue(f).finally(() => {
+        running = false;
+      });
+    }, everyMs);
+    return { name, skips: () => skipped };
   };
 
   // --- controls -------------------------------------------------------------
@@ -440,10 +483,10 @@ async function boot() {
   // Subscriptions carry the realtime path; a background reconciliation
   // pull bounds any missed push (one in-browser push miss was observed;
   // recorded as a finding).
-  setInterval(() => {
-    enqueue(() => pull(bob.engine, alice.id));
-    enqueue(() => pull(alice.engine, bob.id));
-  }, 2500);
+  const reconcile = periodic("reconcile", 2500, async () => {
+    await pull(bob.engine, alice.id);
+    await pull(alice.engine, bob.id);
+  });
 
   // --- the bucket leg: user-configured, activates the tablet ---------------
 
@@ -574,24 +617,25 @@ async function boot() {
     });
   };
 
-  const bucketSync = () =>
-    enqueue(async () => {
-      if (!bucketReady) return;
-      try {
-        await alice.engine.driver.bucketFlush(part);
-        await tablet.engine.driver.bucketFlush(part);
-        tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined));
-        alice.status(await alice.engine.driver.bucketPull(part, alice.id, undefined));
-      } catch (e) {
-        tablet.status(`bucket: ${err(e)}`);
-      }
-    });
-  syncBtn.onclick = () => {
-    bucketSync();
+  // The body, callable both from the button (queued once) and from the
+  // periodic driver (which skips rather than queues).
+  const bucketSyncOnce = async () => {
+    if (!bucketReady) return;
+    try {
+      await alice.engine.driver.bucketFlush(part);
+      await tablet.engine.driver.bucketFlush(part);
+      tablet.status(await tablet.engine.driver.bucketPull(part, alice.id, undefined), true);
+      alice.status(await alice.engine.driver.bucketPull(part, alice.id, undefined), true);
+    } catch (e) {
+      tablet.status(`bucket: ${err(e)}`, true);
+    }
   };
-  setInterval(() => {
-    if (autoBox.checked) bucketSync();
-  }, 4000);
+  syncBtn.onclick = () => {
+    enqueue(bucketSyncOnce);
+  };
+  const autoSync = periodic("auto-sync", 4000, async () => {
+    if (autoBox.checked) await bucketSyncOnce();
+  });
 
   // Bob pulling from the bucket is the revocation beat: S3 shows the
   // cooperative darkness (his K_p is gone), Dropbox the hard server-side
@@ -747,16 +791,14 @@ async function boot() {
 
   // Live stats footer per pane (the tablet keeps its setup hint until
   // storage is configured).
-  setInterval(() => {
-    enqueue(async () => {
-      for (const p of panes) {
-        if (p === tablet && !bucketReady) continue;
-        try {
-          p.status(await p.engine.driver.stats());
-        } catch { /* pane dead */ }
-      }
-    });
-  }, 4000);
+  const statsTick = periodic("stats", 4000, async () => {
+    for (const p of panes) {
+      if (p === tablet && !bucketReady) continue;
+      try {
+        p.status(await p.engine.driver.stats());
+      } catch { /* pane dead */ }
+    }
+  });
 
   // Debug/validation handles (the paseo browser driver uses these).
   (globalThis as unknown as Record<string, unknown>).__demo = {
@@ -770,6 +812,17 @@ async function boot() {
     // Exposed for driving: re-running setup is also how the in-flight
     // guard is exercised without racing a 20 s consumer-API window.
     setupBucket: (cfg: StorageConfig) => setupBucket(cfg),
+    // Backpressure telemetry: queue depth plus per-timer skip counts.
+    // If depth climbs monotonically, a periodic driver is queueing.
+    health: () => ({
+      bgDepth,
+      skips: {
+        reconcile: reconcile.skips(),
+        autoSync: autoSync.skips(),
+        stats: statsTick.skips(),
+        poll: Object.fromEntries(panes.map((p) => [p.name, p.pollSkips ?? 0])),
+      },
+    }),
     authorize,
     // The panel's granted fetch, exposed so the DENIAL side of the
     // per-destination grant is demonstrable and not merely asserted.
