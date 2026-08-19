@@ -19,23 +19,20 @@ const DRIVER = "polymorph:engine-spike/driver@0.1.0";
 const TASKS = "polymorph-data:tasks/tasks@0.1.0";
 
 /** `store-config` — a WIT variant; `{tag, val}` per the value-mapping
- * table. Two provider strategies behind one surface (spike.wit's bucket
- * path): S3 credentials vs. a Dropbox app + token pair, where an empty
- * access/refresh token pair marks a link-tier recipient. */
+ * table. ADDRESSING ONLY (#7/#11): no credential crosses this boundary
+ * any more. Whether an instance can write, whose account it acts as, and
+ * whether it can sign at all are properties of what its three storage
+ * imports were WIRED to below — which config cannot see and must not
+ * second-guess. The S3 access key stays because it is a public
+ * identifier that travels in the Authorization header in clear. */
 export type StoreConfig =
   | {
     kind: "s3";
-    value: { endpoint: string; bucket: string; accessKey: string; secretKey: string };
+    value: { endpoint: string; bucket: string; accessKey: string };
   }
   | {
     kind: "dropbox";
-    value: {
-      appKey: string;
-      appSecret: string;
-      accessToken: string;
-      refreshToken: string;
-      root: string;
-    };
+    value: { root: string };
   };
 
 // WIT `result<T, string>` returns resolve T / throw ComponentException.
@@ -125,18 +122,83 @@ export interface EngineArtifacts {
   bytes: Uint8Array;
 }
 
+/** One storage-egress seam: the shape of `store-owner-fetch.request` and
+ * `store-public-fetch.request` (the same WIT interface type under two
+ * import names — the memo's whole mechanism). A refusal is the err side
+ * of `result<response, string>`: a branded ComponentException, not a
+ * trap, so the guest can observe a denied egress. */
+export type StoreFetch = (
+  method: string,
+  url: string,
+  headers: Array<[string, string]>,
+  body: Uint8Array,
+) => Promise<{ status: number; body: Uint8Array }>;
+
+/** `store-signer.sign`: public request metadata in, one lowercase-hex
+ * signature out. Key material crosses in neither direction. */
+export type StoreSign = (
+  stringToSign: string,
+  date: string,
+  region: string,
+  service: string,
+) => Promise<string>;
+
+/**
+ * THE PER-INSTANCE STORAGE AUTHORITY (#7 "authority in the instance,
+ * selection by import name"). The engine composite imports three named
+ * seams; what each one is wired to IS the grant. Two instances of the
+ * same bytes with different `net` are a writer and a reader, and the
+ * difference is legible in the wiring rather than in whether some config
+ * field happened to be left blank.
+ */
+export interface EngineNet {
+  /** Acts as the user: signs (S3) or injects the held bearer (Dropbox). */
+  ownerFetch: StoreFetch;
+  /** Carries no identity, ever: strips authorization, injects nothing. */
+  publicFetch: StoreFetch;
+  /** Carries the APP's identity and never the user's: Dropbox demands an
+   * authenticated caller for shared-link reads, but app auth identifies
+   * the shipped client, not the person holding it. Its own import is
+   * what makes recipient anonymity structural — the user's bearer is
+   * wired elsewhere and cannot reach this path. */
+  sharedFetch: StoreFetch;
+  /** SigV4 over an escrowed non-extractable key (host/keystore.ts). */
+  signer: StoreSign;
+}
+
 export async function newEngine(
   label: string,
   artifacts: EngineArtifacts,
+  net: EngineNet,
 ): Promise<Engine> {
   const shims = wasi({ cli: { args: [`engine-${label}`] } });
   const imports = {
     ...shims,
+    // The generic fetch-backed wasi:http fragment stays: the composite no
+    // longer routes storage through it, and anything else that wants HTTP
+    // is unaffected by this retrofit.
     ...http().imports,
     ...webcryptoImports(),
     ...websocketImports(),
     ...webrtcImports(),
     ...socketsImports(),
+    // The three storage seams, by IMPORT NAME. Attaching the wrong
+    // authority is inexpressible here rather than checked at request
+    // time: a call site that wants the user's identity had to be written
+    // against `store-owner-fetch` when the guest was compiled.
+    "store-owner-fetch": { request: net.ownerFetch },
+    "store-public-fetch": { request: net.publicFetch },
+    "store-shared-fetch": { request: net.sharedFetch },
+    "store-signer": { sign: net.signer },
+    // The shared `response` record's interface is TYPE-ONLY, and the
+    // translated plan elides it entirely (verified: the plan's import
+    // list holds `store-owner-fetch`, `store-public-fetch` and
+    // `store-signer`, and no `store-fetch-types` entry). This empty
+    // record is therefore a no-op today, kept because a superfluous
+    // import key is ignored — the same reason the wasi:http fragment
+    // above can stay — whereas a missing one would be fatal if a future
+    // translator does surface it.
+    "polymorph:engine-spike/store-fetch-types@0.1.0": {},
   };
   const instance = await instantiate(
     artifactsFromEnvelope(artifacts.envelope, artifacts.bytes),

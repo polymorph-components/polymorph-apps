@@ -27,8 +27,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::Engine as _;
-
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, Change, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 use ed25519_dalek::VerifyingKey as DalekVerifyingKey;
@@ -87,7 +85,6 @@ use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
 use exports::polymorph::engine_spike::driver::{Guest as DriverGuest, StoreConfig};
 use exports::polymorph_data::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
-use polymorph::fetchspike::fetch;
 use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
 use polymorph::iroh::identity_generate;
 use polymorph::iroh::types::{EndpointAddr, TransportAddr};
@@ -410,23 +407,24 @@ struct Partition {
     undecryptable: u32,
 }
 
-/// S3-compatible store config (empty creds = unsigned GETs only).
+/// S3-compatible store config: ADDRESSING ONLY. The signing credential
+/// lives behind the wired `store-signer` instance (#11) and the egress
+/// authority behind the wired `store-owner-fetch` instance (#7); the
+/// access key is a public identifier that travels in the Authorization
+/// header in clear. An empty access key means this instance only reads
+/// (unsigned GETs over the public tier).
 struct S3Cfg {
     endpoint: String,
     bucket: String,
     access: String,
-    secret: String,
 }
 
-/// Consumer-Dropbox store config. An empty `token` = a link-tier
-/// recipient: no write path at all, pulls ride a pickup link with app
-/// auth alone. A non-empty `refresh` lets the guest refresh an expired
-/// access token in place.
+/// Consumer-Dropbox store config: ADDRESSING ONLY. App identifiers, the
+/// user's bearer token and its refresh all live in the wired
+/// `store-owner-fetch` instance; link-tier app auth lives in the wired
+/// `store-shared-fetch` instance (#7). Tier is chosen by which import a
+/// call site goes through, never by inspecting guest state for a token.
 struct DbxCfg {
-    app_key: String,
-    app_secret: String,
-    token: String,
-    refresh: String,
     root: String,
 }
 
@@ -840,7 +838,12 @@ async fn aead_open(aead: &Aead, aad: &[u8], blob: &[u8]) -> Result<Vec<u8>, Stri
     Ok(stream.collect().await)
 }
 
-// SigV4 over the fetch import (from spikes/storage, verbatim mechanics).
+// SigV4 request signing, split across the trust boundary (#11): the guest
+// builds the canonical request and the string-to-sign — all of it public
+// request metadata — and asks the wired `store-signer` instance for the
+// signature. The credential's key bytes never enter guest memory, so a
+// compromised guest can forge signatures only for requests the signer
+// agrees to sign, not for the account at large.
 
 /// Civil date from days since the epoch (Howard Hinnant's algorithm).
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
@@ -873,7 +876,6 @@ struct Store {
     endpoint: String,
     bucket: String,
     access: String,
-    secret: String,
 }
 
 fn store() -> Result<Store, String> {
@@ -882,7 +884,6 @@ fn store() -> Result<Store, String> {
             endpoint: c.endpoint.clone(),
             bucket: c.bucket.clone(),
             access: c.access.clone(),
-            secret: c.secret.clone(),
         }),
         Some(StoreCfg::Dropbox(_)) => Err("s3 path called on a dropbox store".to_string()),
         None => Err("store not configured (init-store first)".to_string()),
@@ -922,7 +923,29 @@ fn request_label(method: &str, url: &str) -> String {
 /// creation, adopted-if-exists link minting, reads), so retrying a
 /// transport failure is safe; a response — any status — is never retried
 /// here, because status handling belongs to the caller.
+/// Which egress authority a call site is asking for (#7). This is not a
+/// runtime flag the seam consults: it selects WHICH WORLD IMPORT the call
+/// travels through, and the two imports are wired to different instances
+/// with different (or no) credentials. Picking the wrong one attaches the
+/// wrong authority at composition time, where it is visible, rather than
+/// silently at request time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// Acts as the user: the wired instance signs or injects a bearer.
+    Owner,
+    /// Acts as the APP, never as the user: the wired instance injects
+    /// app-auth (public identifiers embedded in every shipped client).
+    /// Distinct from Owner because the user is not identified, and
+    /// distinct from Public because the destination still demands an
+    /// authenticated caller.
+    Shared,
+    /// Carries no identity at all: the wired instance strips any
+    /// authorization and injects nothing.
+    Public,
+}
+
 async fn do_fetch(
+    route: Route,
     method: &str,
     url: String,
     headers: Vec<(String, String)>,
@@ -933,14 +956,36 @@ async fn do_fetch(
     let mut last = String::new();
     for attempt in 1..=ATTEMPTS {
         let _ = with_state(|s| s.fetches += 1);
-        match fetch::request(
-            method.to_string(),
-            url.clone(),
-            headers.clone(),
-            body.clone(),
-        )
-        .await
-        {
+        let attempt_result = match route {
+            Route::Owner => {
+                store_owner_fetch::request(
+                    method.to_string(),
+                    url.clone(),
+                    headers.clone(),
+                    body.clone(),
+                )
+                .await
+            }
+            Route::Shared => {
+                store_shared_fetch::request(
+                    method.to_string(),
+                    url.clone(),
+                    headers.clone(),
+                    body.clone(),
+                )
+                .await
+            }
+            Route::Public => {
+                store_public_fetch::request(
+                    method.to_string(),
+                    url.clone(),
+                    headers.clone(),
+                    body.clone(),
+                )
+                .await
+            }
+        };
+        match attempt_result {
             Ok(resp) => return Ok((resp.status, resp.body)),
             Err(e) => {
                 last = e.to_string();
@@ -984,11 +1029,17 @@ async fn s3_signed(
         hex::encode(sha256(canonical_request.as_bytes()).await?)
     );
 
-    let mut key_material = format!("AWS4{}", st.secret).into_bytes();
-    for step in [date.as_str(), "us-east-1", "s3", "aws4_request"] {
-        key_material = hmac(&key_material, step.as_bytes()).await?;
-    }
-    let signature = hex::encode(hmac(&key_material, string_to_sign.as_bytes()).await?);
+    // The escrowed-credential seam: the date/region/service scope goes
+    // over with the string-to-sign so the signer can REFUSE out-of-scope
+    // work. Everything handed over is already public request metadata.
+    let signature = store_signer::sign(
+        string_to_sign,
+        date.clone(),
+        "us-east-1".to_string(),
+        "s3".to_string(),
+    )
+    .await
+    .map_err(|e| format!("sigv4 signer: {e}"))?;
     let authorization = format!(
         "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
         st.access
@@ -999,7 +1050,9 @@ async fn s3_signed(
     } else {
         format!("{}{path}?{}", st.endpoint, query.trim_end_matches('='))
     };
+    // Owner tier: this request acts as the user's storage account.
     do_fetch(
+        Route::Owner,
         method,
         url,
         vec![
@@ -1030,10 +1083,12 @@ async fn delete_object(st: &Store, key: &str) -> Result<(), String> {
     }
 }
 
-/// Unsigned GET: the account-less pull path (availability by name secrecy).
+/// Unsigned GET: the account-less pull path (availability by name
+/// secrecy). Routed Public, so the request is anonymous by construction —
+/// the wired instance holds no identity and strips any authorization.
 async fn get_object_unsigned(st: &Store, key: &str) -> Result<Option<Vec<u8>>, String> {
     let url = format!("{}/{}/{}", st.endpoint, st.bucket, key);
-    let (status, body) = do_fetch("GET", url, Vec::new(), Vec::new()).await?;
+    let (status, body) = do_fetch(Route::Public, "GET", url, Vec::new(), Vec::new()).await?;
     match status {
         200 => Ok(Some(body)),
         404 | 403 => Ok(None),
@@ -1239,22 +1294,18 @@ async fn publish_kp(st: &Store, kh: &Kh, doc: &[u8], member: &[u8]) -> Result<()
 // the S3 path — same envelope bytes, same op-stream blob, same signed
 // manifest; only addressing and transport change.
 
-/// A snapshot of the Dropbox config. The access token is deliberately
-/// NOT snapshotted here: it can be refreshed mid-call, so every Bearer
-/// request reads the current one out of state.
+/// A snapshot of the Dropbox config — addressing only. There is no token
+/// here and no app secret: the owner-tier bearer (and its refresh) live
+/// in the wired `store-owner-fetch` instance, the link-tier app auth in
+/// the wired `store-shared-fetch` instance (#7). The guest cannot tell
+/// which credential, if any, it is speaking with.
 struct Dbx {
-    app_key: String,
-    app_secret: String,
-    refresh: String,
     root: String,
 }
 
 fn dbx() -> Result<Dbx, String> {
     with_state(|s| match s.store.as_ref() {
         Some(StoreCfg::Dropbox(c)) => Ok(Dbx {
-            app_key: c.app_key.clone(),
-            app_secret: c.app_secret.clone(),
-            refresh: c.refresh.clone(),
             root: c.root.clone(),
         }),
         Some(StoreCfg::S3(_)) => Err("dropbox path called on an s3 store".to_string()),
@@ -1262,107 +1313,23 @@ fn dbx() -> Result<Dbx, String> {
     })?
 }
 
-fn dbx_token() -> Result<String, String> {
-    with_state(|s| match s.store.as_ref() {
-        Some(StoreCfg::Dropbox(c)) => Ok(c.token.clone()),
-        _ => Err("not a dropbox store".to_string()),
-    })?
-}
-
-impl Dbx {
-    /// App auth: the link-tier recipient's only credential. The app key
-    /// and secret are public identifiers baked into any shipped client,
-    /// which is exactly why confidentiality cannot rest on them.
-    /// (spikes/dropbox/guest/src/lib.rs:303)
-    fn basic(&self) -> String {
-        let raw = format!("{}:{}", self.app_key, self.app_secret);
-        format!(
-            "Basic {}",
-            base64::engine::general_purpose::STANDARD.encode(raw)
-        )
-    }
-}
-
-/// Percent-encode one `application/x-www-form-urlencoded` value.
-fn form_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-/// Refresh an expired access token in place (PKCE public client: the
-/// token endpoint wants only the app key). Returns the new token, which
-/// has already been written back into the store config.
-async fn dbx_refresh(cfg: &Dbx) -> Result<String, String> {
-    let body = format!(
-        "grant_type=refresh_token&refresh_token={}&client_id={}",
-        form_encode(&cfg.refresh),
-        form_encode(&cfg.app_key)
-    );
-    let (status, resp) = do_fetch(
-        "POST",
-        "https://api.dropboxapi.com/oauth2/token".into(),
-        vec![(
-            "content-type".into(),
-            "application/x-www-form-urlencoded".into(),
-        )],
-        body.into_bytes(),
-    )
-    .await?;
-    if status != 200 {
-        return Err(format!(
-            "token refresh: {status} {}",
-            String::from_utf8_lossy(&resp)
-        ));
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(&resp).map_err(|e| format!("token refresh: decode: {e}"))?;
-    let token = value
-        .get("access_token")
-        .and_then(|t| t.as_str())
-        .ok_or("token refresh: no access_token in response")?
-        .to_string();
-    with_state(|s| {
-        if let Some(StoreCfg::Dropbox(c)) = s.store.as_mut() {
-            c.token = token.clone();
-        }
-    })?;
-    Ok(token)
-}
-
-/// Every Bearer-authenticated request goes through here: a 401 with a
-/// refresh token in hand triggers exactly one refresh-and-retry.
+/// Owner-tier request: authority arrives from the WIRING, not from this
+/// function. The guest sets no authorization header — the wired
+/// `store-owner-fetch` instance injects the user's bearer at the seam and
+/// owns token refresh, so an expired token never becomes guest business
+/// (the old in-guest 401-refresh-retry moved behind the seam with the
+/// token itself). A tierless or revoked instance refuses; its error
+/// string surfaces through the normal error paths.
 async fn bearer_fetch(
-    cfg: &Dbx,
+    _cfg: &Dbx,
     url: &str,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 ) -> Result<(u16, Vec<u8>), String> {
-    let token = dbx_token()?;
-    if token.is_empty() {
-        return Err("no access token: this is a link-tier recipient".into());
-    }
-    let with_auth = |tok: &str| {
-        let mut h = vec![("authorization".to_string(), format!("Bearer {tok}"))];
-        h.extend(headers.iter().cloned());
-        h
-    };
-    let (status, resp) = do_fetch("POST", url.to_string(), with_auth(&token), body.clone()).await?;
-    if status != 401 || cfg.refresh.is_empty() {
-        return Ok((status, resp));
-    }
-    let fresh = dbx_refresh(cfg).await?;
-    do_fetch("POST", url.to_string(), with_auth(&fresh), body).await
+    do_fetch(Route::Owner, "POST", url.to_string(), headers, body).await
 }
 
-/// A JSON-RPC call against api.dropboxapi.com with the owner's token.
+/// A JSON-RPC call against api.dropboxapi.com over the owner route.
 /// (spikes/dropbox/guest/src/lib.rs:326)
 async fn dbx_rpc_raw(
     cfg: &Dbx,
@@ -1580,18 +1547,32 @@ async fn dbx_list_folder(cfg: &Dbx, folder: &str) -> Result<Vec<String>, String>
 /// The link-tier recipient's read: a shared-link fetch mediated by app
 /// auth alone. 409 means refused — which is what revocation produces,
 /// indistinguishable from "never existed" (no existence oracle).
+///
+/// Routed Shared — the APP tier, which is neither of the other two.
+/// Dropbox will not serve a shared link to an unauthenticated caller, so
+/// this cannot be Public; but the identity it demands is the app key and
+/// secret that every shipped client embeds, which are public identifiers
+/// and not the user, so it must not be Owner either. Sending it through
+/// its own import is what makes the anonymity property STRUCTURAL: a
+/// recipient-path read cannot identify the user because the user's
+/// credential is wired somewhere else entirely. (This is the memo's live
+/// near-miss — owner, link, and anonymous calls all address the same
+/// host, so attaching credentials by destination would deanonymize
+/// exactly this path.)
+///
+/// The guest sends no authorization header; the wired instance injects
+/// app-auth at the seam.
 async fn dbx_link_fetch(cfg: &Dbx, url: &str, rel: Option<&str>) -> Result<Option<Vec<u8>>, String> {
+    let _ = cfg;
     let arg = match rel {
         Some(path) => serde_json::json!({ "url": url, "path": path }),
         None => serde_json::json!({ "url": url }),
     };
     let (status, body) = do_fetch(
+        Route::Shared,
         "POST",
         "https://content.dropboxapi.com/2/sharing/get_shared_link_file".into(),
-        vec![
-            ("authorization".into(), cfg.basic()),
-            ("dropbox-api-arg".into(), arg.to_string()),
-        ],
+        vec![("dropbox-api-arg".into(), arg.to_string())],
         Vec::new(),
     )
     .await?;
@@ -1857,9 +1838,15 @@ fn adopt_entries(doc_id: &[u8], entries: &[Entry]) -> Result<(), String> {
     })
 }
 
-/// The Dropbox pull. Owner tier (a token in hand) lists the doc folder
-/// and downloads by path; link tier (no token) rides the standing pickup
-/// link, which yields the container link and the device set. Past that
+/// The Dropbox pull. Tier is chosen by the CALLER's argument alone: a
+/// `pickup` link means "read as a link-tier recipient" (anonymous route),
+/// its absence means "read as the owner" (owner route). Deliberately NOT
+/// keyed on whether a token is present in guest state — the guest cannot
+/// see its credentials any more (#7), and inferring the tier from
+/// credential presence is exactly the ambient-authority shape the design
+/// memo rejects. Owner tier lists the doc folder and downloads by path;
+/// link tier rides the standing pickup link, which yields the container
+/// link and the device set. Past
 /// point the ingest pipeline is the S3 one: op streams into keyhive,
 /// signed manifests into entries, chunks into the sedimentree, apply.
 async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, String> {
@@ -1868,7 +1855,23 @@ async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, Str
     let tree = tree_id(&doc_id)?;
     ensure_bucket_state(&doc_id)?;
 
-    let (src, devices, tier) = if !dbx_token()?.is_empty() {
+    let (src, devices, tier) = if let Some(pickup) = pickup {
+        let blob = dbx_link_fetch(&cfg, &pickup, None)
+            .await?
+            .ok_or("pickup link refused (409): revoked or never granted")?;
+        let obj: KpObject =
+            bincode::deserialize(&blob).map_err(|e| format!("pickup decode: {e}"))?;
+        let payload: DbxPickup = bincode::deserialize(
+            &unseal_from_owner(&kh, &doc_id, &obj, b"pickup-wrap").await?,
+        )
+        .map_err(|e| format!("pickup payload decode: {e}"))?;
+        // Session pull material: the resolved container link stays a
+        // function-local and is never written to state (the design's
+        // no-persist rule). The pickup link arrives as a parameter on
+        // every call — that, not the container link, is the standing
+        // capability.
+        (DbxSource::Link(payload.doc_link), payload.devices, "link")
+    } else {
         // Owner tier: the doc folder's own listing is the device set.
         let folder = dbx_doc_folder(&cfg.root, &doc_id);
         let mut devices: Vec<[u8; 32]> = Vec::new();
@@ -1887,23 +1890,6 @@ async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, Str
             }
         }
         (DbxSource::Owner(folder), devices, "owner")
-    } else {
-        let pickup = pickup.ok_or("link-tier pull needs a pickup link")?;
-        let blob = dbx_link_fetch(&cfg, &pickup, None)
-            .await?
-            .ok_or("pickup link refused (409): revoked or never granted")?;
-        let obj: KpObject =
-            bincode::deserialize(&blob).map_err(|e| format!("pickup decode: {e}"))?;
-        let payload: DbxPickup = bincode::deserialize(
-            &unseal_from_owner(&kh, &doc_id, &obj, b"pickup-wrap").await?,
-        )
-        .map_err(|e| format!("pickup payload decode: {e}"))?;
-        // Session pull material: the resolved container link stays a
-        // function-local and is never written to state (the design's
-        // no-persist rule). The pickup link arrives as a parameter on
-        // every call — that, not the container link, is the standing
-        // capability.
-        (DbxSource::Link(payload.doc_link), payload.devices, "link")
     };
 
     // 1. Op streams into keyhive.
@@ -2569,15 +2555,11 @@ impl DriverGuest for Component {
                 endpoint: c.endpoint.trim_end_matches('/').to_string(),
                 bucket: c.bucket,
                 access: c.access_key,
-                secret: c.secret_key,
             }),
+            // Addressing only: whether this instance can write is a
+            // property of what its `store-owner-fetch` import is wired
+            // to, which config cannot see and must not second-guess.
             StoreConfig::Dropbox(c) => StoreCfg::Dropbox(DbxCfg {
-                app_key: c.app_key,
-                app_secret: c.app_secret,
-                // Empty = a link-tier recipient: no write path at all,
-                // pulls ride a pickup link with app auth alone.
-                token: c.access_token,
-                refresh: c.refresh_token,
                 root: c.root.trim_matches('/').to_string(),
             }),
         };
@@ -2778,9 +2760,10 @@ impl DriverGuest for Component {
                 nk: nk_current,
             },
             Provider::Dropbox => {
-                if dbx_token()?.is_empty() {
-                    return Err("no access token: link-tier recipients cannot write".into());
-                }
+                // No local gate on "do we have a token": the guest cannot
+                // know, and refusing early would be guessing. Attempt the
+                // write; a link-tier instance's own refusal surfaces
+                // through the existing error paths.
                 let cfg = dbx()?;
                 // Lazy container: the folder and its link are minted on
                 // whichever comes first, a grant or this flush.

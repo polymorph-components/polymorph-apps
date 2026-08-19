@@ -12,10 +12,13 @@ fetcher:
 guest:
     cargo build --target wasm32-wasip2 --release -p spike-guest
 
-compose: guest fetcher
+# The fetcher component is deliberately NOT plugged in any more: storage
+# egress is now three NAMED world imports the host wires per instance
+# (#7/#11), so a single generic fetch implementation would defeat the
+# point. The crate stays in-tree as a reference implementation.
+compose: guest
     wac plug target/wasm32-wasip2/release/spike_guest.wasm \
         --plug {{IROH_CHECKOUT}}/target/wasm32-wasip2/release/iroh_endpoint.wasm \
-        --plug target/wasm32-wasip2/release/spike_fetcher.wasm \
         -o target/composed.wasm
 
 minio:

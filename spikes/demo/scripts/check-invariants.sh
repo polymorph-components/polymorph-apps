@@ -25,7 +25,7 @@ bad() {
 # that could read it could impersonate the user's trust in itself; a
 # component that could influence it could put attacker-chosen words into
 # chrome's own voice. So it must not appear anywhere on the seam.
-echo "[1/3] petname never crosses the frame seam"
+echo "[1/4] petname never crosses the frame seam"
 echo "      (chrome's word for a component is never readable or influenceable by it)"
 hits=$(grep -n "petname" host/frame-backend.ts host/frame.ts web/frame.html 2>/dev/null)
 if [ -n "$hits" ]; then
@@ -42,7 +42,7 @@ fi
 # chrome's authority. The ONLY admissible occurrence is the bare token
 # "password" as an input-masking type — never inside a sentence.
 # Comments are exempt: they explain the rule rather than render it.
-echo "[2/3] chrome never renders the word \"password\""
+echo "[2/4] chrome never renders the word \"password\""
 echo "      (chrome's labels are chrome's own; a panel must never borrow them)"
 prose=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' host/demo.ts |
   grep -oiE '"[^"]*password[^"]*"' | grep -vx '"password"')
@@ -69,7 +69,7 @@ fi
 # that ever gained a style attribute (or a class resolving the variable)
 # could paint chrome's exact colour without reading it. Scope keeps the
 # secrecy structural instead of a property of the allowlist.
-echo "[3/3] the anchor colour is never made ambient"
+echo "[3/4] the anchor colour is never made ambient"
 echo "      (--chrome-bg is scoped to chrome's own elements; inheriting it would disclose it)"
 ambient=$(grep -nE '(documentElement|:root)[^\n]*--chrome-bg' host/*.ts 2>/dev/null)
 if [ -n "$ambient" ]; then
@@ -88,6 +88,27 @@ if [ -n "$rootdecl" ]; then
   printf '%s\n' "$rootdecl" | sed 's/^/       /'
 else
   ok "web/index.html declares --chrome-bg in no :root block"
+fi
+
+# --- (d) no key is ever exported from chrome ------------------------------
+# An escrowed signing credential is stored as a NON-EXTRACTABLE WebCrypto
+# handle (host/keystore.ts): `crypto.subtle.exportKey` on it throws by
+# construction, so the guarantee is the platform's rather than ours. What
+# this check defends is the *construction* — a later "just for debugging"
+# export path, or an import that quietly passes extractable: true and a
+# matching read-back, would turn the handle back into a bearer string.
+# Banning the verb outright from host code keeps the property one grep
+# wide instead of a review argument. Comments are exempt: they explain
+# the rule rather than perform it.
+echo "[4/4] chrome never exports a key"
+echo "      (escrowed signing keys are non-extractable; nothing reads them back)"
+exported=$(grep -n "exportKey" host/*.ts 2>/dev/null |
+  grep -vE "^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)")
+if [ -n "$exported" ]; then
+  bad "exportKey appears in host code:"
+  printf '%s\n' "$exported" | sed 's/^/       /'
+else
+  ok "no host/*.ts line calls exportKey"
 fi
 
 echo

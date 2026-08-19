@@ -7,6 +7,7 @@
 //   deno run -A host/leak-probe.ts [idleSeconds]
 
 import { type Engine, newEngine, unhex, until } from "./engine.ts";
+import { probeNoNet } from "./probe-net.ts";
 
 const RELAY = "http://127.0.0.1:3340";
 const IDLE_S = Number(Deno.args[0] ?? 120);
@@ -26,8 +27,8 @@ const sample = (tag: string) => {
   return m;
 };
 
-const alice: Engine = await newEngine("alice", artifacts);
-const bob: Engine = await newEngine("bob", artifacts);
+const alice: Engine = await newEngine("alice", artifacts, probeNoNet);
+const bob: Engine = await newEngine("bob", artifacts, probeNoNet);
 const aliceId = unhex(await alice.driver.init(false));
 const bobId = unhex(await bob.driver.init(false));
 

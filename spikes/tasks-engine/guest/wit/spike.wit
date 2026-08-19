@@ -73,24 +73,23 @@ interface driver {
     // per-member sealed files with their own revocable links; revocation
     // is server-side, hard, and retroactive.
 
+    /// Addressing only: the signing authority arrives as the wired
+    /// `store-signer` instance and the wired `store-owner-fetch`
+    /// instance, never as config bytes (#11). `access-key` is a public
+    /// identifier that appears in the Authorization header in clear.
     record s3-config {
         endpoint: string,
         bucket: string,
         access-key: string,
-        secret-key: string,
     }
 
-    /// Consumer Dropbox (app-folder app). An empty access-token = a
-    /// link-tier recipient: no write path, pulls ride a pickup link with
-    /// app auth alone (the app key/secret are public identifiers in any
-    /// shipped client). A non-empty refresh-token lets the guest refresh
-    /// an expired access token in place (PKCE public client: the token
-    /// endpoint wants only the app key).
+    /// Consumer Dropbox (app-folder app). Addressing only: the app
+    /// identifiers, the user's bearer token and its refresh live in the
+    /// wired `store-owner-fetch` instance, and the link-tier app auth in
+    /// the wired `store-shared-fetch` instance. Which tier a call runs
+    /// at is decided by which import it goes through, not by whether a
+    /// token happens to be present in guest state.
     record dropbox-config {
-        app-key: string,
-        app-secret: string,
-        access-token: string,
-        refresh-token: string,
         root: string,
     }
 
@@ -99,6 +98,9 @@ interface driver {
         dropbox(dropbox-config),
     }
 
+    /// Addressing only — no credentials cross this boundary. Which
+    /// account, which tier, and whether writes are possible at all are
+    /// properties of the wired egress/signer instances (#7, #11).
     init-store: async func(config: store-config) -> result<_, string>;
 
     /// S3: create the bucket + public-read-no-list policy. Dropbox:
@@ -123,14 +125,17 @@ interface driver {
     store-revoke: async func(doc-id: list<u8>, member-id: list<u8>) -> result<string, string>;
 
     /// Push new chunks (envelope bytes), the op-stream blob, and the
-    /// signed manifest. Owner tier (S3 credentials / Dropbox token).
+    /// signed manifest. Owner tier: rides `store-owner-fetch` (plus
+    /// `store-signer` on S3). An instance wired without write authority
+    /// fails with the wired instance's own refusal.
     bucket-flush: async func(doc-id: list<u8>) -> result<string, string>;
 
     /// Pull: op stream into keyhive, chunks into the sedimentree, then
     /// apply. Works with zero live connections. `pickup` is the standing
-    /// pickup link for link-tier recipients (Dropbox without a token);
-    /// S3 derives the K_p location instead, and Dropbox owner-tier pulls
-    /// by path — both ignore it.
+    /// pickup link for link-tier recipients, and on Dropbox its PRESENCE
+    /// is what selects the link tier (the guest can no longer see whether
+    /// it holds a token, and must not infer authority from state); S3
+    /// derives the K_p location instead and ignores it.
     bucket-pull: async func(doc-id: list<u8>, owner-id: list<u8>, pickup: option<string>) -> result<string, string>;
 
     // --- the identity bundle (#20 G5; #11's persistence slice) ---
@@ -180,10 +185,68 @@ interface driver {
     stats: async func() -> string;
 }
 
+/// The shared shape of the storage egress imports below. Named as its
+/// own interface so the tier-specific world imports (owner / app /
+/// anonymous) are the SAME interface type under different import names
+/// (#7: authority lives in the instance, selection is by import name).
+interface store-fetch-types {
+    record response {
+        status: u16,
+        body: list<u8>,
+    }
+}
+
 world spike {
     import polymorph:iroh/endpoint@0.1.0;
     import polymorph:iroh/identity-generate@0.1.0;
-    import polymorph:fetchspike/fetch@0.1.0;
+
+    /// Storage egress, owner tier: the instance wired here carries the
+    /// user's storage authority (SigV4-signed or bearer-injected AT THE
+    /// SEAM, per provider). Selection by import name (#7): a call site
+    /// that goes through this import is asking to act as the user, and
+    /// attaching the wrong credential is inexpressible rather than
+    /// checked. The guest never sees the credential.
+    import store-owner-fetch: interface {
+        use store-fetch-types.{response};
+
+        request: async func(method: string, url: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<response, string>;
+    }
+
+    /// Storage egress, anonymous tier: link/name-secrecy reads. The wired
+    /// instance never carries identity; the seam strips any authorization
+    /// header the guest may have set. Anonymity is a property of which
+    /// import the call site went through, not of a runtime check.
+    import store-public-fetch: interface {
+        use store-fetch-types.{response};
+
+        request: async func(method: string, url: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<response, string>;
+    }
+
+    /// Storage egress, app tier: carries the APP's identity (app-auth)
+    /// and never the user's. The link-tier recipient path lives here:
+    /// Dropbox requires an authenticated caller for shared-link fetches,
+    /// but the caller identity is the app key every shipped client
+    /// embeds — public identifiers, not user identity. Routing it
+    /// through its own import keeps the anonymity property structural: a
+    /// recipient-path read CANNOT identify the user, because the user's
+    /// credential is wired to a different import.
+    import store-shared-fetch: interface {
+        use store-fetch-types.{response};
+
+        request: async func(method: string, url: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<response, string>;
+    }
+
+    /// SigV4 signature service over an escrowed signing credential the
+    /// guest can never read (#11: a non-extractable key handle held
+    /// host-side). Returns lowercase hex of the final HMAC. The
+    /// implementation is expected to REFUSE out-of-scope requests
+    /// (service != "s3", wrong region) — a raw SigV4 key would be valid
+    /// account-wide, whereas this handle is narrower than the key, which
+    /// is the whole point.
+    import store-signer: interface {
+        sign: async func(string-to-sign: string, date: string, region: string, service: string) -> result<string, string>;
+    }
+
     export driver;
     export polymorph-data:tasks/tasks@0.1.0;
 }
