@@ -39,9 +39,43 @@
                     background: var(--chrome-bg, oklch(38% .07 260));
                     color: var(--chrome-fg, #f2f4fb);
                     border-bottom: 1px solid rgba(0,0,0,.35); }
-    #chrome-strip .bar-inner { display: flex; align-items: center; gap: .8em;
+    /* TWO CLUSTERS, AND A GUARANTEED GAP BETWEEN THEM. The strip carries
+       two stacked lines per side now, so it is roughly twice as tall as
+       the single-line bar it replaces — deliberately: the anchor is the
+       one thing that must be legible at a glance, and a 12px single line
+       was the thinnest possible version of it.
+
+       The centre is EMPTY BY CONSTRUCTION: space-between plus a 45% cap
+       on each cluster leaves at least a 10% exclusion band down the
+       middle at every width, with no element in it to measure or to
+       collide with. The old standing-rule line lived there and is GONE — see
+       the note on .ctx-bottom below. */
+    #chrome-strip .bar-inner { display: flex; align-items: stretch;
+                               justify-content: space-between; gap: .8em;
                                padding: 0 .9em; box-sizing: border-box; }
-    #chrome-context { display: flex; align-items: center; gap: .5em; min-width: 0; }
+    /* LEFT CLUSTER — two lines, and the split between them is the whole
+       point of the restructure:
+         .ctx-top    the COMPONENT's identity: its mark and what it calls
+                     itself. Static after install; nothing chrome does to
+                     its own sheets rewrites it.
+         .ctx-bottom CHROME'S line: the user's petname (or the offer to
+                     assign one), the first-sight marker, the name of
+                     whichever chrome sheet is open, and timed
+                     announcements.
+       One voice per line: what the component said above, what chrome and
+       the user say below. */
+    #chrome-context { display: flex; flex-direction: column;
+                      justify-content: center; gap: .15em;
+                      min-width: 0; max-width: 45%; }
+    #chrome-context .ctx-top, #chrome-context .ctx-bottom {
+      display: flex; align-items: center; gap: .5em; min-width: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* The cluster is one tap target: it opens chrome's App settings
+       sheet for whatever surface the top line names. Strip pixels, so
+       the gesture starts somewhere no component can draw or reach. */
+    #chrome-context[role="button"] { cursor: pointer; }
+    #chrome-context[role="button"]:focus-visible { outline: 2px solid rgba(255,255,255,.7);
+                                                   outline-offset: 2px; border-radius: 3px; }
     #chrome-context .chip { width: .8em; height: .8em; border-radius: 2px;
                             border: 1px solid rgba(255,255,255,.5); flex: none; }
     /* App-supplied text is quoted, clamped and styled as foreign — never
@@ -49,7 +83,9 @@
     #chrome-context q.foreign { font-family: ui-monospace, monospace;
                                 max-width: 22em; overflow: hidden;
                                 text-overflow: ellipsis; white-space: nowrap; }
-    #chrome-context .said { opacity: .85; }
+    #chrome-context .said { opacity: .85; overflow: hidden;
+                            text-overflow: ellipsis; }
+
     /* THE PETNAME: the user's own word for a component, so chrome says it
        in CHROME'S voice — no quotes, no monospace, full opacity, slightly
        heavier than the surrounding chrome text. The contrast with
@@ -80,8 +116,28 @@
     #chrome-context .fresh { background: #b03030; color: #fff; font-weight: 600;
                              padding: .05em .5em; border-radius: 2px;
                              letter-spacing: .03em; white-space: nowrap; }
-    #chrome-strip .spacer { flex: 1 1 auto; }
-    #chrome-rule { opacity: .8; white-space: nowrap; }
+    /* A timed announcement in chrome's own voice, on chrome's own line.
+       It replaces the bottom line for a few seconds and then the line is
+       RE-RENDERED from the live context — never restored from a saved
+       string, because what belongs there may have changed underneath. */
+    #chrome-context .announce { font-weight: 600; overflow: hidden;
+                                text-overflow: ellipsis; }
+
+    /* THE STANDING RULE LINE IS GONE. It used to sit in the
+       centre of this bar reciting "storage secrets are only entered in
+       the sheet this bar reveals above itself" at all times. Two reasons
+       it went:
+         - a sentence recited permanently is read once and then becomes
+           furniture; the claim matters AT THE MOMENT OF ENTRY, and that
+           is where it now lives — the credential sheet states the
+           invariant in its own note, on the surface it is about;
+         - the centre of the strip has to be EMPTY for the two clusters
+           to have a structural exclusion gap between them (see
+           .bar-inner). An element there is one more thing that can be
+           crowded, wrapped or mistaken for a component's words.
+       What survives of its job on the strip is session naming: while a
+       chrome sheet is open, .ctx-bottom says which one, so the anchor
+       and the surface hanging off it agree. */
 
     /* THE IDENTITY CLUSTER (strip right). The user's own name and their
        word for this device, spoken in CHROME'S voice — plain text, full
@@ -96,18 +152,38 @@
        The anchor's authority is its POSITION and the user's colour, not
        a word — and a word is precisely the part an app CAN paint inside
        its own rectangle. What sits here instead is a control: the
-       user's chosen glyph, opening chrome's settings sheet. */
-    #chrome-identity { display: flex; align-items: center; gap: .4em;
-                       min-width: 0; flex: none; }
+       user's chosen glyph, opening chrome's settings sheet.
+
+       TWO LINES HERE TOO, mirroring the left cluster: the user's name
+       above, their word for this device below, each ellipsizing inside
+       the same 45% cap. The button spans BOTH lines as a square. */
+    #chrome-identity { display: flex; align-items: stretch; gap: .5em;
+                       min-width: 0; max-width: 45%; flex: none; }
+    #chrome-identity .id-lines { display: flex; flex-direction: column;
+                                 justify-content: center; gap: .15em;
+                                 min-width: 0; text-align: right; }
     #chrome-identity .who { font-weight: 600; letter-spacing: .01em;
-                            max-width: 12em; overflow: hidden;
+                            max-width: 16em; overflow: hidden;
                             text-overflow: ellipsis; white-space: nowrap; }
-    #chrome-identity .sep { opacity: .55; }
+    /* The device word is the quieter half of the pair. */
+    #chrome-identity .who.device { font-weight: 500; opacity: .85; }
+    /* THE DOUBLED BUTTON. It spans both text lines, which does two
+       things: it makes chrome's own control the most prominent object on
+       the bar (it is the only control here that opens chrome's own
+       settings), and it gives the gesture a target that clears the 44px
+       touch minimum at the strip's 12px type — hence the px floor beside
+       the em sizing: at 12px, 2.4em is only ~29px. */
     #chrome-settings { font: inherit; color: inherit; cursor: pointer;
                        background: rgba(255,255,255,.12);
                        border: 1px solid rgba(255,255,255,.3);
-                       border-radius: 3px; padding: .1em .45em;
-                       line-height: 1.25; }
+                       border-radius: 4px; padding: 0;
+                       align-self: center; flex: none;
+                       display: inline-flex; align-items: center;
+                       justify-content: center;
+                       width: 2.4em; height: 2.4em;
+                       min-width: 44px; min-height: 44px;
+                       font-size: 1.5em; line-height: 1; }
+
 
     /* --- the credential sheet (#22) --------------------------------------
        Credential entry lives on a surface only chrome can produce: a
@@ -343,18 +419,15 @@
        question, not attempted here — this just stops horizontal
        overflow and keeps the strip/controls/dialog usable on a phone. */
     @media (max-width: 480px) {
-      #chrome-strip .bar-inner { flex-wrap: wrap; row-gap: .3em; }
-      /* The persistent rule line is a wide-screen affordance; at this
-         width the identity cluster must stay on-screen instead, so the
-         rule text is dropped rather than wrapped. */
-      #chrome-rule { display: none; }
-      #chrome-context { min-width: 0; flex: 1 1 auto; }
-      #chrome-context q.foreign { max-width: 10em; }
-      #chrome-context .petname { max-width: 8em; }
-      /* The cluster collapses to the settings button alone: the glyph is
-         the affordance, and the user's name/device words are a
-         convenience that a phone strip has no room for. */
-      #chrome-identity .who, #chrome-identity .sep { display: none; }
+      /* No wrapping and no hiding: the two clusters are each capped at
+         45% and every line inside them ellipsizes, so narrowness is
+         handled by TRUNCATION rather than by dropping content. The
+         identity words used to be display:none here — which quietly
+         removed half of what makes the anchor unspoofable at exactly the
+         width where the strip is most crowded. They stay visible now. */
+      #chrome-context q.foreign { max-width: 100%; }
+      #chrome-context .petname { max-width: 100%; flex: 0 1 auto; min-width: 0; }
+      #chrome-identity .who { max-width: 100%; }
 
       #controls { padding: .5em 0; font-size: 12px; }
       #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
@@ -404,14 +477,23 @@
     <div id="chrome-drawer" hidden><div id="chrome-drawer-inner"></div></div>
     <div id="chrome-strip">
       <div class="bar-inner">
-        <span id="chrome-context"></span>
-        <span class="spacer"></span>
-        <span id="chrome-rule">storage secrets are only entered in the sheet this bar reveals above itself</span>
-        <span class="spacer"></span>
+        <!-- LEFT CLUSTER, two lines, filled by host/demo.ts: the
+             component's own identity above (its mark and what it calls
+             itself), chrome's and the user's words below (petname or the
+             offer to assign one, the first-sight marker, the open
+             sheet's name, timed announcements). The whole cluster is one
+             tap target opening chrome's App settings sheet.
+             The centre of the bar is deliberately EMPTY — see the CSS
+             note on the deleted standing-rule line. -->
+        <span id="chrome-context">
+          <span class="ctx-top"></span>
+          <span class="ctx-bottom"></span>
+        </span>
         <!-- Filled by host/demo.ts from the identity record: the user's
-             own name and device word (rendered only when set — an unset
-             field is ABSENT, never a fabricated default), then chrome's
-             settings button wearing the glyph the user picked. -->
+             own name and device word on two lines (rendered only when
+             set — an unset field is ABSENT, never a fabricated default),
+             then chrome's settings button wearing the glyph the user
+             picked, squared across both lines. -->
         <span id="chrome-identity"></span>
       </div>
     </div>

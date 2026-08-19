@@ -142,6 +142,15 @@ world demo-app {
   /// Re-read the service revision; re-render if remote changes arrived.
   /// Returns true when a re-render happened (host may adapt cadence).
   export poll: async func() -> bool;
+
+  /// What this component CALLS ITSELF — the same self-declared name the
+  /// panels export (see `s3-panel.nickname`). The app joins the trust
+  /// table on exactly the panels' terms: read ONCE when chrome first
+  /// holds the instance, clamped, and rendered ONLY as foreign-quoted
+  /// text. It is never a table key (the key is the artifact name chrome
+  /// fetched — unforgeable provenance) and never chrome's own voice
+  /// (that is the petname the user types in chrome's own pixels).
+  export nickname: func() -> string;
 }
 
 /// The fixed credential vocabulary (#22): a panel may REQUEST credential

@@ -468,6 +468,11 @@ const BUILD =
     ?.content ?? "";
 const stamp = (path: string) => (BUILD && BUILD !== "__BUILD__" ? `${path}?v=${BUILD}` : path);
 
+/** The artifact name chrome fetches the app by — and therefore the KEY
+ * of the app's row in the surface-mark table. Provenance, never a
+ * self-declared name (see surfaceMark). */
+const APP_ARTIFACT = "app";
+
 async function fetchArtifacts(name: string): Promise<EngineArtifacts> {
   const [envelope, bytes] = await Promise.all([
     fetch(stamp(`./${name}.plan.json`)).then((r) => {
@@ -989,6 +994,10 @@ interface AppExports {
   onEvent(ev: UiEvent): Promise<void>;
   onRoute(route: string): Promise<void>;
   poll(): Promise<boolean>;
+  /** What the app CALLS ITSELF. Self-declared and unverified, exactly
+   * like the panels' — read once, clamped, rendered only as
+   * foreign-quoted text, never a table key. */
+  nickname(): Promise<string>;
 }
 
 /** The `s3-panel` / `dropbox-panel` worlds: seed → run → on-event pump,
@@ -1211,22 +1220,53 @@ interface SurfaceIdentity {
   hue: number;
   isNew: boolean;
   petname?: string;
+  /** When chrome first assigned this record its mark, from the stored
+   * trust record. Shown on the App settings sheet as a locale date — a
+   * "you have seen this before, since <date>" the user can check. */
+  firstSeen?: number;
+  /** One line of chrome-known metadata about this surface, for the App
+   * settings sheet. `label` is CHROME'S word (never a component's);
+   * `value` may be component-influenced (a panel's declared
+   * destination), so the sheet renders it foreign-quoted. `foreign`
+   * says which. */
+  meta?: { label: string; value: string; foreign: boolean };
 }
 
 /** Chrome's context slot: what secondary surface, if any, is on screen.
- * Called with null for "no secondary surface". The strip's own colour is
- * NOT touched here — it is the constant anchor; only the label changes.
- * `kind` says WHOSE pixels the secondary surface is: a component's
- * config panel, chrome's own credential sheet, chrome's own naming
- * sheet, or chrome's own settings sheet. The last has no component
- * behind it at all, which is why it is a bare `kind` rather than a
- * surface. */
+ * Called with null for "no secondary surface" — which is no longer
+ * "nothing": the strip falls back to THE APP's own identity, the
+ * artifact chrome fetched and drew into the three regions. `kind` says
+ * whose pixels the secondary surface is: a component's config panel,
+ * chrome's own credential sheet, chrome's own naming/App-settings sheet,
+ * or chrome's own settings sheet. The last has no component behind it at
+ * all, which is why it is a bare `kind` rather than a surface. */
 type ChromeContext =
   | (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" })
   | { kind: "settings" }
   | null;
 
 let setChromeContext: (surface: ChromeContext) => void = () => {};
+
+/** THE APP'S OWN ROW IN THE TRUST TABLE. Registered once at boot, after
+ * the app artifact is instantiated for the regions: ONE artifact drawn
+ * into three regions is ONE record, so the strip names the component,
+ * not the rectangles. Null until then (and if the nickname read fails,
+ * the record still exists — only the self-declared name falls back). */
+let appSurface: SurfaceIdentity | null = null;
+
+/** Say something in CHROME'S OWN VOICE on the strip's bottom line, for
+ * `ms`, and then put the line back by RE-RENDERING the live context.
+ *
+ * The re-render is the whole design of this helper. The obvious version
+ * saves the line's previous content and restores it — which is wrong
+ * here, because the thing the line is about can change while the
+ * announcement is showing: a sheet opens or closes, a petname is
+ * assigned, the context moves to another surface. Restoring a saved
+ * string would then put a stale sentence back on the anchor, in chrome's
+ * voice, which is the one place a wrong word costs something. Installed
+ * by `initChrome`. */
+let announce: (text: string, ms?: number) => void = () => {};
+
 
 /** Chrome's naming ceremony, installed by `boot`. Module-level because
  * the strip's "name it" control is rendered by `initChrome`, which runs
@@ -1241,6 +1281,12 @@ let requestSettings: () => void = () => {};
 /** Repaint the strip's identity cluster from the stored record.
  * Installed by `initChrome`; called after the settings sheet commits. */
 let renderChromeIdentity: () => void = () => {};
+
+/** Repaint the strip's CONTEXT cluster from whatever context is current.
+ * Installed by `initChrome`; called when something the current context
+ * is drawn from changes underneath it (the app surface being registered
+ * at boot, for instance) without the context itself moving. */
+let renderChromeContext: () => void = () => {};
 
 /** The user's word for a component, in CHROME'S voice: not quoted, not
  * monospaced, because the user wrote it and chrome is entitled to say
@@ -1267,6 +1313,8 @@ function initChrome() {
   committedHue = hue;
   applyChromeHue(hue);
   const context = document.getElementById("chrome-context")!;
+  const ctxTop = context.querySelector(".ctx-top") as HTMLElement;
+  const ctxBottom = context.querySelector(".ctx-bottom") as HTMLElement;
   const identityBox = document.getElementById("chrome-identity")!;
 
   // THE IDENTITY CLUSTER, rebuilt from the record on every commit. Every
@@ -1275,31 +1323,36 @@ function initChrome() {
   // below is written to a custom property, handed to a panel, or put on
   // the frame seam. Same discipline as `applyChromeHue`, for the same
   // reason: an ambient value is a disclosed value.
+  //
+  // TWO LINES NOW: the user's name above their word for this device,
+  // each ellipsizing in place. They are no longer hidden on a narrow
+  // viewport — the cluster's 45% cap and the per-line ellipsis handle
+  // narrowness, and dropping them was dropping half of what an
+  // impersonating rectangle cannot reproduce, at the width where the
+  // strip is most crowded.
   renderChromeIdentity = () => {
     const rec = loadIdentity();
     identityBox.replaceChildren();
+    const lines = document.createElement("span");
+    lines.className = "id-lines";
     // textContent, never innerHTML: the record is hand-editable storage,
     // so it is treated as data even though it is the user's own.
+    // An unset field renders NOTHING — no fabricated "user"/"this
+    // device", and no leftover punctuation (the separator the one-line
+    // cluster needed is gone with the line).
     if (rec.name) {
       const who = document.createElement("span");
       who.className = "who";
       who.textContent = rec.name.slice(0, IDENTITY_MAX);
-      identityBox.append(who);
-    }
-    // The separator belongs to the pair, so it appears only when there
-    // IS a pair — an unset field leaves no punctuation behind.
-    if (rec.name && rec.device) {
-      const sep = document.createElement("span");
-      sep.className = "sep";
-      sep.textContent = "·";
-      identityBox.append(sep);
+      lines.append(who);
     }
     if (rec.device) {
       const dev = document.createElement("span");
-      dev.className = "who";
+      dev.className = "who device";
       dev.textContent = rec.device.slice(0, IDENTITY_MAX);
-      identityBox.append(dev);
+      lines.append(dev);
     }
+    identityBox.append(lines);
     const btn = document.createElement("button");
     btn.id = "chrome-settings";
     btn.type = "button";
@@ -1307,108 +1360,196 @@ function initChrome() {
     // string out of the record (see CHROME_ICONS).
     btn.textContent = identityIcon(rec);
     btn.title = "your chrome: name, device, colour";
+    btn.setAttribute("aria-label", "your chrome: name, device, colour");
     btn.onclick = () => requestSettings();
     identityBox.append(btn);
   };
   renderChromeIdentity();
 
-  setChromeContext = (surface) => {
-    context.replaceChildren();
-    if (!surface) {
-      const idle = document.createElement("span");
-      idle.className = "said";
-      idle.textContent = "3 app regions · alice · bob · tablet";
-      context.append(idle);
-      return;
+  /** The context currently on the strip, kept so an expiring
+   * announcement can re-render it rather than restore a saved string. */
+  let current: ChromeContext = null;
+  /** Bumped by every render and every announcement: a revert timer whose
+   * token is stale has been overtaken and must do nothing. */
+  let announceToken = 0;
+  let announceTimer = 0;
+  /** True while an announcement owns the bottom line. A CONTEXT MOVE
+   * preempts it (a sheet opening is more urgent than any timed note),
+   * but a mere repaint of the same context must not: the app surface
+   * being registered a second after boot would otherwise silently eat
+   * the "new chrome colour" announcement. */
+  let announcing = false;
+
+  /** The surface the TOP line is about. Chrome's own settings sheet has
+   * no component behind it, so the top line keeps naming the app: the
+   * component identity is a property of what is INSTALLED, not of which
+   * chrome sheet happens to be open — that is what "static after
+   * install" means here. */
+  const topSurface = (ctx: ChromeContext): SurfaceIdentity | null => {
+    if (ctx === null) return appSurface;
+    if (ctx.kind === "settings") return appSurface;
+    return ctx;
+  };
+
+  const renderContext = ({ keepAnnouncement = false }: { keepAnnouncement?: boolean } = {}) => {
+    const holdBottom = keepAnnouncement && announcing;
+    if (!holdBottom) {
+      announceToken++;
+      clearTimeout(announceTimer);
+      announcing = false;
     }
-    // Chrome's own settings sheet: no component is involved, so there is
-    // no chip, no nickname and no petname — only chrome saying what the
-    // surface hanging off the bar is. The anchor and the sheet agree,
-    // exactly as they do for the other two tenants.
-    if (surface.kind === "settings") {
-      const said = document.createElement("span");
-      said.className = "said";
-      said.textContent = "chrome settings";
-      context.append(said);
-      return;
+    const ctx = current;
+    const surface = topSurface(ctx);
+    ctxTop.replaceChildren();
+    if (!holdBottom) ctxBottom.replaceChildren();
+
+    // --- the TOP line: the COMPONENT's identity, and only that -------
+    // Component-said words only: its assigned mark and what it calls
+    // itself, quoted/monospaced/clamped as ever. Nothing chrome does to
+    // its own sheets rewrites this line.
+    if (surface) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.style.background = `oklch(62% .16 ${surface.hue})`;
+      ctxTop.append(chip, nicknameQuote(surface.nickname));
     }
-    const credentials = surface.kind === "credentials";
-    const naming = surface.kind === "naming";
-    // While a chrome sheet is open the strip NAMES it: the anchor and the
-    // surface hanging off it say the same thing, so "which pixels am I
-    // typing into" has a chrome-side answer.
-    if (credentials || naming) {
+
+    // --- the BOTTOM line: CHROME'S voice ----------------------------
+    // What is NOT here any more: the sentence "— provider configuration
+    // panel · drawn by the component, not by chrome". It was a standing
+    // description competing for a line that now has to hold the
+    // petname, the first-sight marker and the open sheet's name in one
+    // ellipsizing row; and the claim it made is made better by the
+    // sheets themselves, at the moment they open.
+    const kind = ctx === null ? "app" : (ctx.kind ?? "panel");
+    const sheet = kind === "credentials" || kind === "naming" || kind === "settings";
+    if (sheet && !holdBottom) {
+      // While a chrome sheet is open the strip NAMES it: the anchor and
+      // the surface hanging off it say the same thing, so "which pixels
+      // am I typing into" has a chrome-side answer. This is the part of
+      // the deleted standing-rule line that was worth keeping.
       const lead = document.createElement("span");
       lead.className = "said";
-      lead.textContent = credentials ? "storage credentials ·" : "naming ·";
-      context.append(lead);
+      lead.textContent = kind === "credentials"
+        ? "storage credentials"
+        : kind === "naming"
+        ? "naming"
+        : "chrome settings";
+      ctxBottom.append(lead);
     }
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.style.background = `oklch(62% .16 ${surface.hue})`;
-    context.append(chip);
-    // THE DEMOTION. With a petname, the name chrome SAYS is the user's
-    // own, in chrome's voice, and the component's self-description drops
-    // to a footnote. Without one, all chrome has is what the component
-    // calls itself — untrusted-string discipline: QUOTED, clamped by CSS,
-    // never joined into chrome's own sentence.
-    const petname = (surface.petname ?? "").trim();
-    if (petname !== "") {
-      const named = petnameSpan(petname);
-      if (!credentials && !naming) {
-        // The click target is chrome pixels in the strip — a place no
-        // component can draw — so the ceremony cannot be baited from
-        // inside an app rectangle.
-        named.setAttribute("role", "button");
-        named.setAttribute("tabindex", "0");
-        named.classList.add("clickable");
-        named.title = "rename or forget";
-        named.onclick = () => requestNaming(surface);
-        // A control that announces itself as a button to assistive tech
-        // must BE one: Enter and Space activate it, exactly as they would
-        // a real <button>. (Space is prevented from scrolling the page
-        // out from under the ceremony it is about to open.)
-        named.onkeydown = (ev: KeyboardEvent) => {
-          if (ev.key !== "Enter" && ev.key !== " ") return;
-          if (ev.key === " ") ev.preventDefault();
+    if (surface && !holdBottom) {
+      // THE DEMOTION. With a petname, the name chrome SAYS is the user's
+      // own, in chrome's voice, on chrome's line — and the component's
+      // self-description stays upstairs where it belongs, as a quote.
+      // Without one, chrome offers to fix that.
+      const petname = (surface.petname ?? "").trim();
+      if (petname !== "") {
+        const named = petnameSpan(petname);
+        if (!sheet) {
+          // The click target is chrome pixels in the strip — a place no
+          // component can draw — so the ceremony cannot be baited from
+          // inside an app rectangle. (The whole cluster is a tap target
+          // too; this inner one stops the event so one gesture is one
+          // opening.)
+          named.setAttribute("role", "button");
+          named.setAttribute("tabindex", "0");
+          named.classList.add("clickable");
+          named.title = "app settings: rename, recolour, forget";
+          named.onclick = (ev: MouseEvent) => {
+            ev.stopPropagation();
+            requestNaming(surface);
+          };
+          // A control that announces itself as a button to assistive tech
+          // must BE one: Enter and Space activate it, exactly as they
+          // would a real <button>. (Space is prevented from scrolling the
+          // page out from under the ceremony it is about to open.)
+          named.onkeydown = (ev: KeyboardEvent) => {
+            if (ev.key !== "Enter" && ev.key !== " ") return;
+            if (ev.key === " ") ev.preventDefault();
+            ev.stopPropagation();
+            requestNaming(surface);
+          };
+        }
+        ctxBottom.append(named);
+      }
+      if (surface.isNew && !sheet) {
+        // The TOFU moment is the one worth interrupting for: recognition
+        // marks mean nothing the first time, and the first time is when
+        // impersonation would land.
+        const fresh = document.createElement("span");
+        fresh.className = "fresh";
+        fresh.textContent = "NEW — first time this component draws here";
+        ctxBottom.append(fresh);
+      }
+      if (petname === "" && !sheet) {
+        // Chrome's own control, in chrome's own pixels: the offer to stop
+        // relying on what the component says about itself.
+        const nameIt = document.createElement("button");
+        nameIt.id = "chrome-name-it";
+        nameIt.type = "button";
+        nameIt.textContent = "name it";
+        nameIt.title = "give this component your own name";
+        nameIt.onclick = (ev: MouseEvent) => {
+          ev.stopPropagation();
           requestNaming(surface);
         };
+        ctxBottom.append(nameIt);
       }
-      const said = document.createElement("span");
-      said.className = "said calls-itself";
-      said.textContent = "calls itself";
-      context.append(named, said, nicknameQuote(surface.nickname));
+    }
+
+    // THE CLUSTER IS ONE TAP TARGET, opening chrome's App settings sheet
+    // for the surface the top line names. Offered only when there is a
+    // surface and no credential/naming sheet already owns the drawer —
+    // a control that would be a no-op must not announce itself as a
+    // button to assistive tech.
+    const tappable = surface !== null && kind !== "credentials" && kind !== "naming";
+    if (tappable) {
+      context.setAttribute("role", "button");
+      context.setAttribute("tabindex", "0");
+      context.title = "app settings for this component";
+      context.onclick = () => requestNaming(surface!);
+      context.onkeydown = (ev: KeyboardEvent) => {
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        if (ev.key === " ") ev.preventDefault();
+        requestNaming(surface!);
+      };
     } else {
-      context.append(nicknameQuote(surface.nickname));
-    }
-    if (!credentials && !naming) {
-      const said = document.createElement("span");
-      said.className = "said";
-      said.textContent = "— provider configuration panel · drawn by the component, not by chrome";
-      context.append(said);
-    }
-    if (surface.isNew && !credentials && !naming) {
-      // The TOFU moment is the one worth interrupting for: recognition
-      // marks mean nothing the first time, and the first time is when
-      // impersonation would land.
-      const fresh = document.createElement("span");
-      fresh.className = "fresh";
-      fresh.textContent = "NEW — first time this component draws here";
-      context.append(fresh);
-    }
-    if (petname === "" && !credentials && !naming) {
-      // Chrome's own control, in chrome's own pixels: the offer to stop
-      // relying on what the component says about itself.
-      const nameIt = document.createElement("button");
-      nameIt.id = "chrome-name-it";
-      nameIt.type = "button";
-      nameIt.textContent = "name it";
-      nameIt.title = "give this component your own name";
-      nameIt.onclick = () => requestNaming(surface);
-      context.append(nameIt);
+      context.removeAttribute("role");
+      context.removeAttribute("tabindex");
+      context.removeAttribute("title");
+      context.onclick = null;
+      context.onkeydown = null;
     }
   };
+
+  announce = (text, ms = 8000) => {
+    const token = ++announceToken;
+    announcing = true;
+    ctxBottom.replaceChildren();
+    const said = document.createElement("span");
+    said.className = "said announce";
+    said.textContent = text;
+    ctxBottom.append(said);
+    clearTimeout(announceTimer);
+    announceTimer = setTimeout(() => {
+      // Overtaken by a newer render or announcement: that one owns the
+      // line now.
+      if (token !== announceToken) return;
+      announcing = false;
+      // REVERT BY RE-RENDER, never by restoring what was there: the
+      // context may have moved while this was showing.
+      renderContext();
+    }, ms);
+  };
+
+  setChromeContext = (surface) => {
+    current = surface;
+    // A context MOVE preempts any live announcement (see `announcing`).
+    renderContext();
+  };
+  renderChromeContext = () => renderContext({ keepAnnouncement: true });
   setChromeContext(null);
+
 
   // The colour picker used to live here, as a strip button plus an
   // inline swatch row. It moved WHOLE into the settings sheet (same
@@ -1427,21 +1568,17 @@ async function boot() {
   };
 
   // An anchor that resets silently trains the user that it changes; a
-  // reset is therefore announced.
+  // reset is therefore announced — on chrome's own line, which reverts
+  // by re-render when the announcement expires.
   const { fresh } = initChrome();
   if (fresh) {
-    const note = document.getElementById("chrome-rule")!;
-    note.textContent = "new chrome colour set for this device — remember it";
-    setTimeout(() => {
-      note.textContent =
-        "storage secrets are only entered in the sheet this bar reveals above itself";
-    }, 15000);
+    announce("new chrome colour set for this device — remember it", 15000);
   }
 
   say("fetching artifacts…");
   const [engineArt, appArt] = await Promise.all([
     fetchArtifacts("engine"),
-    fetchArtifacts("app"),
+    fetchArtifacts(APP_ARTIFACT),
   ]);
 
   say("instantiating engines…");
@@ -1534,6 +1671,53 @@ async function boot() {
 
   say("mounting apps…");
   for (const p of panes) await mountApp(p, appArt);
+
+  // --- THE APP JOINS THE TRUST TABLE ---------------------------------
+  //
+  // ONE ARTIFACT, ONE RECORD. The same `app` artifact is instantiated
+  // into three regions (alice, bob, tablet); the regions are places
+  // chrome drew it, not identities. So chrome registers exactly one
+  // surface mark, keyed — like every other record — by the artifact name
+  // CHROME FETCHED IT BY (unforgeable provenance in this demo; see
+  // surfaceMark). The region names move to the App settings sheet as
+  // metadata, where they describe the record rather than standing in for
+  // it.
+  //
+  // Genuine first boot therefore shows NEW plus chrome's offer to name
+  // it, on the strip's bottom line, for the app itself — the TOFU moment
+  // the panels already had.
+  const { mark: appMark, isNew: appIsNew } = surfaceMark(APP_ARTIFACT);
+  // WHAT THE APP CALLS ITSELF: read ONCE, from ONE instance, exactly as
+  // the panels' nickname is read — the app's exports are reachable from
+  // chrome (the frame isolates the app's DOM, not its export surface;
+  // see mountApp), so no new seam is needed. Same failure discipline: a
+  // trap, an empty answer or whitespace falls back to the provenance
+  // key, and the value is clamped at 40 on the way in so no downstream
+  // renderer has to remember to.
+  let appNickname = APP_ARTIFACT;
+  try {
+    const declared = alice.app && alice.runner
+      ? await alice.runner.call(() => alice.app!.nickname())
+      : "";
+    const clamped = (declared ?? "").trim().slice(0, 40);
+    if (clamped !== "") appNickname = clamped;
+  } catch (e) {
+    console.warn(`[app] nickname: ${err(e)}`);
+  }
+  appSurface = {
+    name: APP_ARTIFACT,
+    nickname: appNickname,
+    hue: appMark.hue,
+    isNew: appIsNew,
+    petname: appMark.petname,
+    firstSeen: appMark.firstSeen,
+    // Chrome's own words for chrome's own fact: where it drew this
+    // artifact. Not component-influenced, so not foreign-quoted.
+    meta: { label: "drawn in", value: panes.map((p) => p.name).join(", "), foreign: false },
+  };
+  // A repaint, not a context move: whatever is on the strip stays, and a
+  // live announcement (the fresh-anchor one, at boot) keeps its line.
+  renderChromeContext();
 
   // All background engine work rides ONE chain: never concurrent with
   // itself (a wedged overlap of interval-driven driver calls froze the
@@ -2284,9 +2468,17 @@ async function boot() {
     }, ARM_MS);
   };
 
-  /** Build chrome's naming sheet. EVERY pixel here is chrome's. The only
-   * component-influenced strings are the nickname and the provenance
-   * key, both quoted, clamped and foreign-styled. */
+  /** Build chrome's App settings sheet — the naming ceremony GROWN into
+   * the one place chrome says everything it knows about a component.
+   * EVERY pixel here is chrome's. The only component-influenced strings
+   * are the nickname, the provenance key and (for a panel) its declared
+   * destination — all quoted, clamped and foreign-styled.
+   *
+   * It is the SAME tenant and the same session variable as the old
+   * naming sheet: evolved, not added to. A fourth drawer tenant would
+   * have meant a fourth entry in every occupancy test (see
+   * drawerOccupied), for a sheet that is about exactly what naming was
+   * about — this component, and what the user wants to call it. */
   const buildNameSheet = (surface: SurfaceIdentity, hue: number) => {
     const root = document.createElement("div");
     root.className = "cred-sheet name-sheet armed";
@@ -2295,10 +2487,10 @@ async function boot() {
     root.style.marginRight = "auto";
 
     const h = document.createElement("h2");
-    h.textContent = "Name this component";
+    h.textContent = "App settings";
 
-    // Context, in the two voices that are not the user's: what the
-    // component says about itself, and what chrome fetched it as.
+    // THE IDENTITY BLOCK — the two voices that are not the user's: what
+    // the component says about itself, and what chrome fetched it as.
     const says = document.createElement("div");
     says.className = "cred-line";
     const chip = document.createElement("span");
@@ -2319,7 +2511,46 @@ async function boot() {
     key.textContent = surface.name.slice(0, 60);
     from.append(fromLead, key);
 
+    // FIRST SIGHT, from the trust record itself: the date the mark was
+    // assigned. This is chrome's own memory of the component, and the
+    // only thing on the sheet that answers "have I really seen this
+    // before?" with something other than a colour.
+    const seen = document.createElement("div");
+    seen.className = "cred-line";
+    if (surface.firstSeen !== undefined) {
+      const seenLead = document.createElement("span");
+      seenLead.className = "said";
+      seenLead.textContent = "first seen";
+      const when = document.createElement("span");
+      when.textContent = new Date(surface.firstSeen).toLocaleDateString();
+      seen.append(seenLead, when);
+    }
+
+    // THE METADATA BLOCK — chrome-known facts about this surface, when
+    // there are any: a panel's declared destination, or the regions
+    // chrome drew the app into. A component-influenced value is
+    // foreign-quoted like every other thing a component said.
+    const meta = document.createElement("div");
+    meta.className = "cred-line";
+    if (surface.meta) {
+      const metaLead = document.createElement("span");
+      metaLead.className = "said";
+      // CHROME'S word, always — `label` is never component-supplied.
+      metaLead.textContent = surface.meta.label;
+      if (surface.meta.foreign) {
+        const q = document.createElement("q");
+        q.className = "foreign";
+        q.textContent = surface.meta.value.slice(0, 120);
+        meta.append(metaLead, q);
+      } else {
+        const value = document.createElement("span");
+        value.textContent = surface.meta.value.slice(0, 120);
+        meta.append(metaLead, value);
+      }
+    }
+
     const field = document.createElement("div");
+
     field.className = "cred-field";
     const label = document.createElement("label");
     label.textContent = "Your name for it";
@@ -2397,7 +2628,11 @@ async function boot() {
       forgetRow.append(forgetBtn, forgetNote);
     }
 
-    root.append(h, says, from, field, swatchLabel, swatchRow, note, reason, row);
+    root.append(h, says, from);
+    if (surface.firstSeen !== undefined) root.append(seen);
+    if (surface.meta) root.append(meta);
+    root.append(field, swatchLabel, swatchRow, note, reason, row);
+
     if (forgetBtn) root.append(forgetRow);
     return { root, input, saveBtn, cancelBtn, forgetBtn, reason, hue: () => picked };
   };
@@ -2424,18 +2659,12 @@ async function boot() {
       closeNamingDrawer();
       // Chrome's own line in chrome's own bar — not a pane's status
       // line: this is a statement about the shell's trust table, not
-      // about anybody's replica. Restored to the standing rule after,
-      // the same way the fresh-anchor announcement is.
-      if (status) {
-        const rule = document.getElementById("chrome-rule");
-        if (rule) {
-          rule.textContent = status;
-          setTimeout(() => {
-            rule.textContent =
-              "storage secrets are only entered in the sheet this bar reveals above itself";
-          }, 8000);
-        }
-      }
+      // about anybody's replica. It expires by RE-RENDERING the strip
+      // (see `announce`), which matters exactly here: the thing the
+      // bottom line shows has just changed — a petname was assigned, or
+      // a whole record was forgotten — so restoring what the line said
+      // before would put a stale claim back on the anchor.
+      if (status) announce(status);
     };
 
     built.saveBtn.onclick = () => {
@@ -2457,7 +2686,35 @@ async function boot() {
         return;
       }
       setPetname(surface.name, petname, built.hue());
+      // The in-memory app surface is a CACHE of the record; the strip
+      // renders from it, so a commit that only touched storage would
+      // leave the anchor showing yesterday's answer.
+      //
+      // FIRST SIGHT IS OVER: the naming ceremony IS the TOFU moment
+      // completing, so the NEW badge is cleared on every live copy of
+      // this identity. "First time this component draws here —
+      // recognition means nothing yet" and the user's own name for it
+      // are contradictory claims to make side by side; once the user has
+      // decided what to call it, they have done the recognising the
+      // badge was asking for. (Forgetting is untouched: it deletes the
+      // record, so the next mount is honestly NEW again.)
+      if (appSurface && appSurface.name === surface.name) {
+        appSurface = { ...appSurface, petname, hue: built.hue(), isNew: false };
+      }
+      if (activePanel && activePanel.surface.name === surface.name) {
+        activePanel.surface = {
+          ...activePanel.surface,
+          petname,
+          hue: built.hue(),
+          isNew: false,
+        };
+      }
+      // The session's own surface object: the sheet may outlive this
+      // click (Save leaves it up only briefly, but the object is also
+      // what a re-open would be built from).
+      session.surface = { ...session.surface, petname, hue: built.hue(), isNew: false };
       finish(`saved — chrome will call this component ${petname} from now on`);
+
     };
     built.cancelBtn.onclick = () => {
       if (namingSession !== session) return;
@@ -2467,7 +2724,16 @@ async function boot() {
       built.forgetBtn.onclick = () => {
         if (namingSession !== session) return;
         forgetSurface(surface.name);
+        // Forgetting must be honest on the strip too: the cached petname
+        // goes with the record, so the anchor stops speaking a name
+        // chrome no longer holds. (`isNew` stays as it is — this session
+        // has seen the component; the NEXT mount is the one that is
+        // genuinely new again, and the sheet says so.)
+        if (appSurface && appSurface.name === surface.name) {
+          appSurface = { ...appSurface, petname: undefined };
+        }
         finish("forgotten — this component will be announced as NEW next time");
+
       };
     }
 
@@ -3097,6 +3363,7 @@ async function boot() {
       hue,
       isNew,
       petname: mark.petname,
+      firstSeen: mark.firstSeen,
     };
     setChromeContext(identity);
 
@@ -3190,7 +3457,16 @@ async function boot() {
     if (generation !== panelGeneration) return;
     // note:false — this is the FIRST binding of the session, not a
     // change of one; there is nothing the user entered to invalidate.
-    rebind(rawDest ?? "", { note: false });
+    const bound = rebind(rawDest ?? "", { note: false });
+    // The panel's DECLARED destination, carried on the identity so the
+    // App settings sheet can show it. Component-INFLUENCED even after
+    // chrome's normalization, hence foreign:true — the sheet quotes it.
+    if (bound !== null) {
+      identity = { ...identity, meta: { label: "declared destination", value: bound, foreign: true } };
+      setChromeContext(identity);
+      if (activePanel) activePanel.surface = identity;
+    }
+
     const unknown = (needs ?? []).some((kind) => !CREDENTIAL_VOCABULARY[kind]);
     saveBtn.disabled = unknown;
     dialogNote(unknown ? "panel requested an unknown credential kind — refused" : "");
@@ -3478,12 +3754,27 @@ async function boot() {
           | HTMLButtonElement
           | null)?.click(),
     },
-    // The naming ceremony, for driving. `nameIt` clicks the strip's own
-    // control — chrome pixels, the only place the ceremony can start.
+    // Chrome's App settings sheet (the naming ceremony, grown), for
+    // driving. `nameIt` clicks the strip's own control — chrome pixels,
+    // the only place the ceremony can start; `openCluster` clicks the
+    // whole left cluster, which is the other way in.
     naming: {
       open: () => namingSession !== null,
       nameIt: () =>
         (document.getElementById("chrome-name-it") as HTMLButtonElement | null)?.click(),
+      openCluster: () =>
+        (document.getElementById("chrome-context") as HTMLElement | null)?.click(),
+      /** Open the sheet for a named record directly — driving only, and
+       * deliberately provenance-keyed: it opens for the surface chrome
+       * already holds under that key, never for one synthesised from an
+       * argument. Unknown keys open nothing. */
+      openFor: (provenance: string) => {
+        const known = [appSurface, activePanel?.surface].filter((s): s is SurfaceIdentity => !!s);
+        const surface = known.find((s) => s.name === provenance);
+        if (!surface) return false;
+        requestNaming(surface);
+        return true;
+      },
       type: (value: string) => {
         const input = drawerInner.querySelector(".name-sheet input") as HTMLInputElement | null;
         if (input) input.value = value;
@@ -3534,7 +3825,12 @@ async function boot() {
           | null)?.click(),
       identity: () => loadIdentity(),
     },
+    /** The app's own row in the trust table, as chrome registered it at
+     * boot: provenance key, self-declared nickname, assigned mark, the
+     * user's petname if any. Driving/inspection only. */
+    appSurface: () => appSurface,
   };
+
   say("ready — E2E-encrypted, three replicas, two sync paths");
 }
 

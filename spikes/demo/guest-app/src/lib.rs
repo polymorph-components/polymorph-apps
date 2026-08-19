@@ -483,6 +483,16 @@ impl Guest for Component {
         }
         changed
     }
+
+    /// What this app calls itself. SELF-DECLARED, therefore worth
+    /// nothing as identity: chrome renders it foreign-quoted and clamped,
+    /// keys its trust record on the artifact name it fetched, and lets
+    /// the user assign the name they will actually recognise. Same
+    /// discipline as the storage panels' `nickname` — the app is one more
+    /// row in the trust table, not a privileged one.
+    fn nickname() -> String {
+        "TodoMVC".to_string()
+    }
 }
 
 export!(Component);
