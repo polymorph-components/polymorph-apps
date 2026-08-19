@@ -1,8 +1,8 @@
 //! Dropbox storage-provider config panel (#19 x #22): a sandboxed APP,
 //! never chrome. Unlike its S3 sibling this panel carries two granted
-//! capabilities — the OAuth broker (chrome runs the PKCE ceremony; the
-//! panel only ever sees the resulting tokens, todomvc.wit:147-162) and a
-//! `fetch` import chrome scopes to `api.dropboxapi.com`. That import
+//! capabilities — the OAuth broker (chrome runs the PKCE ceremony AND
+//! keeps the resulting tokens; this panel learns only success/failure)
+//! and a `fetch` import chrome scopes to `api.dropboxapi.com`. That import
 //! itself IS the per-destination network grant (the #21 egress-badge
 //! story) — this panel cannot reach any other host.
 //!
@@ -37,15 +37,21 @@ use serde::{Deserialize, Serialize};
 const TOK_APP_KEY: u32 = 1;
 const TOK_APP_SECRET: u32 = 2;
 const TOK_ROOT: u32 = 3;
-const TOK_ACCESS: u32 = 4;
-const TOK_REFRESH: u32 = 5;
-const TOK_CONNECT: u32 = 6;
-const TOK_TEST: u32 = 7;
+const TOK_CONNECT: u32 = 4;
+const TOK_TEST: u32 = 5;
+// No token fields: the access and refresh tokens are CHROME's fields
+// now (#22, `credential-needs` below). App key / app secret / root stay
+// here — they are public client identifiers and configuration, not
+// user credentials.
 // Save/Cancel are CHROME's affordances, outside this region (#22).
 // "Connect Dropbox" and "Test connection" stay here: they are
 // provider-specific actions, not the commit.
 
 const DEFAULT_ROOT: &str = "pm-demo";
+
+/// The one destination this panel's credentials may be released toward
+/// (#22) — the same origin its granted fetch is scoped to.
+const DESTINATION: &str = "https://api.dropboxapi.com";
 
 #[derive(Default, Deserialize, Serialize)]
 struct Seed {
@@ -53,10 +59,6 @@ struct Seed {
     app_key: String,
     #[serde(default, rename = "appSecret")]
     app_secret: String,
-    #[serde(default, rename = "accessToken")]
-    access_token: String,
-    #[serde(default, rename = "refreshToken")]
-    refresh_token: String,
     #[serde(default)]
     root: String,
 }
@@ -68,10 +70,6 @@ struct SaveOutcome<'a> {
     app_key: &'a str,
     #[serde(rename = "appSecret")]
     app_secret: &'a str,
-    #[serde(rename = "accessToken")]
-    access_token: &'a str,
-    #[serde(rename = "refreshToken")]
-    refresh_token: &'a str,
     root: &'a str,
 }
 
@@ -92,8 +90,6 @@ struct AccountName {
 }
 
 struct Ui {
-    access: Element,
-    refresh: Element,
     status: Element,
 }
 
@@ -102,8 +98,6 @@ struct App {
     app_key: String,
     app_secret: String,
     root: String,
-    access: String,
-    refresh: String,
     ui: Option<Ui>,
 }
 
@@ -113,8 +107,6 @@ thread_local! {
         app_key: String::new(),
         app_secret: String::new(),
         root: String::new(),
-        access: String::new(),
-        refresh: String::new(),
         ui: None,
     });
 }
@@ -129,10 +121,11 @@ fn el(tag: &str, class: &str) -> Element {
     e
 }
 
-/// Labeled text-input row. No `password` input type on this surface
-/// (spikes/todomvc/host/validate.ts admits only "text"/"checkbox"), so
-/// app secret and both tokens are plain text inputs — pasteable, which is
-/// exactly the dev-fallback path these two token fields need to support.
+/// Labeled text-input row. Only the PUBLIC parts of the configuration
+/// are drawn here — app key, app secret (the registered client's own
+/// identifiers) and the root folder. The access and refresh TOKENS are
+/// chrome's fields, outside this region: secrets must never be typed
+/// into component-drawn pixels (#22).
 fn field(root: &Element, label_text: &str, placeholder: &str, token: u32) -> Element {
     let row = el("div", "field");
     let label = el("label", "");
@@ -158,8 +151,12 @@ fn build(app: &mut App) {
     let app_key = field(&panel, "App key", "", TOK_APP_KEY);
     let app_secret = field(&panel, "App secret", "", TOK_APP_SECRET);
     let root_field = field(&panel, "Root folder", DEFAULT_ROOT, TOK_ROOT);
-    let access = field(&panel, "Access token", "(from Connect, or paste)", TOK_ACCESS);
-    let refresh = field(&panel, "Refresh token", "(from Connect, or paste)", TOK_REFRESH);
+
+    let creds = el("div", "hint");
+    creds.set_text_content(
+        "credentials are entered in the chrome fields below — this panel never sees them",
+    );
+    panel.append_child(&creds);
 
     let seeded_root = if app.seed.root.trim().is_empty() {
         DEFAULT_ROOT.to_string()
@@ -169,13 +166,9 @@ fn build(app: &mut App) {
     app_key.set_value(&app.seed.app_key);
     app_secret.set_value(&app.seed.app_secret);
     root_field.set_value(&seeded_root);
-    access.set_value(&app.seed.access_token);
-    refresh.set_value(&app.seed.refresh_token);
     app.app_key = app.seed.app_key.clone();
     app.app_secret = app.seed.app_secret.clone();
     app.root = seeded_root;
-    app.access = app.seed.access_token.clone();
-    app.refresh = app.seed.refresh_token.clone();
 
     let status = el("div", "status");
     panel.append_child(&status);
@@ -193,11 +186,7 @@ fn build(app: &mut App) {
 
     root_el.append_child(&panel);
 
-    app.ui = Some(Ui {
-        access,
-        refresh,
-        status,
-    });
+    app.ui = Some(Ui { status });
 }
 
 fn set_status(app: &App, text: &str) {
@@ -211,17 +200,16 @@ async fn connect(app_key: String) {
         APP.with(|a| set_status(&a.borrow(), "enter the app key first"));
         return;
     }
+    // The broker returns unit: chrome ran the ceremony and chrome KEEPS
+    // the tokens, in its own credential fields. This panel learns only
+    // that authorization succeeded.
     match oauth_broker::authorize(app_key.clone()).await {
-        Ok(tokens) => {
+        Ok(()) => {
             APP.with(|a| {
-                let mut app = a.borrow_mut();
-                app.access = tokens.access_token.clone();
-                app.refresh = tokens.refresh_token.clone();
-                if let Some(ui) = &app.ui {
-                    ui.access.set_value(&tokens.access_token);
-                    ui.refresh.set_value(&tokens.refresh_token);
-                }
-                set_status(&app, "authorized ✓");
+                set_status(
+                    &a.borrow(),
+                    "authorized ✓ — tokens are held by chrome, not by this panel",
+                );
             });
         }
         Err(e) => {
@@ -234,8 +222,13 @@ async fn connect(app_key: String) {
 /// `fetch` import chrome scopes to api.dropboxapi.com — that scoping IS
 /// the per-destination network grant (todomvc.wit:193-197), not a policy
 /// this guest enforces itself.
-async fn test_connection(access: String) {
-    let headers = vec![("authorization".to_string(), format!("Bearer {access}"))];
+///
+/// No authorization header is sent — this panel holds no token. Chrome
+/// injects the bearer credential at the granted boundary (the scoped
+/// fetch shim in host/demo.ts), which is precisely why the credential
+/// can stay out of component-drawn pixels.
+async fn test_connection() {
+    let headers: Vec<(String, String)> = Vec::new();
     let result = fetch::request(
         "POST".to_string(),
         "https://api.dropboxapi.com/2/users/get_current_account".to_string(),
@@ -253,6 +246,9 @@ async fn test_connection(access: String) {
                 .unwrap_or_else(|| "(unknown)".to_string());
             format!("connected ✓ {who}")
         }
+        Ok(resp) if resp.status == 401 => {
+            "test failed: no token held by chrome yet — Connect or paste one below".to_string()
+        }
         Ok(resp) => {
             let body = String::from_utf8_lossy(&resp.body);
             let snippet: String = body.chars().take(120).collect();
@@ -266,11 +262,8 @@ async fn test_connection(access: String) {
 /// Chrome asks for the configuration when the user presses ITS Save.
 /// `None` = not valid yet, with the reason rendered in this region.
 fn commit_config(app: &mut App) -> Option<String> {
-    if app.app_key.trim().is_empty()
-        || app.app_secret.trim().is_empty()
-        || app.access.trim().is_empty()
-    {
-        set_status(app, "app key, app secret and an access token are required");
+    if app.app_key.trim().is_empty() || app.app_secret.trim().is_empty() {
+        set_status(app, "app key and app secret are required");
         return None;
     }
     let root = if app.root.trim().is_empty() {
@@ -282,8 +275,6 @@ fn commit_config(app: &mut App) -> Option<String> {
         provider: "dropbox",
         app_key: &app.app_key,
         app_secret: &app.app_secret,
-        access_token: &app.access,
-        refresh_token: &app.refresh,
         root: &root,
     };
     Some(serde_json::to_string(&out).expect("serialize outcome"))
@@ -294,15 +285,12 @@ async fn handle_event(ev: Event) {
         TOK_APP_KEY => APP.with(|a| a.borrow_mut().app_key = ev.value.unwrap_or_default()),
         TOK_APP_SECRET => APP.with(|a| a.borrow_mut().app_secret = ev.value.unwrap_or_default()),
         TOK_ROOT => APP.with(|a| a.borrow_mut().root = ev.value.unwrap_or_default()),
-        TOK_ACCESS => APP.with(|a| a.borrow_mut().access = ev.value.unwrap_or_default()),
-        TOK_REFRESH => APP.with(|a| a.borrow_mut().refresh = ev.value.unwrap_or_default()),
         TOK_CONNECT => {
             let app_key = APP.with(|a| a.borrow().app_key.clone());
             connect(app_key).await;
         }
         TOK_TEST => {
-            let access = APP.with(|a| a.borrow().access.clone());
-            test_connection(access).await;
+            test_connection().await;
         }
         _ => {}
     }
@@ -337,6 +325,21 @@ impl Guest for Component {
 
     async fn commit() -> Option<String> {
         APP.with(|a| commit_config(&mut a.borrow_mut()))
+    }
+
+    /// The credential vocabulary (#22): kinds only, never labels. Chrome
+    /// renders these fields in its own pixels, outside this region, and
+    /// the values never cross back into this component.
+    fn credential_needs() -> Vec<CredentialKind> {
+        vec![CredentialKind::BearerToken, CredentialKind::RefreshToken]
+    }
+
+    /// This panel's configuration always points at one place: the Dropbox
+    /// API origin (#22). Chrome binds the credentials it holds to it and
+    /// re-derives the same constant from the committed config, so this
+    /// panel has no way to steer chrome's tokens elsewhere.
+    fn destination() -> String {
+        DESTINATION.to_string()
     }
 }
 

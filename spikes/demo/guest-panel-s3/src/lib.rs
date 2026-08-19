@@ -31,9 +31,11 @@ use serde::{Deserialize, Serialize};
 
 const TOK_ENDPOINT: u32 = 1;
 const TOK_BUCKET: u32 = 2;
-const TOK_ACCESS: u32 = 3;
-const TOK_SECRET: u32 = 4;
-// No save/cancel tokens: those affordances are CHROME's, rendered
+// No credential tokens: the access key and secret key are CHROME's
+// fields now (#22, `credential-needs` below). Secrets must never be
+// typed into component-drawn pixels, so this panel has no input for
+// them and never learns their values.
+// No save/cancel tokens either: those affordances are CHROME's, rendered
 // outside this granted region (#22 — a panel that owns its own Save
 // button owns the user's sense of what saving means).
 
@@ -43,10 +45,6 @@ struct Seed {
     endpoint: String,
     #[serde(default)]
     bucket: String,
-    #[serde(default)]
-    access: String,
-    #[serde(default)]
-    secret: String,
 }
 
 #[derive(Serialize)]
@@ -54,16 +52,12 @@ struct SaveOutcome<'a> {
     provider: &'static str,
     endpoint: &'a str,
     bucket: &'a str,
-    access: &'a str,
-    secret: &'a str,
 }
 
 struct App {
     seed: Seed,
     endpoint: String,
     bucket: String,
-    access: String,
-    secret: String,
     /// Where the panel explains a refused commit, inside its own region.
     status: Option<Element>,
 }
@@ -73,8 +67,6 @@ thread_local! {
         seed: Seed::default(),
         endpoint: String::new(),
         bucket: String::new(),
-        access: String::new(),
-        secret: String::new(),
         status: None,
     });
 }
@@ -90,9 +82,9 @@ fn el(tag: &str, class: &str) -> Element {
 }
 
 /// Build one labeled text input row. `input type` is validated against
-/// {"text", "checkbox"} only (spikes/todomvc/host/validate.ts) — there is
-/// no `password` type on this surface, so the secret-key field is a plain
-/// text input (noted at the call site).
+/// {"text", "checkbox"} only (spikes/todomvc/host/validate.ts). Nothing
+/// secret is ever typed here: this panel only draws the PUBLIC parts of
+/// the configuration (endpoint, bucket).
 fn field(root: &Element, label_text: &str, placeholder: &str, token: u32) -> Element {
     let row = el("div", "field");
     let label = el("label", "");
@@ -121,19 +113,19 @@ fn build(app: &mut App) {
 
     let endpoint = field(&panel, "Endpoint", "https://s3.example.com", TOK_ENDPOINT);
     let bucket = field(&panel, "Bucket", "my-bucket", TOK_BUCKET);
-    let access = field(&panel, "Access key", "", TOK_ACCESS);
-    // Secret key: plain text input, not `type=password` — the surface
-    // allowlist admits only "text"/"checkbox" (validate.ts checkAttr).
-    let secret = field(&panel, "Secret key", "", TOK_SECRET);
+    // The credential fields live in CHROME, below this region: the panel
+    // declares the KINDS it needs (see `credential_needs`) and chrome
+    // renders them with its own labels.
+    let creds = el("div", "hint");
+    creds.set_text_content(
+        "credentials are entered in the chrome fields below — this panel never sees them",
+    );
+    panel.append_child(&creds);
 
     endpoint.set_value(&app.seed.endpoint);
     bucket.set_value(&app.seed.bucket);
-    access.set_value(&app.seed.access);
-    secret.set_value(&app.seed.secret);
     app.endpoint = app.seed.endpoint.clone();
     app.bucket = app.seed.bucket.clone();
-    app.access = app.seed.access.clone();
-    app.secret = app.seed.secret.clone();
 
     let status = el("div", "status");
     panel.append_child(&status);
@@ -160,18 +152,37 @@ fn commit_config(app: &mut App) -> Option<String> {
         provider: "s3",
         endpoint: &endpoint,
         bucket: &bucket,
-        access: &app.access,
-        secret: &app.secret,
     };
     Some(serde_json::to_string(&out).expect("serialize outcome"))
+}
+
+/// Best-effort "origin" of the endpoint field: trim, drop any path, and
+/// lowercase the scheme+authority. Plain string manipulation is enough
+/// here — chrome re-normalizes with `new URL()` and compares origins
+/// itself, so a sloppy answer costs the panel its binding, not chrome
+/// its enforcement. "" when there is nothing to report.
+fn origin_of(endpoint: &str) -> String {
+    let raw = endpoint.trim().trim_end_matches('/');
+    if raw.is_empty() {
+        return String::new();
+    }
+    let (scheme, rest) = match raw.split_once("://") {
+        Some((s, r)) => (s, r),
+        // No scheme: chrome cannot parse it either, so report nothing
+        // rather than inventing one.
+        None => return String::new(),
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return String::new();
+    }
+    format!("{}://{}", scheme.to_lowercase(), authority.to_lowercase())
 }
 
 fn handle_event(app: &mut App, ev: Event) {
     match ev.token {
         TOK_ENDPOINT => app.endpoint = ev.value.unwrap_or_default(),
         TOK_BUCKET => app.bucket = ev.value.unwrap_or_default(),
-        TOK_ACCESS => app.access = ev.value.unwrap_or_default(),
-        TOK_SECRET => app.secret = ev.value.unwrap_or_default(),
         _ => {}
     }
 }
@@ -205,6 +216,23 @@ impl Guest for Component {
 
     async fn commit() -> Option<String> {
         APP.with(|a| commit_config(&mut a.borrow_mut()))
+    }
+
+    /// The credential vocabulary (#22): kinds only, never labels. Chrome
+    /// renders these fields in its own pixels, outside this region, and
+    /// the values never cross back into this component.
+    fn credential_needs() -> Vec<CredentialKind> {
+        vec![CredentialKind::AccessKey, CredentialKind::SecretKey]
+    }
+
+    /// Where this panel's configuration currently points (#22). Chrome
+    /// re-reads this after every event, shows it, and binds the
+    /// credentials it holds to it. Best-effort origin normalization only:
+    /// chrome re-parses with its own URL machinery and is the one that
+    /// enforces — this string is an INPUT to chrome's normalization,
+    /// never a claim chrome trusts as written.
+    fn destination() -> String {
+        APP.with(|a| origin_of(&a.borrow().endpoint))
     }
 }
 
