@@ -266,17 +266,24 @@ function randomHex(n: number): string {
 
 const AUTH_TIMEOUT_MS = 5 * 60_000;
 
+/** Chrome's credential store for the live dialog session. Installed by
+ * the dialog wiring in `boot`; module-level so the broker and the scoped
+ * fetch shim (both chrome capabilities defined out here) can deposit and
+ * read WITHOUT the values ever passing through a panel. Per-session: the
+ * dialog's teardown clears them. */
+let depositCredential: (kind: string, value: string) => void = () => {};
+let heldCredential: (kind: string) => string = () => "";
+
 /**
  * `polymorph:todomvc-spike/oauth-broker@0.0.1` — the PKCE ceremony runs
  * HERE, in chrome: a sandboxed panel can neither open a popup nor follow
  * a redirect, and must not see the ceremony at all. It names the client
- * it wants authorized; it receives only the resulting tokens (the
- * powerbox shape: chrome shows WHAT is authorized, the panel gets the
- * capability).
+ * it wants authorized; it receives only success or failure. The TOKENS
+ * stay in chrome, deposited into chrome's own credential fields (#22) —
+ * the powerbox shape: chrome shows what is authorized and holds the
+ * resulting capability; the panel never touches it.
  */
-async function authorize(
-  clientId: string,
-): Promise<{ accessToken: string; refreshToken: string }> {
+async function authorize(clientId: string): Promise<void> {
   const verifierBytes = new Uint8Array(32);
   crypto.getRandomValues(verifierBytes);
   const verifier = b64url(verifierBytes);
@@ -340,7 +347,9 @@ async function authorize(
   if (!res.ok) witErr(`token exchange: HTTP ${res.status}: ${await res.text()}`);
   const json = await res.json() as { access_token?: string; refresh_token?: string };
   if (!json.access_token) witErr("token exchange: no access_token in the response");
-  return { accessToken: json.access_token, refreshToken: json.refresh_token ?? "" };
+  // Straight into CHROME's fields. Nothing is returned to the panel.
+  depositCredential("bearer-token", json.access_token);
+  depositCredential("refresh-token", json.refresh_token ?? "");
 }
 
 /**
@@ -367,10 +376,20 @@ const dropboxFetchImports = {
       if (host !== "api.dropboxapi.com") {
         witErr("fetch: host not granted to this panel");
       }
+      // CREDENTIAL INJECTION AT THE GRANTED BOUNDARY (#22). The panel
+      // holds no token and cannot set one: any panel-supplied
+      // `authorization` header is DROPPED (it could only ever be a
+      // guess, or an attempt to exfiltrate something by echoing it to
+      // the wire), and chrome attaches the bearer credential it holds —
+      // outside the sandbox, on the way out. With no token held, no
+      // header is added and the provider's 401 is honest.
+      const outbound = headers.filter(([k]) => k.toLowerCase() !== "authorization");
+      const bearer = heldCredential("bearer-token");
+      if (bearer) outbound.push(["authorization", `Bearer ${bearer}`]);
       const empty = method === "GET" || method === "HEAD" || body.length === 0;
       const res = await fetch(url, {
         method,
-        headers,
+        headers: outbound,
         // Copy out of the guest's view before it crosses back (and the
         // dom lib wants a plain ArrayBuffer, not a Uint8Array view).
         body: empty ? undefined : body.buffer.slice(
@@ -403,7 +422,41 @@ interface PanelExports {
   outcome(): Promise<string | undefined>;
   /** Chrome-driven: produce the config, or none if not yet valid. */
   commit(): Promise<string | undefined>;
+  /** The panel's DECLARED credential needs, from the fixed WIT
+   * vocabulary (`credentials.credential-kind`). Enum values cross the
+   * boundary as their kebab-case WIT names ("access-key", …) — same
+   * convention as `event-kind` ("dblclick"/"keydown") in the surface. */
+  credentialNeeds(): Promise<string[]>;
 }
+
+// --- chrome-owned credential fields (#22) --------------------------------------
+//
+// The phishing surface this closes: a panel that draws its own secret
+// inputs is asking for credentials in ITS pixels while sitting inside
+// chrome's dialog, borrowing chrome's authority. So a panel may only
+// DECLARE a kind from a fixed vocabulary; chrome renders the field with
+// CHROME'S OWN WORDS. Chrome never renders a panel-supplied label — that
+// is the whole point: otherwise a panel declares "your Dropbox password"
+// and chrome's pixels say it. Unknown kinds are refused outright, and
+// the word "password" is never a label chrome writes.
+interface CredentialSpec {
+  label: string;
+  type: "text" | "password";
+  required: boolean;
+  note?: string;
+}
+
+const CREDENTIAL_VOCABULARY: Record<string, CredentialSpec> = {
+  "access-key": { label: "Access key ID", type: "text", required: true },
+  "secret-key": { label: "Secret key", type: "password", required: true },
+  "bearer-token": {
+    label: "Access token",
+    type: "password",
+    required: true,
+    note: "from provider sign-in, or paste a developer token",
+  },
+  "refresh-token": { label: "Refresh token (optional)", type: "password", required: false },
+};
 
 interface Pane {
   name: string;
@@ -873,6 +926,159 @@ async function boot() {
 
   const dialog = document.getElementById("storage-dialog") as HTMLDialogElement;
   const region = document.getElementById("panel-region") as HTMLElement;
+  const saveBtn = document.getElementById("storage-save") as HTMLButtonElement;
+
+  // --- chrome's own credential fields ------------------------------------
+  //
+  // Created here, dynamically, and inserted ONCE between the granted
+  // region and chrome's action row: these pixels are chrome's, drawn
+  // from chrome's vocabulary (CREDENTIAL_VOCABULARY above), populated per
+  // panel from the kinds the panel DECLARED. The panel never sees a
+  // keystroke of them.
+  const credBlock = document.createElement("div");
+  credBlock.id = "chrome-credentials";
+  credBlock.style.cssText =
+    "margin:0 .9em .3em; padding:.6em .8em; background:#16213e; border:1px solid #2a2a44;" +
+    "border-radius:3px; font-size:12px; color:#ddd; display:none;";
+  const credLead = document.createElement("div");
+  credLead.style.cssText = "font-size:11px; color:#8b93b0; margin-bottom:.5em; line-height:1.35;";
+  credLead.textContent =
+    "Held by chrome and handed to the storage engine — the panel below never sees these.";
+  const credFields = document.createElement("div");
+  const credReason = document.createElement("div");
+  credReason.style.cssText = "font-size:11px; color:#f5c16c; margin-top:.4em; line-height:1.35;";
+  credBlock.append(credLead, credFields, credReason);
+  {
+    const actions = dialog.querySelector(".chrome-actions");
+    if (actions) actions.before(credBlock);
+    else region.after(credBlock);
+  }
+
+  /** Chrome's per-session credential state, keyed by WIT kind. The
+   * inputs are the UI; this map is the value chrome hands onward (and
+   * what the fetch shim injects from). */
+  const credValues = new Map<string, string>();
+  const credInputs = new Map<string, HTMLInputElement>();
+  let credKinds: string[] = [];
+
+  heldCredential = (kind) => credValues.get(kind) ?? "";
+  depositCredential = (kind, value) => {
+    credValues.set(kind, value);
+    const input = credInputs.get(kind);
+    if (input) input.value = value;
+  };
+
+  const clearCredentials = () => {
+    credKinds = [];
+    credValues.clear();
+    credInputs.clear();
+    credFields.replaceChildren();
+    credReason.textContent = "";
+    credBlock.style.display = "none";
+    saveBtn.disabled = false;
+  };
+  clearCredentials();
+
+  /** Render the declared kinds — chrome's labels only. An unrecognised
+   * kind is REFUSED rather than guessed at: chrome will not lend its
+   * pixels to a request it has no words for, and Save is disabled so the
+   * refusal cannot be clicked past. */
+  const renderCredentials = (kinds: string[], prefill: Record<string, string>) => {
+    credKinds = kinds;
+    credValues.clear();
+    credInputs.clear();
+    credFields.replaceChildren();
+    credReason.textContent = "";
+    let refused = false;
+    for (const kind of kinds) {
+      const spec = CREDENTIAL_VOCABULARY[kind];
+      if (!spec) {
+        refused = true;
+        continue;
+      }
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex; flex-direction:column; gap:.15em; margin-bottom:.5em;";
+      const label = document.createElement("label");
+      // CHROME'S OWN WORDS. Never a panel-supplied string.
+      label.textContent = spec.label;
+      label.style.cssText = "font-size:11px; color:#bbb;";
+      const input = document.createElement("input");
+      input.type = spec.type;
+      input.autocomplete = "off";
+      input.style.cssText =
+        "width:100%; box-sizing:border-box; background:#0f1424; color:#eee;" +
+        "border:1px solid #2a2a44; border-radius:2px; padding:.3em;";
+      const seeded = prefill[kind] ?? "";
+      input.value = seeded;
+      credValues.set(kind, seeded);
+      input.addEventListener("input", () => credValues.set(kind, input.value));
+      credInputs.set(kind, input);
+      row.append(label, input);
+      if (spec.note) {
+        const note = document.createElement("div");
+        note.style.cssText = "font-size:10px; color:#8b93b0;";
+        note.textContent = spec.note;
+        row.append(note);
+      }
+      credFields.append(row);
+    }
+    if (refused) {
+      credReason.textContent = "panel requested an unknown credential kind — refused";
+    }
+    saveBtn.disabled = refused;
+    credBlock.style.display = kinds.length > 0 ? "" : "none";
+  };
+
+  /** Requiredness is CHROME's rule, by kind — not the panel's. */
+  const missingCredential = (): string | null => {
+    for (const kind of credKinds) {
+      const spec = CREDENTIAL_VOCABULARY[kind];
+      if (!spec || !spec.required) continue;
+      if ((credValues.get(kind) ?? "").trim() === "") return spec.label;
+    }
+    return null;
+  };
+
+  /** Chrome merges its held values into the panel's secret-free config.
+   * The panel produced provider + public identifiers; the credentials
+   * are added here, on chrome's side of the boundary. */
+  const withCredentials = (cfg: StorageConfig): StorageConfig => {
+    if (cfg.provider === "s3") {
+      return {
+        ...cfg,
+        access: heldCredential("access-key"),
+        secret: heldCredential("secret-key"),
+      };
+    }
+    return {
+      ...cfg,
+      accessToken: heldCredential("bearer-token"),
+      refreshToken: heldCredential("refresh-token"),
+    };
+  };
+
+  /** What chrome hands the PANEL: the stored config with every secret
+   * field stripped. A panel that never receives a credential cannot leak
+   * one, and seeding is the one path that would otherwise hand it back. */
+  const redactForPanel = (cfg: StorageConfig): Record<string, unknown> => {
+    const copy = { ...cfg } as Record<string, unknown>;
+    for (const secret of ["access", "secret", "accessToken", "refreshToken"]) {
+      delete copy[secret];
+    }
+    return copy;
+  };
+
+  /** Chrome's fields, prefilled from the stored config for this provider. */
+  const credPrefill = (
+    cfg: StorageConfig | null,
+    provider: "s3" | "dropbox",
+  ): Record<string, string> => {
+    if (!cfg || cfg.provider !== provider) return {};
+    return cfg.provider === "s3"
+      ? { "access-key": cfg.access, "secret-key": cfg.secret }
+      : { "bearer-token": cfg.accessToken, "refresh-token": cfg.refreshToken };
+  };
+
   const tabs: Record<"s3" | "dropbox", HTMLButtonElement> = {
     s3: document.getElementById("prov-s3") as HTMLButtonElement,
     dropbox: document.getElementById("prov-dropbox") as HTMLButtonElement,
@@ -913,14 +1119,30 @@ async function boot() {
     // app regions. (The strip's COLOUR never changed — it is the anchor.)
     setChromeContext(null);
     region.style.removeProperty("--component-color");
+    // The credential fields are PER-SESSION chrome state: when the
+    // dialog's panel goes, so do the held values. (Durable persistence
+    // of the full config in localStorage is unchanged.)
+    clearCredentials();
   };
 
   const finishPanel = (outcome: string) => {
+    // Merge BEFORE teardown: teardown clears chrome's per-session
+    // credential state, so the values have to be taken out first.
+    let cfg: StorageConfig | null = null;
+    let parseError: unknown = null;
+    if (outcome !== "") {
+      try {
+        cfg = withCredentials(JSON.parse(outcome) as StorageConfig);
+      } catch (e) {
+        parseError = e;
+      }
+    }
     teardownPanel();
     dialog.close();
     if (outcome === "") return; // some("") = cancelled
     try {
-      const cfg = JSON.parse(outcome) as StorageConfig;
+      if (parseError) throw parseError;
+      if (!cfg) return;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
       if (bucketReady) {
         tablet.status("storage changed — reload the page to reconfigure");
@@ -999,9 +1221,18 @@ async function boot() {
         .catch((e) => console.warn(`[panel] event: ${err(e)}`));
     };
     const stored = loadStorage();
-    const seedJson = stored && stored.provider === provider ? JSON.stringify(stored) : "";
+    // The panel is seeded with a REDACTED copy: its own public fields
+    // only. Chrome's fields get the secrets (#22).
+    const seedJson = stored && stored.provider === provider
+      ? JSON.stringify(redactForPanel(stored))
+      : "";
     await runner.call(() => panel.seed(seedJson));
     await runner.call(() => panel.run());
+    if (generation !== panelGeneration) return;
+    // The panel DECLARES its credential kinds; chrome renders them.
+    const needs = await runner.call(() => panel.credentialNeeds());
+    if (generation !== panelGeneration) return;
+    renderCredentials(needs ?? [], credPrefill(stored, provider));
   };
 
   // <dialog> closes natively on ESC, which used to leave the component
@@ -1047,6 +1278,15 @@ async function boot() {
     active.runner.call(() => active.panel.commit())
       .then((out) => {
         if (out === undefined || out === "") return;
+        // The panel said its (secret-free) half is valid. Chrome now
+        // judges ITS OWN fields, and says so in its own pixels — the
+        // panel is not told which credential is missing.
+        const missing = missingCredential();
+        if (missing !== null) {
+          credReason.textContent = `${missing} is required`;
+          return;
+        }
+        credReason.textContent = "";
         finishPanel(out);
       })
       .catch((e) => console.warn(`[panel] commit: ${err(e)}`));

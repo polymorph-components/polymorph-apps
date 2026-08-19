@@ -104,6 +104,40 @@
     .chrome-actions .chrome-note { max-width: 26em; line-height: 1.35; }
     #storage-dialog form { display: flex; justify-content: flex-end;
                            padding: .3em .9em .8em; margin: 0; }
+
+    /* --- Mobile geometry fixes (<=480px). Narrow-viewport layout only;
+       does not touch the >=900px desktop rules above. The strip's real
+       height budget and safe-area insets (notches) are an open #22
+       question, not attempted here — this just stops horizontal
+       overflow and keeps the strip/controls/dialog usable on a phone. */
+    @media (max-width: 480px) {
+      #chrome-strip { flex-wrap: wrap; row-gap: .3em; }
+      /* The persistent rule line is a wide-screen affordance; at this
+         width the appearance button and swatches must stay on-screen
+         instead, so the rule text is dropped rather than wrapped. */
+      #chrome-rule { display: none; }
+      #chrome-context { min-width: 0; flex: 1 1 auto; }
+      #chrome-context q.foreign { max-width: 10em; }
+
+      #controls { flex-wrap: wrap; gap: .5em; padding: .5em .6em; font-size: 12px; }
+      #controls button { padding: .25em .6em; font-size: 12px; }
+      /* Long explainer text drops to a small full-width row below the
+         buttons rather than fighting them for space. */
+      .controls-note { margin-left: 0 !important; font-size: 10px !important;
+                        flex: 1 1 100%; }
+
+      #storage-dialog { min-width: min(30em, calc(100vw - 2em));
+                         max-width: calc(100vw - 2em); }
+      .provider-tabs { flex-wrap: wrap; }
+      .chrome-actions { flex-wrap: wrap; }
+      .chrome-actions .chrome-note { max-width: 100%; }
+    }
+
+    /* Explainer span is hidden entirely below 400px: at that width even
+       a full-width 10px row competes too much with the buttons above. */
+    @media (max-width: 400px) {
+      .controls-note { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -124,7 +158,7 @@
     <label><input type="checkbox" id="bucket-auto"> auto (4s)</label>
     <button id="bob-pull" disabled>Bob: bucket pull</button>
     <button id="revoke-bob">Revoke Bob</button>
-    <span style="margin-left:auto; font-size:11px">
+    <span class="controls-note" style="margin-left:auto; font-size:11px">
       alice⇄bob: live (public iroh relay) · tablet: your bucket only · bob can also try the bucket — revocation shows the pull tier · all E2E-encrypted
     </span>
   </div>

@@ -144,21 +144,33 @@ world demo-app {
   export poll: async func() -> bool;
 }
 
+/// The fixed credential vocabulary (#22): a panel may REQUEST credential
+/// kinds; chrome renders the fields itself, outside the granted region,
+/// with chrome's own labels — never a panel-supplied string, so a panel
+/// cannot make chrome's pixels ask for "your Dropbox password". Values
+/// never enter the panel.
+interface credentials {
+  enum credential-kind {
+    access-key,
+    secret-key,
+    bearer-token,
+    refresh-token,
+  }
+}
+
 /// Chrome-brokered OAuth (#22 × #7): navigation and redirect handling are
 /// CHROME capabilities — a sandboxed panel cannot open popups or follow
 /// redirects, and must not see the authorization ceremony at all. The
 /// panel names the provider client it wants authorized; chrome runs the
 /// provider's PKCE dance outside the sandbox and returns only the
-/// resulting tokens. (In the framework this is a powerbox flow: the
-/// dialog chrome shows WHAT is being authorized; the panel receives the
-/// capability, never the ceremony.)
+/// resulting tokens — and it KEEPS them: they are deposited into chrome's
+/// own credential fields (see `credentials`), never handed back across
+/// the boundary, so the panel learns only success/failure. (In the
+/// framework this is a powerbox flow: the dialog chrome shows WHAT is
+/// being authorized and holds the resulting capability; the panel never
+/// sees the ceremony or its spoils.)
 interface oauth-broker {
-  record tokens {
-    access-token: string,
-    refresh-token: string,
-  }
-
-  authorize: async func(client-id: string) -> result<tokens, string>;
+  authorize: async func(client-id: string) -> result<_, string>;
 }
 
 /// Storage-provider config panels (#19 × #22). The #22 provisional
@@ -189,11 +201,15 @@ world s3-panel {
   import shell;
 
   use events.{event};
+  use credentials.{credential-kind};
 
   export seed: async func(config: string);
   export run: async func();
   export on-event: async func(ev: event);
   export outcome: async func() -> option<string>;
+
+  /// Declared once after `run`; chrome renders these in its own pixels.
+  export credential-needs: func() -> list<credential-kind>;
 
   /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its
@@ -215,11 +231,15 @@ world dropbox-panel {
   import polymorph:fetchspike/fetch@0.1.0;
 
   use events.{event};
+  use credentials.{credential-kind};
 
   export seed: async func(config: string);
   export run: async func();
   export on-event: async func(ev: event);
   export outcome: async func() -> option<string>;
+
+  /// Declared once after `run`; chrome renders these in its own pixels.
+  export credential-needs: func() -> list<credential-kind>;
 
   /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its
