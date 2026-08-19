@@ -25,7 +25,7 @@ bad() {
 # that could read it could impersonate the user's trust in itself; a
 # component that could influence it could put attacker-chosen words into
 # chrome's own voice. So it must not appear anywhere on the seam.
-echo "[1/4] petname never crosses the frame seam"
+echo "[1/5] petname never crosses the frame seam"
 echo "      (chrome's word for a component is never readable or influenceable by it)"
 hits=$(grep -n "petname" host/frame-backend.ts host/frame.ts web/frame.html 2>/dev/null)
 if [ -n "$hits" ]; then
@@ -42,7 +42,7 @@ fi
 # chrome's authority. The ONLY admissible occurrence is the bare token
 # "password" as an input-masking type — never inside a sentence.
 # Comments are exempt: they explain the rule rather than render it.
-echo "[2/4] chrome never renders the word \"password\""
+echo "[2/5] chrome never renders the word \"password\""
 echo "      (chrome's labels are chrome's own; a panel must never borrow them)"
 prose=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' host/demo.ts |
   grep -oiE '"[^"]*password[^"]*"' | grep -vx '"password"')
@@ -69,7 +69,7 @@ fi
 # that ever gained a style attribute (or a class resolving the variable)
 # could paint chrome's exact colour without reading it. Scope keeps the
 # secrecy structural instead of a property of the allowlist.
-echo "[3/4] the anchor colour is never made ambient"
+echo "[3/5] the anchor colour is never made ambient"
 echo "      (--chrome-bg is scoped to chrome's own elements; inheriting it would disclose it)"
 ambient=$(grep -nE '(documentElement|:root)[^\n]*--chrome-bg' host/*.ts 2>/dev/null)
 if [ -n "$ambient" ]; then
@@ -100,7 +100,7 @@ fi
 # Banning the verb outright from host code keeps the property one grep
 # wide instead of a review argument. Comments are exempt: they explain
 # the rule rather than perform it.
-echo "[4/4] chrome never exports a key"
+echo "[4/5] chrome never exports a key"
 echo "      (escrowed signing keys are non-extractable; nothing reads them back)"
 exported=$(grep -n "exportKey" host/*.ts 2>/dev/null |
   grep -vE "^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)")
@@ -109,6 +109,27 @@ if [ -n "$exported" ]; then
   printf '%s\n' "$exported" | sed 's/^/       /'
 else
   ok "no host/*.ts line calls exportKey"
+fi
+
+# --- (e) the user's identity never crosses the frame seam -------------------
+# The user's own name, their word for this device and the glyph on
+# chrome's button are rendered ONLY in chrome pixels. They are a second
+# thing an impersonating rectangle cannot reproduce — but only for as
+# long as a component cannot read them. A component that could would be
+# able to greet the user by name from inside its own rectangle, which is
+# precisely the impersonation the strip exists to make impossible; one
+# that could INFLUENCE them would be putting attacker-chosen words into
+# chrome's own voice on the anchor. So neither the storage key nor the
+# cluster's id may appear anywhere on the seam.
+echo "[5/5] the user's identity never crosses the frame seam"
+echo "      (name, device and icon are chrome pixels; no component may read or steer them)"
+idhits=$(grep -n "pm-demo-identity\|chrome-identity" \
+  host/frame.ts host/frame-backend.ts web/frame.html 2>/dev/null)
+if [ -n "$idhits" ]; then
+  bad "the chrome identity record appears on the frame seam:"
+  printf '%s\n' "$idhits" | sed 's/^/       /'
+else
+  ok "no identity reference in host/frame.ts, host/frame-backend.ts, web/frame.html"
 fi
 
 echo

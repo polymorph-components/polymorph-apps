@@ -131,6 +131,13 @@ function chromeHue(): { hue: number; fresh: boolean } {
   return { hue, fresh: true };
 }
 
+/** The hue currently COMMITTED as the user's anchor colour — as opposed
+ * to a live preview the settings sheet is painting. `applyChromeHue`
+ * paints; this is set only where the choice is persisted, so a Cancel
+ * has something truthful to revert to even in a browser where storage
+ * is unavailable (and `chromeHue` would otherwise re-roll). */
+let committedHue = CHROME_HUES[0];
+
 function applyChromeHue(hue: number) {
   // Scoped to the strip ELEMENT and to the credential drawer (the only
   // other surface chrome paints in the user's own colour), never to
@@ -148,8 +155,88 @@ function applyChromeHue(hue: number) {
   }
 }
 
-// Surface marks: the recognition colour chrome shows for a component is
-// ASSIGNED at first sight and stored in a trust record — never derived.
+// --- the identity record: the user's own words, in chrome's voice -------------
+//
+// The user's name for themselves, their word for THIS DEVICE, and the
+// glyph they chose for chrome's own button. All three are user-typed or
+// user-picked, and all three obey exactly the scoping discipline the
+// anchor colour obeys: they are rendered ONLY in chrome pixels (the
+// strip and the sheets that hang off it), never written to a :root
+// custom property, never passed to a panel, an engine, or across the
+// frame seam. Nothing in the surface API can carry them, and the
+// invariant check (e) in scripts/check-invariants.sh keeps it that way
+// by grepping the seam files.
+//
+// Why this is worth anything: it gives the anchor a second thing an
+// impersonating rectangle cannot reproduce. Position is primary, the
+// colour is secondary, and these are words an app can only guess at.
+//
+// NO FABRICATION. An unset field renders NOTHING — never "user", never
+// "this device". A default chrome invented would be a word chrome says
+// in its own voice that the user never wrote, which is the same
+// authority-lending mistake the petname/nickname split exists to
+// prevent.
+const IDENTITY_KEY = "pm-demo-identity";
+
+/** The button face is CHROME'S VOCABULARY, not free text. The record
+ * lives in localStorage, so it is hand-editable; if the face were an
+ * arbitrary string, a record edited to say "Verified" or "polymorph"
+ * would put attacker- (or accident-) chosen WORDS into the anchor, in
+ * chrome's own voice, at the one position that is supposed to be
+ * unspoofable. A fixed glyph set has no such reading: anything outside
+ * it falls back to the default shield. */
+const CHROME_ICONS = ["⛨", "✶", "✦", "◆", "▲", "☘", "⚑", "✿", "☾", "⚙"];
+const DEFAULT_ICON = CHROME_ICONS[0];
+
+/** Cap for the user's own words on the strip. CSS ellipsis handles the
+ * visual overflow; this stops a hand-edited record from being long
+ * enough to matter in the first place. */
+const IDENTITY_MAX = 24;
+
+interface ChromeIdentity {
+  name?: string;
+  device?: string;
+  icon?: string;
+}
+
+function loadIdentity(): ChromeIdentity {
+  try {
+    const raw = JSON.parse(localStorage.getItem(IDENTITY_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object") return {};
+    const rec = raw as Record<string, unknown>;
+    const word = (v: unknown) =>
+      typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, IDENTITY_MAX) : undefined;
+    return {
+      name: word(rec.name),
+      device: word(rec.device),
+      // Out-of-vocabulary icons are dropped here rather than rendered;
+      // `identityIcon` supplies the default.
+      icon: typeof rec.icon === "string" && CHROME_ICONS.includes(rec.icon) ? rec.icon : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function saveIdentity(rec: ChromeIdentity): void {
+  // Empty fields are stored as ABSENT, not as "": unset must round-trip
+  // as unset, so the strip keeps rendering nothing for them.
+  const out: ChromeIdentity = {};
+  if (rec.name && rec.name.trim() !== "") out.name = rec.name.trim().slice(0, IDENTITY_MAX);
+  if (rec.device && rec.device.trim() !== "") out.device = rec.device.trim().slice(0, IDENTITY_MAX);
+  if (rec.icon && CHROME_ICONS.includes(rec.icon)) out.icon = rec.icon;
+  try {
+    localStorage.setItem(IDENTITY_KEY, JSON.stringify(out));
+  } catch { /* nothing durable to write to */ }
+}
+
+/** The glyph chrome's own button wears. Unknown/absent → the default
+ * shield (see CHROME_ICONS). */
+function identityIcon(rec: ChromeIdentity): string {
+  return rec.icon && CHROME_ICONS.includes(rec.icon) ? rec.icon : DEFAULT_ICON;
+}
+
+// Surface marks: the recognition colour chrome shows for a component is// ASSIGNED at first sight and stored in a trust record — never derived.
 //
 // Two derivations died here, both to the same attack: making CHROME'S
 // OWN STRIP vouch the wrong colour. Deriving from component bytes let an
@@ -567,18 +654,25 @@ const dropboxFetchImports = {
         outbound.push(["authorization", `Bearer ${bearer}`]);
       }
       const empty = method === "GET" || method === "HEAD" || body.length === 0;
-      const res = await fetch(url, {
-        method,
-        headers: outbound,
-        // Copy out of the guest's view before it crosses back (and the
-        // dom lib wants a plain ArrayBuffer, not a Uint8Array view).
-        body: empty ? undefined : body.buffer.slice(
-          body.byteOffset,
-          body.byteOffset + body.byteLength,
-        ) as ArrayBuffer,
-      });
-      const buf = new Uint8Array(await res.arrayBuffer());
-      return { status: res.status, body: buf };
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: outbound,
+          // Copy out of the guest's view before it crosses back (and the
+          // dom lib wants a plain ArrayBuffer, not a Uint8Array view).
+          body: empty ? undefined : body.buffer.slice(
+            body.byteOffset,
+            body.byteOffset + body.byteLength,
+          ) as ArrayBuffer,
+        });
+        const buf = new Uint8Array(await res.arrayBuffer());
+        return { status: res.status, body: buf };
+      } catch (e) {
+        // Same rule as the engine's storage seams: a panel is entitled to
+        // OBSERVE a failed request (it renders "check the endpoint"), and
+        // an unbranded throw out of this import would trap it instead.
+        witErr(`fetch: transport: ${err(e)}`);
+      }
     },
   },
 };
@@ -641,21 +735,42 @@ function requestOriginOf(url: string, tier: string): string {
 /** One outbound request. The body is copied out of the guest's view
  * before it crosses back, and the dom lib wants a plain ArrayBuffer. */
 async function sendRequest(
+  /** Which seam is speaking — the brand on a transport refusal, so the
+   * guest's error text names the import the call travelled through. */
+  tier: string,
   method: string,
   url: string,
   headers: Array<[string, string]>,
   body: Uint8Array,
 ): Promise<{ status: number; body: Uint8Array }> {
   const empty = method === "GET" || method === "HEAD" || body.length === 0;
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: empty ? undefined : body.buffer.slice(
-      body.byteOffset,
-      body.byteOffset + body.byteLength,
-    ) as ArrayBuffer,
-  });
-  return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: empty ? undefined : body.buffer.slice(
+        body.byteOffset,
+        body.byteOffset + body.byteLength,
+      ) as ArrayBuffer,
+    });
+    return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
+  } catch (e) {
+    // A NETWORK CONDITION IS A RESULT, NOT A TRAP. `fetch` rejects with a
+    // bare TypeError when the endpoint is down, DNS fails, CORS refuses
+    // or the body read is cut short — and an UNBRANDED throw out of a
+    // host import traps the component, killing an engine that was fully
+    // prepared to cope: the guest retries transport failures three times
+    // and labels them (`request_label`). Pre-retrofit the wasip3 http
+    // shim returned the err side here, and losing that turned "MinIO is
+    // not running" into a dead instance. So the throw is re-branded as
+    // the err side of `result<response, string>`, which is the guest's
+    // to handle.
+    //
+    // ONLY the transport call is wrapped. Origin refusals and the other
+    // named errors above are already branded and must keep their own
+    // words.
+    witErr(`${tier}: transport: ${err(e)}`);
+  }
 }
 
 const DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
@@ -693,7 +808,7 @@ function makeOwnerFetch(grant: EgressGrant): StoreFetch {
       witErr(`store-owner-fetch: origin not granted: ${target}`);
     }
     if (grant.provider === "s3") {
-      return await sendRequest(method, url, headers, body);
+      return await sendRequest("store-owner-fetch", method, url, headers, body);
     }
     const outbound = (token: string): Array<[string, string]> => {
       const h = headers.filter(([k]) => k.toLowerCase() !== "authorization");
@@ -704,7 +819,7 @@ function makeOwnerFetch(grant: EgressGrant): StoreFetch {
     if (bearer === "") {
       witErr("store-owner-fetch: no bearer token held for this instance");
     }
-    const first = await sendRequest(method, url, outbound(bearer), body);
+    const first = await sendRequest("store-owner-fetch", method, url, outbound(bearer), body);
     if (first.status !== 401 || !grant.refresh || !grant.appKey) return first;
     // TOKEN REFRESH IS THE SEAM'S BUSINESS NOW: the guest deleted its own
     // 401-refresh-retry along with the token it used to hold, so an
@@ -723,12 +838,24 @@ function makeOwnerFetch(grant: EgressGrant): StoreFetch {
       `grant_type=refresh_token&refresh_token=${formEncode(grant.refresh)}&client_id=${
         formEncode(grant.appKey)
       }`;
-    const res = await sendRequest(
-      "POST",
-      DROPBOX_TOKEN_URL,
-      [["content-type", "application/x-www-form-urlencoded"]],
-      new TextEncoder().encode(refreshBody),
-    );
+    // The refresh sub-request is transport too: a token endpoint that is
+    // unreachable must not trap the component either. It also must not
+    // REPLACE the answer the guest already has — an unreachable token
+    // endpoint is not news about the request that 401'd — so a transport
+    // failure here falls back to the honest 401, exactly like a non-200
+    // refresh response does.
+    let res: { status: number; body: Uint8Array };
+    try {
+      res = await sendRequest(
+        "store-owner-fetch: refresh",
+        "POST",
+        DROPBOX_TOKEN_URL,
+        [["content-type", "application/x-www-form-urlencoded"]],
+        new TextEncoder().encode(refreshBody),
+      );
+    } catch {
+      return first;
+    }
     if (res.status !== 200) return first;
     let fresh = "";
     try {
@@ -740,7 +867,7 @@ function makeOwnerFetch(grant: EgressGrant): StoreFetch {
     grant.bearer = fresh;
     onBearerRefreshed(fresh);
     // Exactly ONE retry: a second 401 is an answer, not a race.
-    return await sendRequest(method, url, outbound(fresh), body);
+    return await sendRequest("store-owner-fetch", method, url, outbound(fresh), body);
   };
 }
 
@@ -790,7 +917,7 @@ function makeSharedFetch(grant: EgressGrant): StoreFetch {
     // With nothing held, the request goes out unauthenticated and the
     // provider's refusal is honest — the same rule the owner shim's
     // missing-token path follows.
-    return await sendRequest(method, url, outbound, body);
+    return await sendRequest("store-shared-fetch", method, url, outbound, body);
   };
 }
 
@@ -816,6 +943,7 @@ function makePublicFetch(grant: EgressGrant): StoreFetch {
     // Dropbox link tier's redirect chain is tolerable here and would not
     // be on the owner tier.
     return await sendRequest(
+      "store-public-fetch",
       method,
       url,
       headers.filter(([k]) => k.toLowerCase() !== "authorization"),
@@ -1089,16 +1217,30 @@ interface SurfaceIdentity {
  * Called with null for "no secondary surface". The strip's own colour is
  * NOT touched here — it is the constant anchor; only the label changes.
  * `kind` says WHOSE pixels the secondary surface is: a component's
- * config panel, chrome's own credential sheet, or chrome's own naming
- * sheet. */
-let setChromeContext: (
-  surface: (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" }) | null,
-) => void = () => {};
+ * config panel, chrome's own credential sheet, chrome's own naming
+ * sheet, or chrome's own settings sheet. The last has no component
+ * behind it at all, which is why it is a bare `kind` rather than a
+ * surface. */
+type ChromeContext =
+  | (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" })
+  | { kind: "settings" }
+  | null;
+
+let setChromeContext: (surface: ChromeContext) => void = () => {};
 
 /** Chrome's naming ceremony, installed by `boot`. Module-level because
  * the strip's "name it" control is rendered by `initChrome`, which runs
  * before the drawer machinery exists. */
 let requestNaming: (surface: SurfaceIdentity) => void = () => {};
+
+/** Chrome's settings sheet, installed by `boot` for the same reason:
+ * the strip's settings button is rendered by `initChrome`, well before
+ * the drawer exists. */
+let requestSettings: () => void = () => {};
+
+/** Repaint the strip's identity cluster from the stored record.
+ * Installed by `initChrome`; called after the settings sheet commits. */
+let renderChromeIdentity: () => void = () => {};
 
 /** The user's word for a component, in CHROME'S voice: not quoted, not
  * monospaced, because the user wrote it and chrome is entitled to say
@@ -1122,10 +1264,53 @@ function nicknameQuote(nickname: string): HTMLElement {
 
 function initChrome() {
   const { hue, fresh } = chromeHue();
+  committedHue = hue;
   applyChromeHue(hue);
   const context = document.getElementById("chrome-context")!;
-  const swatches = document.getElementById("chrome-swatches")!;
-  const appearance = document.getElementById("chrome-appearance") as HTMLButtonElement;
+  const identityBox = document.getElementById("chrome-identity")!;
+
+  // THE IDENTITY CLUSTER, rebuilt from the record on every commit. Every
+  // word here is the user's own, said in chrome's voice (plain, full
+  // opacity) — and every word here stays inside chrome's pixels: nothing
+  // below is written to a custom property, handed to a panel, or put on
+  // the frame seam. Same discipline as `applyChromeHue`, for the same
+  // reason: an ambient value is a disclosed value.
+  renderChromeIdentity = () => {
+    const rec = loadIdentity();
+    identityBox.replaceChildren();
+    // textContent, never innerHTML: the record is hand-editable storage,
+    // so it is treated as data even though it is the user's own.
+    if (rec.name) {
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = rec.name.slice(0, IDENTITY_MAX);
+      identityBox.append(who);
+    }
+    // The separator belongs to the pair, so it appears only when there
+    // IS a pair — an unset field leaves no punctuation behind.
+    if (rec.name && rec.device) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "·";
+      identityBox.append(sep);
+    }
+    if (rec.device) {
+      const dev = document.createElement("span");
+      dev.className = "who";
+      dev.textContent = rec.device.slice(0, IDENTITY_MAX);
+      identityBox.append(dev);
+    }
+    const btn = document.createElement("button");
+    btn.id = "chrome-settings";
+    btn.type = "button";
+    // The face is a glyph from chrome's fixed vocabulary — never a
+    // string out of the record (see CHROME_ICONS).
+    btn.textContent = identityIcon(rec);
+    btn.title = "your chrome: name, device, colour";
+    btn.onclick = () => requestSettings();
+    identityBox.append(btn);
+  };
+  renderChromeIdentity();
 
   setChromeContext = (surface) => {
     context.replaceChildren();
@@ -1134,6 +1319,17 @@ function initChrome() {
       idle.className = "said";
       idle.textContent = "3 app regions · alice · bob · tablet";
       context.append(idle);
+      return;
+    }
+    // Chrome's own settings sheet: no component is involved, so there is
+    // no chip, no nickname and no petname — only chrome saying what the
+    // surface hanging off the bar is. The anchor and the sheet agree,
+    // exactly as they do for the other two tenants.
+    if (surface.kind === "settings") {
+      const said = document.createElement("span");
+      said.className = "said";
+      said.textContent = "chrome settings";
+      context.append(said);
       return;
     }
     const credentials = surface.kind === "credentials";
@@ -1214,26 +1410,12 @@ function initChrome() {
   };
   setChromeContext(null);
 
-  // Constrained customisation: same lightness and chroma for every
-  // choice, so contrast cannot be customised away.
-  appearance.onclick = () => {
-    if (swatches.classList.toggle("open")) {
-      swatches.replaceChildren();
-      for (const h of CHROME_HUES) {
-        const b = document.createElement("button");
-        b.style.background = `oklch(38% .07 ${h})`;
-        b.title = `hue ${h}`;
-        b.onclick = () => {
-          applyChromeHue(h);
-          try {
-            localStorage.setItem(CHROME_KEY, String(h));
-          } catch { /* not durable here */ }
-          swatches.classList.remove("open");
-        };
-        swatches.append(b);
-      }
-    }
-  };
+  // The colour picker used to live here, as a strip button plus an
+  // inline swatch row. It moved WHOLE into the settings sheet (same
+  // constrained palette, same fixed lightness/chroma, same storage key):
+  // the strip is the anchor, and an anchor with its own editing controls
+  // dangling off it is a busier target than one control that opens
+  // chrome's own surface.
   return { fresh };
 }
 
@@ -1983,14 +2165,38 @@ async function boot() {
    * closes. Paying the arming tax here would train users to click through
    * a delay that means something elsewhere, which is the real cost.
    *
-   * THE CREDENTIAL SESSION ALWAYS WINS: naming refuses to open while a
-   * credential sheet is up or arming, and an opening credential sheet
-   * evicts a naming sheet. Both sessions share `drawer`/`drawerInner`, so
-   * every deferred teardown below tests BOTH — a close timer from one
-   * session must never blank the other's sheet (the late-teardown
-   * ordering bug this file has hit before, in session-aware form). */
+   * THE CREDENTIAL SESSION ALWAYS WINS: the lightweight tenants refuse
+   * to open while a credential sheet is up or arming, and an opening
+   * credential sheet evicts either of them. All three sessions share
+   * `drawer`/`drawerInner`, so every deferred teardown below tests ALL
+   * THREE through `drawerOccupied` — a close timer from one session must
+   * never blank another's live sheet (the late-teardown ordering bug
+   * this file has hit before, in session-aware form). */
   let namingSession: { surface: SurfaceIdentity; hue: number } | null = null;
   let namingAnchor: (() => void) | null = null;
+
+  /** THE SETTINGS SESSION — the THIRD tenant, lightweight on the same
+   * grounds as naming: the reveal above the strip is kept (that is the
+   * unforgeable part), the arming delay, runner suspension and page dim
+   * are not. Nothing secret is typed here, it is opened from strip
+   * pixels no app can draw or reach, and a mis-tap costs the user a form
+   * they close. Arming here would tax a gesture that buys nothing and
+   * teach users to click through a delay that means something where it
+   * counts.
+   *
+   * `hueAtOpen` is the colour the anchor had when the sheet opened: the
+   * swatch row previews LIVE, so Cancel (and eviction) must be able to
+   * put the anchor back exactly as it was. */
+  let settingsSession: { hueAtOpen: number } | null = null;
+  let settingsAnchor: (() => void) | null = null;
+
+  /** ONE occupancy test for three tenants. Every deferred
+   * `drawer.hidden = true` below is gated on this rather than on its own
+   * session: the teardown is DRAWER-scoped work, so it must ask about
+   * the drawer, not about the session that scheduled it. Adding a fourth
+   * tenant is then one line here instead of an audit of every timer. */
+  const drawerOccupied = () =>
+    drawerSession !== null || namingSession !== null || settingsSession !== null;
 
   /** Persist and connect: identical to the pre-drawer commit tail, just
    * moved behind the sheet's Confirm. */
@@ -2023,10 +2229,10 @@ async function boot() {
     clearCredentials();
     credFields = credBinding = credWarning = credReason = null;
     setTimeout(() => {
-      // Session-aware, not drawer-scoped: a naming sheet may have claimed
-      // the drawer in the meantime, and blanking it here would erase a
-      // live sheet belonging to somebody else.
-      if (!drawerSession && !namingSession) {
+      // Occupancy-aware, not drawer-scoped: another tenant may have
+      // claimed the drawer in the meantime, and blanking it here would
+      // erase a live sheet belonging to somebody else.
+      if (!drawerOccupied()) {
         drawerInner.replaceChildren();
         drawer.hidden = true;
       }
@@ -2044,9 +2250,34 @@ async function boot() {
     drawerInner.style.height = "0px";
     if (context) setChromeContext(null);
     setTimeout(() => {
-      // Same session-aware test as the credential close: the credential
-      // sheet may have evicted this one and be live in the drawer now.
-      if (!namingSession && !drawerSession) {
+      // Same occupancy test as every other close: a credential sheet may
+      // have evicted this one and be live in the drawer now.
+      if (!drawerOccupied()) {
+        drawerInner.replaceChildren();
+        drawer.hidden = true;
+      }
+    }, ARM_MS);
+  };
+
+  /** Close the settings sheet. `commit` distinguishes Save (the previewed
+   * colour is the user's choice and stays) from every other exit —
+   * Cancel, or eviction by another tenant — which puts the anchor back to
+   * the colour it had at open. An uncommitted preview must not survive
+   * the sheet: the credential sheet that evicts this one is painted in
+   * the anchor colour, and it must be painted in the REAL one. */
+  const closeSettingsDrawer = (
+    { context = true, commit = false }: { context?: boolean; commit?: boolean } = {},
+  ) => {
+    const session = settingsSession;
+    if (!session) return;
+    settingsSession = null;
+    if (settingsAnchor) globalThis.removeEventListener("resize", settingsAnchor);
+    settingsAnchor = null;
+    if (!commit) applyChromeHue(session.hueAtOpen);
+    drawerInner.style.height = "0px";
+    if (context) setChromeContext(null);
+    setTimeout(() => {
+      if (!drawerOccupied()) {
         drawerInner.replaceChildren();
         drawer.hidden = true;
       }
@@ -2176,6 +2407,10 @@ async function boot() {
     // that is collecting (or about to accept) secrets is never displaced
     // by a naming ceremony.
     if (drawerSession) return;
+    // The two LIGHTWEIGHT tenants evict each other freely — neither holds
+    // anything a user would lose by a click on the strip. Closed without
+    // touching the strip context, which this sheet is about to claim.
+    if (settingsSession) closeSettingsDrawer({ context: false });
     if (namingSession) closeNamingDrawer({ context: false });
     const session = { surface, hue: surface.hue };
     namingSession = session;
@@ -2265,11 +2500,237 @@ async function boot() {
     built.input.focus();
   };
 
+  /** Chrome's settings sheet. EVERY string on it is chrome's own or the
+   * user's own — there is no component in this interaction at all, which
+   * makes it the only sheet with no foreign-quoted text anywhere. */
+  const buildSettingsSheet = (rec: ChromeIdentity, hueAtOpen: number) => {
+    const root = document.createElement("div");
+    // `.armed` from the start: there is no arming delay here (see
+    // settingsSession), so the button row must never be drawn dimmed for
+    // a wait that does not exist.
+    root.className = "cred-sheet settings-sheet armed";
+    root.style.maxWidth = "72rem"; // rem: aligns with the page's --content-max column
+    root.style.marginLeft = "auto";
+    root.style.marginRight = "auto";
+
+    const h = document.createElement("h2");
+    h.textContent = "Your chrome";
+
+    const lead = document.createElement("div");
+    lead.className = "cred-line said";
+    lead.textContent =
+      "these are yours: chrome says them in its own voice, and no component is ever told them";
+
+    // Both text fields are PREFILLED with the current value. That is the
+    // same exception the naming sheet makes for an existing petname: the
+    // prefill is the user's OWN prior word, not a self-declared name
+    // walking into chrome's voice by accept-the-default.
+    const mkField = (labelText: string, hint: string, value: string, id: string) => {
+      const field = document.createElement("div");
+      field.className = "cred-field";
+      const label = document.createElement("label");
+      label.textContent = labelText;
+      label.htmlFor = id;
+      const input = document.createElement("input");
+      input.id = id;
+      input.type = "text";
+      input.autocomplete = "off";
+      input.maxLength = IDENTITY_MAX;
+      input.value = value;
+      const hintEl = document.createElement("div");
+      hintEl.className = "hint";
+      hintEl.textContent = hint;
+      field.append(label, input, hintEl);
+      return { field, input };
+    };
+
+    const nameField = mkField(
+      "Your name",
+      "shown at the right of this bar — leave it empty and chrome shows nothing there",
+      rec.name ?? "",
+      "chrome-settings-name",
+    );
+    const deviceField = mkField(
+      "This device",
+      "your word for the machine you are on — e.g. laptop, study PC",
+      rec.device ?? "",
+      "chrome-settings-device",
+    );
+
+    // The icon row: chrome's fixed vocabulary, nothing else (see
+    // CHROME_ICONS — a free-text face could spoof words in chrome's
+    // voice at the one position that cannot be spoofed).
+    const iconLabel = document.createElement("div");
+    iconLabel.className = "cred-line said";
+    iconLabel.textContent = "chrome's mark on this bar";
+    const iconRow = document.createElement("div");
+    iconRow.className = "settings-icons";
+    let pickedIcon = identityIcon(rec);
+    const iconButtons: HTMLButtonElement[] = [];
+    for (const glyph of CHROME_ICONS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = glyph;
+      b.dataset.glyph = glyph;
+      b.title = `use ${glyph}`;
+      b.classList.toggle("picked", glyph === pickedIcon);
+      b.onclick = () => {
+        pickedIcon = glyph;
+        for (const other of iconButtons) other.classList.toggle("picked", other === b);
+      };
+      iconButtons.push(b);
+      iconRow.append(b);
+    }
+
+    // The colour row, moved here whole from the old strip picker.
+    // Constrained customisation: same lightness and chroma for every
+    // choice, so contrast can never be customised away.
+    const hueLabel = document.createElement("div");
+    hueLabel.className = "cred-line said";
+    hueLabel.textContent = "this bar's colour — yours, and never disclosed to an app";
+    const hueRow = document.createElement("div");
+    hueRow.className = "settings-hues";
+    let pickedHue = hueAtOpen;
+    const hueButtons: HTMLButtonElement[] = [];
+    for (const hue of CHROME_HUES) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.style.background = `oklch(38% .07 ${hue})`;
+      b.dataset.hue = String(hue);
+      b.title = `hue ${hue}`;
+      b.classList.toggle("picked", hue === hueAtOpen);
+      b.onclick = () => {
+        pickedHue = hue;
+        for (const other of hueButtons) other.classList.toggle("picked", other === b);
+        // LIVE PREVIEW: the strip and this sheet repaint immediately, so
+        // the user judges the anchor colour on the anchor rather than on
+        // a swatch. Nothing is ANNOUNCED for this: the announced-reset
+        // rule exists for changes the user did NOT make (a lost or
+        // evicted record), and telling someone about the change they are
+        // in the middle of making would devalue the announcement that
+        // matters. Save commits it; Cancel puts it back.
+        applyChromeHue(hue);
+      };
+      hueButtons.push(b);
+      hueRow.append(b);
+    }
+
+    const note = document.createElement("div");
+    note.className = "cred-note";
+    note.textContent =
+      "this sheet is chrome's, opened from the bar below it — a component cannot draw here, and none of this is ever given to one";
+
+    const row = document.createElement("div");
+    row.className = "cred-row";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    row.append(saveBtn, cancelBtn);
+
+    root.append(
+      h,
+      lead,
+      nameField.field,
+      deviceField.field,
+      iconLabel,
+      iconRow,
+      hueLabel,
+      hueRow,
+      note,
+      row,
+    );
+    return {
+      root,
+      nameInput: nameField.input,
+      deviceInput: deviceField.input,
+      saveBtn,
+      cancelBtn,
+      icon: () => pickedIcon,
+      hue: () => pickedHue,
+    };
+  };
+
+  const openSettingsDrawer = () => {
+    // Same precedence as naming: a sheet that is collecting (or about to
+    // accept) secrets is never displaced by chrome's own settings.
+    if (drawerSession) return;
+    if (namingSession) closeNamingDrawer({ context: false });
+    if (settingsSession) closeSettingsDrawer({ context: false });
+    // The committed colour: the anchor to revert to if this sheet does
+    // not end in Save. Read from `committedHue` rather than re-reading
+    // storage, so a live preview from an earlier (evicted) sheet can
+    // never be mistaken for the user's committed choice.
+    const hueAtOpen = committedHue;
+    const session = { hueAtOpen };
+    settingsSession = session;
+    drawer.hidden = false;
+    setChromeContext({ kind: "settings" });
+
+    const built = buildSettingsSheet(loadIdentity(), hueAtOpen);
+    drawerInner.replaceChildren(built.root);
+
+    built.saveBtn.onclick = () => {
+      if (settingsSession !== session) return;
+      saveIdentity({
+        name: built.nameInput.value,
+        device: built.deviceInput.value,
+        icon: built.icon(),
+      });
+      const hue = built.hue();
+      committedHue = hue;
+      applyChromeHue(hue);
+      try {
+        localStorage.setItem(CHROME_KEY, String(hue));
+      } catch { /* not durable here */ }
+      // The strip is repainted from the RECORD, not from the inputs, so
+      // what the bar shows is exactly what was persisted (clamping and
+      // the unset-is-absent rule included).
+      renderChromeIdentity();
+      closeSettingsDrawer({ commit: true });
+    };
+    built.cancelBtn.onclick = () => {
+      if (settingsSession !== session) return;
+      // commit:false — the live colour preview is reverted and the typed
+      // edits are simply dropped with the sheet.
+      closeSettingsDrawer();
+    };
+
+    // Same height budget as the other two sheets: the anchor must never
+    // be pushed off-screen by a sheet that hangs off it.
+    const fit = () => {
+      const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
+      drawer.style.setProperty(
+        "--chrome-sheet-max",
+        `${Math.max(0, globalThis.innerHeight - stripH)}px`,
+      );
+    };
+    const refit = () => {
+      fit();
+      if (settingsSession !== session) return;
+      drawerInner.style.height = "auto";
+      drawerInner.style.height = `${drawerInner.offsetHeight}px`;
+    };
+    fit();
+    settingsAnchor = refit;
+    globalThis.addEventListener("resize", refit);
+
+    drawerInner.style.height = "auto";
+    const target = drawerInner.offsetHeight;
+    drawerInner.style.height = "0px";
+    void drawerInner.offsetHeight;
+    drawerInner.style.height = `${target}px`;
+    // No arming delay (see settingsSession): focus goes straight to the
+    // first field, because there is nothing here a mis-tap could spend.
+    built.nameInput.focus();
+  };
+
   /** Build chrome's sheet. Every word here is chrome's; the only foreign
    * strings are the component's name and the destination origin, both
    * quoted, clamped and foreign-styled. */
-  const buildSheet = (session: NonNullable<typeof drawerSession>, needs: string[]) => {
-    const root = document.createElement("div");
+  const buildSheet = (session: NonNullable<typeof drawerSession>, needs: string[]) => {    const root = document.createElement("div");
     root.className = "cred-sheet";
     // The DRAWER spans the full window width (it hangs off the pinned
     // strip, which is full-width by construction — that is the anchor).
@@ -2362,10 +2823,11 @@ async function boot() {
   ) => {
     heldSigningKey = held;
     // The credential session takes the drawer from anything else holding
-    // it: naming is an interruptible convenience, secret entry is not.
-    // Closed WITHOUT touching the strip context, which this session is
-    // about to claim for itself.
+    // it: the lightweight tenants are interruptible conveniences, secret
+    // entry is not. Closed WITHOUT touching the strip context, which this
+    // session is about to claim for itself.
     if (namingSession) closeNamingDrawer({ context: false });
+    if (settingsSession) closeSettingsDrawer({ context: false });
     drawerSession = session;
     // NO COMPONENT SURFACE IS LIVE WHILE SECRETS ARE ON SCREEN: the panel
     // was torn down by the caller before this ran, and every remaining
@@ -2574,11 +3036,14 @@ async function boot() {
     // event/observer fires AFTER the handoff (the same late-teardown
     // ordering the retirement observer exists for), and resetting here
     // would blank the live sheet's line. Session-aware, not
-    // surface-scoped: BOTH tenants of the drawer must be tested.
+    // surface-scoped: ALL THREE tenants of the drawer must be tested, in
+    // the same precedence order the openers use.
     if (drawerSession) {
       setChromeContext({ ...drawerSession.surface, kind: "credentials" });
     } else if (namingSession) {
       setChromeContext({ ...namingSession.surface, kind: "naming" });
+    } else if (settingsSession) {
+      setChromeContext({ kind: "settings" });
     } else {
       setChromeContext(null);
     }
@@ -2766,10 +3231,28 @@ async function boot() {
     openNamingDrawer(surface);
   };
 
+  // Chrome's settings sheet, reachable ONLY from the strip's own button
+  // (rendered by renderChromeIdentity — chrome pixels, unreachable from
+  // any app rectangle).
+  requestSettings = () => {
+    // Same precedence as naming, enforced twice: here, so a click on the
+    // strip while secrets are up is a no-op, and again in the opener.
+    if (drawerSession) return;
+    // A modal <dialog> paints in the TOP LAYER, above the chrome zone and
+    // so above the sheet the strip would reveal — the same reason the
+    // naming ceremony takes the page back first.
+    if (dialog.open) {
+      teardownPanel();
+      dialog.close();
+    }
+    openSettingsDrawer();
+  };
+
   const openStorage = () => {
-    // The dialog would paint over the naming sheet (top layer); close it
-    // rather than leave a live sheet stranded behind a modal.
+    // The dialog would paint over either lightweight sheet (top layer);
+    // close them rather than leave a live sheet stranded behind a modal.
     closeNamingDrawer();
+    closeSettingsDrawer();
     dialogNote("");
     dialog.showModal();
     mountPanel(loadStorage()?.provider ?? "s3").catch((e) => {
@@ -3019,6 +3502,37 @@ async function boot() {
         (drawerInner.querySelector(".name-sheet .cred-reason") as HTMLElement | null)?.textContent ??
           "",
       marks: () => loadMarks(),
+    },
+    // Chrome's settings sheet, for driving — mirrors `naming`.
+    // `openSheet` CLICKS the strip's own button rather than calling the
+    // opener, so a driver exercises the same path a user does (chrome
+    // pixels, the only place this ceremony can start).
+    settings: {
+      open: () => settingsSession !== null,
+      openSheet: () =>
+        (document.getElementById("chrome-settings") as HTMLButtonElement | null)?.click(),
+      type: (field: "name" | "device", value: string) => {
+        const id = field === "name" ? "chrome-settings-name" : "chrome-settings-device";
+        const input = drawerInner.querySelector(`#${id}`) as HTMLInputElement | null;
+        if (input) input.value = value;
+      },
+      pickIcon: (glyph: string) =>
+        (drawerInner.querySelector(
+          `.settings-icons button[data-glyph="${glyph}"]`,
+        ) as HTMLButtonElement | null)?.click(),
+      pickHue: (hue: number) =>
+        (drawerInner.querySelector(
+          `.settings-hues button[data-hue="${hue}"]`,
+        ) as HTMLButtonElement | null)?.click(),
+      save: () =>
+        (drawerInner.querySelector(".settings-sheet .cred-row button:first-child") as
+          | HTMLButtonElement
+          | null)?.click(),
+      cancel: () =>
+        (drawerInner.querySelector(".settings-sheet .cred-row button:last-child") as
+          | HTMLButtonElement
+          | null)?.click(),
+      identity: () => loadIdentity(),
     },
   };
   say("ready — E2E-encrypted, three replicas, two sync paths");
