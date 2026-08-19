@@ -285,13 +285,19 @@ let heldCredential: (kind: string) => string = () => "";
 let boundDestination: string | null = null;
 
 /**
- * `polymorph:todomvc-spike/oauth-broker@0.0.1` — the PKCE ceremony runs
- * HERE, in chrome: a sandboxed panel can neither open a popup nor follow
- * a redirect, and must not see the ceremony at all. It names the client
- * it wants authorized; it receives only success or failure. The TOKENS
- * stay in chrome, deposited into chrome's own credential fields (#22) —
- * the powerbox shape: chrome shows what is authorized and holds the
- * resulting capability; the panel never touches it.
+ * The PKCE ceremony, run HERE, in chrome: a sandboxed panel can neither
+ * open a popup nor follow a redirect, and must not see the ceremony at
+ * all. The TOKENS stay in chrome, deposited straight into chrome's own
+ * credential fields (#22) — the powerbox shape: chrome shows what is
+ * authorized and holds the resulting capability; no panel touches it.
+ *
+ * NO PANEL CAN TRIGGER THIS ANY MORE. It is invoked from the Connect
+ * control chrome renders among the drawer's own fields, and `clientId`
+ * comes from the drawer's own App key input — never across the
+ * boundary. `oauth-broker` survives in the WIT as the recorded shape for
+ * future surfaces (its `authorize` now takes no parameter, for exactly
+ * this reason: the client identifier is chrome's), but the Dropbox
+ * panel's import is GONE — an unused capability is a wrong grant (#21).
  */
 async function authorize(clientId: string): Promise<void> {
   const verifierBytes = new Uint8Array(32);
@@ -524,6 +530,23 @@ const CREDENTIAL_VOCABULARY: Record<string, CredentialSpec> = {
     note: "from provider sign-in, or paste a developer token",
   },
   "refresh-token": { label: "Refresh token (optional)", type: "password", required: false },
+  // Provider-console identifiers. These are not secrets in the strict
+  // sense — an app key ships inside every copy of a public client, and a
+  // PKCE public client cannot use an app secret at all. They are here
+  // anyway, because the rule the user is being taught has to hold
+  // WITHOUT EXCEPTIONS: everything you paste out of a provider console
+  // is typed under your colored bar. A panel that could draw one field
+  // labelled "App secret" in its own pixels has already taught the user
+  // that mid-page secret-ish fields are normal, which is the entire
+  // phishing surface back again. Panels keep only provider-specific
+  // NON-secret config (S3: endpoint, bucket; Dropbox: root folder).
+  "app-key": {
+    label: "App key",
+    type: "text",
+    required: true,
+    note: "from the provider's app console",
+  },
+  "app-secret": { label: "App secret", type: "password", required: true },
 };
 
 interface Pane {
@@ -1210,6 +1233,11 @@ async function boot() {
     }
     return {
       ...cfg,
+      // The panel's blob carries `root` and nothing else; app key and app
+      // secret are chrome's fields now, merged in here like every other
+      // held value.
+      appKey: heldCredential("app-key"),
+      appSecret: heldCredential("app-secret"),
       accessToken: heldCredential("bearer-token"),
       refreshToken: heldCredential("refresh-token"),
     };
@@ -1220,7 +1248,12 @@ async function boot() {
    * one, and seeding is the one path that would otherwise hand it back. */
   const redactForPanel = (cfg: StorageConfig): Record<string, unknown> => {
     const copy = { ...cfg } as Record<string, unknown>;
-    for (const secret of ["access", "secret", "accessToken", "refreshToken"]) {
+    // appKey/appSecret join the strip list: the panel does not render
+    // them any more, so seeding them back would hand a component data it
+    // has no field for and no business holding.
+    for (
+      const secret of ["access", "secret", "accessToken", "refreshToken", "appKey", "appSecret"]
+    ) {
       delete copy[secret];
     }
     return copy;
@@ -1253,7 +1286,12 @@ async function boot() {
     return {
       prefill: cfg.provider === "s3"
         ? { "access-key": cfg.access, "secret-key": cfg.secret }
-        : { "bearer-token": cfg.accessToken, "refresh-token": cfg.refreshToken },
+        : {
+          "app-key": cfg.appKey,
+          "app-secret": cfg.appSecret,
+          "bearer-token": cfg.accessToken,
+          "refresh-token": cfg.refreshToken,
+        },
       mismatch: false,
     };
   };
@@ -1333,9 +1371,17 @@ async function boot() {
   /** Build chrome's sheet. Every word here is chrome's; the only foreign
    * strings are the component's name and the destination origin, both
    * quoted, clamped and foreign-styled. */
-  const buildSheet = (session: NonNullable<typeof drawerSession>) => {
+  const buildSheet = (session: NonNullable<typeof drawerSession>, needs: string[]) => {
     const root = document.createElement("div");
     root.className = "cred-sheet";
+    // The DRAWER spans the full window width (it hangs off the pinned
+    // strip, which is full-width by construction — that is the anchor).
+    // Its CONTENT is constrained to the same centered column the page
+    // uses, so the sheet's fields line up with everything else instead
+    // of stretching across a wide display.
+    root.style.maxWidth = "72rem"; // rem: aligns with the page's --content-max column
+    root.style.marginLeft = "auto";
+    root.style.marginRight = "auto";
 
     const h = document.createElement("h2");
     h.textContent = "Storage credentials";
@@ -1362,6 +1408,23 @@ async function boot() {
     credReason = document.createElement("div");
     credReason.className = "cred-reason";
 
+    // CHROME'S OWN SIGN-IN CONTROL. It appears only when this session
+    // actually needs both halves of the ceremony's inputs and outputs —
+    // an app key to authorize against, and a bearer token to deposit.
+    // It lives here rather than in the panel for the same reason the
+    // fields do: it acts on the app key, and the app key is chrome's.
+    // The panel cannot render it, cannot trigger it, and cannot observe
+    // it; it only ever sees a later `fetch` that already works.
+    let connectBtn: HTMLButtonElement | null = null;
+    const connectRow = document.createElement("div");
+    connectRow.className = "cred-connect";
+    if (needs.includes("app-key") && needs.includes("bearer-token")) {
+      connectBtn = document.createElement("button");
+      connectBtn.type = "button";
+      connectBtn.textContent = "Connect Dropbox (sign-in)";
+      connectRow.append(connectBtn);
+    }
+
     const note = document.createElement("div");
     note.className = "cred-note";
     note.textContent =
@@ -1375,8 +1438,10 @@ async function boot() {
     cancelBtn.textContent = "Cancel";
     row.append(confirmBtn, cancelBtn);
 
-    root.append(h, who, credBinding, credWarning, credFields, note, credReason, row);
-    return { root, confirmBtn, cancelBtn };
+    root.append(h, who, credBinding, credWarning, credFields);
+    if (connectBtn) root.append(connectRow);
+    root.append(note, credReason, row);
+    return { root, confirmBtn, cancelBtn, connectBtn };
   };
 
   const openCredentialDrawer = (
@@ -1397,7 +1462,7 @@ async function boot() {
     // always had (the anchor never changes colour per surface).
     setChromeContext({ ...session.surface, kind: "credentials" });
 
-    const { root, confirmBtn, cancelBtn } = buildSheet(session);
+    const { root, confirmBtn, cancelBtn, connectBtn } = buildSheet(session, needs);
     drawerInner.replaceChildren(root);
     const refused = renderCredentials(needs, prefill);
     if (mismatch) {
@@ -1420,6 +1485,36 @@ async function boot() {
       closeDrawer();
       persistAndConnect(full);
     };
+    if (connectBtn) {
+      const btn = connectBtn;
+      btn.onclick = async () => {
+        // The app key comes from THIS SHEET's own field, never from a
+        // panel: chrome authorizes against what the user typed under the
+        // bar, so nothing a component said can steer the ceremony.
+        const clientId = (credValues.get("app-key") ?? "").trim();
+        if (clientId === "") {
+          drawerNote("enter the App key first");
+          return;
+        }
+        // Re-entrancy: the popup + token exchange is a long await, and a
+        // second ceremony would race the deposit.
+        btn.disabled = true;
+        drawerNote("waiting for the provider's sign-in window…");
+        try {
+          await authorize(clientId);
+          // The sheet may have been confirmed or cancelled while the
+          // popup was up; its held values are gone, so a late deposit
+          // must not be reported as this session's success.
+          if (drawerSession !== session) return;
+          drawerNote("signed in ✓ — the token fields above were filled by chrome");
+        } catch (e) {
+          if (drawerSession !== session) return;
+          drawerNote(`sign-in failed: ${err(e)}`);
+        } finally {
+          if (drawerSession === session) btn.disabled = false;
+        }
+      };
+    }
     cancelBtn.onclick = () => {
       // Nothing was persisted and nothing was released: the held config
       // and the held credentials both die here.
@@ -1444,6 +1539,10 @@ async function boot() {
     const controls: Array<HTMLButtonElement | HTMLInputElement> = [
       confirmBtn,
       cancelBtn,
+      // Chrome's sign-in control is armed by the SAME delay as the rest:
+      // it opens a provider window, which is exactly the sort of thing a
+      // baited mis-tap should not be able to reach.
+      ...(connectBtn ? [connectBtn] : []),
       ...credInputs.values(),
     ];
     for (const c of controls) c.disabled = true;
@@ -1579,11 +1678,12 @@ async function boot() {
     }
     const surface = createSurface(backend, () => "");
     // The capability profiles, side by side (#21): the S3 panel is PURE —
-    // surface only, no egress. The Dropbox panel additionally holds the
-    // broker and one host-scoped fetch.
+    // surface only, no egress. The Dropbox panel additionally holds
+    // exactly ONE host-scoped fetch. It used to hold the OAuth broker
+    // too; sign-in moved into chrome's drawer (where the app key is), so
+    // the grant went with it rather than lingering unused.
     const imports = provider === "s3" ? { ...surface.imports } : {
       ...surface.imports,
-      "polymorph:todomvc-spike/oauth-broker@0.0.1": { authorize },
       ...dropboxFetchImports,
     };
     const instance = await instantiate(

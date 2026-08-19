@@ -1,10 +1,18 @@
 //! Dropbox storage-provider config panel (#19 x #22): a sandboxed APP,
-//! never chrome. Unlike its S3 sibling this panel carries two granted
-//! capabilities — the OAuth broker (chrome runs the PKCE ceremony AND
-//! keeps the resulting tokens; this panel learns only success/failure)
-//! and a `fetch` import chrome scopes to `api.dropboxapi.com`. That import
-//! itself IS the per-destination network grant (the #21 egress-badge
-//! story) — this panel cannot reach any other host.
+//! never chrome. Unlike its S3 sibling this panel carries one granted
+//! capability: a `fetch` import chrome scopes to `api.dropboxapi.com`.
+//! That import itself IS the per-destination network grant (the #21
+//! egress-badge story) — this panel cannot reach any other host.
+//!
+//! It holds NO credential and NO provider-console identifier. App key
+//! and app secret moved to chrome's credential drawer with everything
+//! else the user pastes out of a provider console: a teachable rule with
+//! exceptions is not a teachable rule. What is left here is exactly the
+//! provider-specific NON-secret configuration — the root folder — plus
+//! a connection test that borrows chrome's injected bearer at the
+//! granted boundary. Sign-in is chrome's control now, rendered in the
+//! drawer next to the app-key field, so this panel no longer imports
+//! the OAuth broker at all (an unused capability is a wrong grant).
 //!
 //! Protocol (todomvc.wit:174-177): chrome calls `seed(config-json)` then
 //! `run()`; pumps `on-event`; polls `outcome()` after each event.
@@ -29,23 +37,21 @@ use bindings::*;
 use crate::polymorph::fetchspike::fetch;
 use crate::polymorph::todomvc_spike::dom::{create_element, Element};
 use crate::polymorph::todomvc_spike::events::{listen, EventKind};
-use crate::polymorph::todomvc_spike::oauth_broker;
 use crate::polymorph::todomvc_spike::shell;
 
 use serde::{Deserialize, Serialize};
 
-const TOK_APP_KEY: u32 = 1;
-const TOK_APP_SECRET: u32 = 2;
 const TOK_ROOT: u32 = 3;
-const TOK_CONNECT: u32 = 4;
 const TOK_TEST: u32 = 5;
-// No token fields: the access and refresh tokens are CHROME's fields
-// now (#22, `credential-needs` below). App key / app secret / root stay
-// here — they are public client identifiers and configuration, not
-// user credentials.
-// Save/Cancel are CHROME's affordances, outside this region (#22).
-// "Connect Dropbox" and "Test connection" stay here: they are
-// provider-specific actions, not the commit.
+// One field only. Access token, refresh token, app key and app secret
+// are all CHROME's fields (#22, `credential-needs` below); the root
+// folder is the only provider-specific NON-secret configuration this
+// panel owns.
+// Save/Cancel are CHROME's affordances, outside this region (#22), and
+// so is "Connect Dropbox (sign-in)" — the ceremony needs the app key,
+// which lives in chrome's sheet. "Test connection" stays: it is a
+// provider-specific action over this panel's own granted fetch, and it
+// carries no credential (chrome injects one at the boundary).
 
 const DEFAULT_ROOT: &str = "pm-demo";
 
@@ -55,10 +61,6 @@ const DESTINATION: &str = "https://api.dropboxapi.com";
 
 #[derive(Default, Deserialize, Serialize)]
 struct Seed {
-    #[serde(default, rename = "appKey")]
-    app_key: String,
-    #[serde(default, rename = "appSecret")]
-    app_secret: String,
     #[serde(default)]
     root: String,
 }
@@ -66,10 +68,6 @@ struct Seed {
 #[derive(Serialize)]
 struct SaveOutcome<'a> {
     provider: &'static str,
-    #[serde(rename = "appKey")]
-    app_key: &'a str,
-    #[serde(rename = "appSecret")]
-    app_secret: &'a str,
     root: &'a str,
 }
 
@@ -95,8 +93,6 @@ struct Ui {
 
 struct App {
     seed: Seed,
-    app_key: String,
-    app_secret: String,
     root: String,
     ui: Option<Ui>,
 }
@@ -104,8 +100,6 @@ struct App {
 thread_local! {
     static APP: RefCell<App> = RefCell::new(App {
         seed: Seed::default(),
-        app_key: String::new(),
-        app_secret: String::new(),
         root: String::new(),
         ui: None,
     });
@@ -121,11 +115,9 @@ fn el(tag: &str, class: &str) -> Element {
     e
 }
 
-/// Labeled text-input row. Only the PUBLIC parts of the configuration
-/// are drawn here — app key, app secret (the registered client's own
-/// identifiers) and the root folder. The access and refresh TOKENS are
-/// chrome's fields, outside this region: secrets must never be typed
-/// into component-drawn pixels (#22).
+/// Labeled text-input row. The root folder is the ONLY input this panel
+/// draws: every credential and every provider-console identifier is
+/// entered in chrome's sheet, outside this region (#22).
 fn field(root: &Element, label_text: &str, placeholder: &str, token: u32) -> Element {
     let row = el("div", "field");
     let label = el("label", "");
@@ -148,13 +140,11 @@ fn build(app: &mut App) {
     h1.set_text_content("Connect Dropbox");
     panel.append_child(&h1);
 
-    let app_key = field(&panel, "App key", "", TOK_APP_KEY);
-    let app_secret = field(&panel, "App secret", "", TOK_APP_SECRET);
     let root_field = field(&panel, "Root folder", DEFAULT_ROOT, TOK_ROOT);
 
     let creds = el("div", "hint");
     creds.set_text_content(
-        "credentials are entered in the chrome fields below — this panel never sees them",
+        "all credentials and identifiers are entered in the chrome sheet — this panel never sees them",
     );
     panel.append_child(&creds);
 
@@ -163,24 +153,16 @@ fn build(app: &mut App) {
     } else {
         app.seed.root.clone()
     };
-    app_key.set_value(&app.seed.app_key);
-    app_secret.set_value(&app.seed.app_secret);
     root_field.set_value(&seeded_root);
-    app.app_key = app.seed.app_key.clone();
-    app.app_secret = app.seed.app_secret.clone();
     app.root = seeded_root;
 
     let status = el("div", "status");
     panel.append_child(&status);
 
     let actions = el("div", "actions");
-    let connect = el("button", "");
-    connect.set_text_content("Connect Dropbox");
-    listen(&connect, EventKind::Click, TOK_CONNECT);
     let test = el("button", "");
     test.set_text_content("Test connection");
     listen(&test, EventKind::Click, TOK_TEST);
-    actions.append_child(&connect);
     actions.append_child(&test);
     panel.append_child(&actions);
 
@@ -192,29 +174,6 @@ fn build(app: &mut App) {
 fn set_status(app: &App, text: &str) {
     if let Some(ui) = &app.ui {
         ui.status.set_text_content(text);
-    }
-}
-
-async fn connect(app_key: String) {
-    if app_key.trim().is_empty() {
-        APP.with(|a| set_status(&a.borrow(), "enter the app key first"));
-        return;
-    }
-    // The broker returns unit: chrome ran the ceremony and chrome KEEPS
-    // the tokens, in its own credential fields. This panel learns only
-    // that authorization succeeded.
-    match oauth_broker::authorize(app_key.clone()).await {
-        Ok(()) => {
-            APP.with(|a| {
-                set_status(
-                    &a.borrow(),
-                    "authorized ✓ — tokens are held by chrome, not by this panel",
-                );
-            });
-        }
-        Err(e) => {
-            APP.with(|a| set_status(&a.borrow(), &format!("authorize failed: {e}")));
-        }
     }
 }
 
@@ -247,7 +206,8 @@ async fn test_connection() {
             format!("connected ✓ {who}")
         }
         Ok(resp) if resp.status == 401 => {
-            "test failed: no token held by chrome yet — Connect or paste one below".to_string()
+            "test failed: no token held by chrome yet — Connect or paste one in the chrome sheet"
+                .to_string()
         }
         Ok(resp) => {
             let body = String::from_utf8_lossy(&resp.body);
@@ -261,20 +221,19 @@ async fn test_connection() {
 
 /// Chrome asks for the configuration when the user presses ITS Save.
 /// `None` = not valid yet, with the reason rendered in this region.
+///
+/// There is nothing left here to refuse over: the app key and app secret
+/// this used to validate are chrome's fields now, and REQUIREDNESS OF A
+/// CREDENTIAL IS CHROME'S RULE, judged by kind in chrome's own pixels
+/// (see `credential-needs`). The root folder simply defaults.
 fn commit_config(app: &mut App) -> Option<String> {
-    if app.app_key.trim().is_empty() || app.app_secret.trim().is_empty() {
-        set_status(app, "app key and app secret are required");
-        return None;
-    }
     let root = if app.root.trim().is_empty() {
         DEFAULT_ROOT.to_string()
     } else {
-        app.root.clone()
+        app.root.trim().to_string()
     };
     let out = SaveOutcome {
         provider: "dropbox",
-        app_key: &app.app_key,
-        app_secret: &app.app_secret,
         root: &root,
     };
     Some(serde_json::to_string(&out).expect("serialize outcome"))
@@ -282,13 +241,7 @@ fn commit_config(app: &mut App) -> Option<String> {
 
 async fn handle_event(ev: Event) {
     match ev.token {
-        TOK_APP_KEY => APP.with(|a| a.borrow_mut().app_key = ev.value.unwrap_or_default()),
-        TOK_APP_SECRET => APP.with(|a| a.borrow_mut().app_secret = ev.value.unwrap_or_default()),
         TOK_ROOT => APP.with(|a| a.borrow_mut().root = ev.value.unwrap_or_default()),
-        TOK_CONNECT => {
-            let app_key = APP.with(|a| a.borrow().app_key.clone());
-            connect(app_key).await;
-        }
         TOK_TEST => {
             test_connection().await;
         }
@@ -331,7 +284,12 @@ impl Guest for Component {
     /// renders these fields in its own pixels, outside this region, and
     /// the values never cross back into this component.
     fn credential_needs() -> Vec<CredentialKind> {
-        vec![CredentialKind::BearerToken, CredentialKind::RefreshToken]
+        vec![
+            CredentialKind::AppKey,
+            CredentialKind::AppSecret,
+            CredentialKind::BearerToken,
+            CredentialKind::RefreshToken,
+        ]
     }
 
     /// This panel's configuration always points at one place: the Dropbox

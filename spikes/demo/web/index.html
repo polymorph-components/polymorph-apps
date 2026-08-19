@@ -4,9 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>polymorph — end-to-end TodoMVC</title>
-  <link rel="stylesheet" href="./todomvc-app.css">
+  <!-- todomvc-app.css is loaded by frame.html INSIDE each app frame, not
+       here: on the top page it was dead weight with one live landmine —
+       its `body { max-width: 550px }` silently squeezed the whole desktop
+       page into a 550px column after the surfaces moved into frames. The
+       shell document styles only chrome. -->
   <style>
     body { margin: 0; background: #f5f5f5; font: 14px 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    :root { --content-max: 72rem; } /* rem, not em: em resolves per-bar font-size -> misaligned columns */
+    /* Wide-viewport centering: chrome bars keep full-bleed backgrounds,
+       but their content sits in a centered column. Each bar's own
+       flex/alignment rules move onto .bar-inner; the bar element itself
+       keeps only the vertical padding and background. */
+    .bar-inner { max-width: var(--content-max); margin: 0 auto; width: 100%;
+                 box-sizing: border-box; }
 
     /* THE CHROME STRIP (#22). The one region an app can never paint, so
        it is where identity lives. Its background is the user's own
@@ -21,11 +32,12 @@
        above the credential drawer, the dim layer and all page content —
        nothing an app draws can ever be painted over it. */
     #chrome-strip { position: sticky; top: 0; z-index: 30;
-                    display: flex; align-items: center; gap: .8em;
-                    padding: .45em .9em; font-size: 12px;
+                    padding: .45em 0; font-size: 12px;
                     background: var(--chrome-bg, oklch(38% .07 260));
                     color: var(--chrome-fg, #f2f4fb);
                     border-bottom: 1px solid rgba(0,0,0,.35); }
+    #chrome-strip .bar-inner { display: flex; align-items: center; gap: .8em;
+                               padding: 0 .9em; box-sizing: border-box; }
     #chrome-strip .mark { font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
     #chrome-context { display: flex; align-items: center; gap: .5em; min-width: 0; }
     #chrome-context .chip { width: .8em; height: .8em; border-radius: 2px;
@@ -131,10 +143,15 @@
     .cred-sheet .cred-row button:first-child { background: #fff; color: #17182b;
                                                border-color: #fff; font-weight: 600; }
 
-    #banner { padding: .6em 1em; background: #1a1a2e; color: #eee; font-size: 13px; }
-    #controls { padding: .5em 1em; background: #16213e; color: #ccc; display: flex; gap: 1em; align-items: center; }
+    #banner { padding: .6em 0; background: #1a1a2e; color: #eee; font-size: 13px; }
+    #banner .bar-inner { padding: 0 1em; box-sizing: border-box; }
+    #controls { padding: .5em 0; background: #16213e; color: #ccc; }
+    #controls .bar-inner { display: flex; gap: 1em; align-items: center;
+                           padding: 0 1em; box-sizing: border-box; }
     #controls button { padding: .3em .8em; }
-    #panes { display: flex; gap: 12px; padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+    #panes { max-width: var(--content-max); margin: 0 auto; width: 100%;
+             box-sizing: border-box; display: flex; gap: 12px; padding: 12px;
+             align-items: flex-start; flex-wrap: wrap; justify-content: center; }
     .pane { flex: 1 1 340px; min-width: 320px; max-width: 560px; }
     .pane h2 { margin: 0 0 4px; font-size: 15px; color: #333; font-weight: 600; }
     .pane h2 small { color: #888; font-weight: 400; }
@@ -143,10 +160,6 @@
     .pane.revoked-mark h2 { color: #b03030; }
     #bob-pane.revoked { opacity: .75; }
     #bob-pane.revoked h2::after { content: " — revoked"; color: #b03030; }
-    .todoapp { margin: 0; }
-    .todoapp h1 { font-size: 40px; top: -40px; }
-    .new-todo, .edit { font-size: 18px; }
-    .todo-list li { font-size: 18px; }
 
     /* The storage dialog: chrome frame vs. sandboxed panel. The boundary
        is deliberately VISIBLE — #22's position-based trust says the user
@@ -197,7 +210,7 @@
        question, not attempted here — this just stops horizontal
        overflow and keeps the strip/controls/dialog usable on a phone. */
     @media (max-width: 480px) {
-      #chrome-strip { flex-wrap: wrap; row-gap: .3em; }
+      #chrome-strip .bar-inner { flex-wrap: wrap; row-gap: .3em; }
       /* The persistent rule line is a wide-screen affordance; at this
          width the appearance button and swatches must stay on-screen
          instead, so the rule text is dropped rather than wrapped. */
@@ -205,7 +218,8 @@
       #chrome-context { min-width: 0; flex: 1 1 auto; }
       #chrome-context q.foreign { max-width: 10em; }
 
-      #controls { flex-wrap: wrap; gap: .5em; padding: .5em .6em; font-size: 12px; }
+      #controls { padding: .5em 0; font-size: 12px; }
+      #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
       #controls button { padding: .25em .6em; font-size: 12px; }
       /* Long explainer text drops to a small full-width row below the
          buttons rather than fighting them for space. */
@@ -237,28 +251,32 @@
   <!-- Chrome strip: trusted shell pixels, always present, never a mount
        point for any component (#22). -->
   <div id="chrome-strip">
-    <span class="mark">⛨ polymorph</span>
-    <span id="chrome-context"></span>
-    <span class="spacer"></span>
-    <span id="chrome-rule">storage secrets are only entered in the sheet under this bar</span>
-    <button id="chrome-appearance" title="your chrome colour: randomised on first run, never visible to apps">appearance</button>
-    <span id="chrome-swatches"></span>
+    <div class="bar-inner">
+      <span class="mark">⛨ polymorph</span>
+      <span id="chrome-context"></span>
+      <span class="spacer"></span>
+      <span id="chrome-rule">storage secrets are only entered in the sheet under this bar</span>
+      <button id="chrome-appearance" title="your chrome colour: randomised on first run, never visible to apps">appearance</button>
+      <span id="chrome-swatches"></span>
+    </div>
   </div>
   <!-- The credential drawer and its dim layer. Chrome's own pixels: the
        sheet unfolds from beneath the pinned strip above, and no component
        surface is alive while it is open (the panel is torn down first). -->
   <div id="chrome-drawer" hidden><div id="chrome-drawer-inner"></div></div>
   <div id="chrome-dim" hidden></div>
-  <div id="banner">booting…</div>
+  <div id="banner"><div class="bar-inner">booting…</div></div>
   <div id="controls">
-    <button id="storage-open">Storage…</button>
-    <button id="bucket-sync" title="flush alice+tablet, pull tablet+alice">Sync via bucket</button>
-    <label><input type="checkbox" id="bucket-auto"> auto (4s)</label>
-    <button id="bob-pull" disabled>Bob: bucket pull</button>
-    <button id="revoke-bob">Revoke Bob</button>
-    <span class="controls-note" style="margin-left:auto; font-size:11px">
-      alice⇄bob: live (public iroh relay) · tablet: your bucket only · bob can also try the bucket — revocation shows the pull tier · all E2E-encrypted
-    </span>
+    <div class="bar-inner">
+      <button id="storage-open">Storage…</button>
+      <button id="bucket-sync" title="flush alice+tablet, pull tablet+alice">Sync via bucket</button>
+      <label><input type="checkbox" id="bucket-auto"> auto (4s)</label>
+      <button id="bob-pull" disabled>Bob: bucket pull</button>
+      <button id="revoke-bob">Revoke Bob</button>
+      <span class="controls-note" style="margin-left:auto; font-size:11px">
+        alice⇄bob: live (public iroh relay) · tablet: your bucket only · bob can also try the bucket — revocation shows the pull tier · all E2E-encrypted
+      </span>
+    </div>
   </div>
   <!-- Chrome owns this frame; the provider's panel is a component with
        its own grants, mounted into #panel-region (#22). -->
