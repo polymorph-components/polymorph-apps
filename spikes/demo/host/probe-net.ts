@@ -26,18 +26,26 @@ function originOf(url: string, tier: string): string {
 }
 
 async function send(
+  tier: string,
   method: string,
   url: string,
   headers: Array<[string, string]>,
   body: Uint8Array,
 ): Promise<{ status: number; body: Uint8Array }> {
   const empty = method === "GET" || method === "HEAD" || body.length === 0;
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: empty ? undefined : body.slice() as unknown as BodyInit,
-  });
-  return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: empty ? undefined : body.slice() as unknown as BodyInit,
+    });
+    return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
+  } catch (e) {
+    // The rig shares the browser seams' rule: a network condition is the
+    // err side of the result, never an unbranded throw (which would trap
+    // the component instead of feeding its retry loop).
+    refuse(`${tier}: transport: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 function hex(b: Uint8Array): string {
@@ -85,14 +93,20 @@ export function probeNet(endpoint: string, secret: string): EngineNet {
   const owner: StoreFetch = (method, url, headers, body) => {
     const target = originOf(url, "store-owner-fetch");
     if (target !== granted) refuse(`store-owner-fetch: origin not granted: ${target}`);
-    return send(method, url, headers, body);
+    return send("store-owner-fetch", method, url, headers, body);
   };
   const publicFetch: StoreFetch = (method, url, headers, body) => {
     const target = originOf(url, "store-public-fetch");
     if (target !== granted) refuse(`store-public-fetch: origin not granted: ${target}`);
     // Structural anonymity: nothing is injected and anything the guest
     // set is dropped.
-    return send(method, url, headers.filter(([k]) => k.toLowerCase() !== "authorization"), body);
+    return send(
+      "store-public-fetch",
+      method,
+      url,
+      headers.filter(([k]) => k.toLowerCase() !== "authorization"),
+      body,
+    );
   };
   // The rig's S3 endpoint has no app tier; the seam exists and says so.
   const shared: StoreFetch = () =>

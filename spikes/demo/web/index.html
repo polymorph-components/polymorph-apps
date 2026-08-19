@@ -41,7 +41,6 @@
                     border-bottom: 1px solid rgba(0,0,0,.35); }
     #chrome-strip .bar-inner { display: flex; align-items: center; gap: .8em;
                                padding: 0 .9em; box-sizing: border-box; }
-    #chrome-strip .mark { font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
     #chrome-context { display: flex; align-items: center; gap: .5em; min-width: 0; }
     #chrome-context .chip { width: .8em; height: .8em; border-radius: 2px;
                             border: 1px solid rgba(255,255,255,.5); flex: none; }
@@ -83,15 +82,32 @@
                              letter-spacing: .03em; white-space: nowrap; }
     #chrome-strip .spacer { flex: 1 1 auto; }
     #chrome-rule { opacity: .8; white-space: nowrap; }
-    #chrome-appearance { font: inherit; color: inherit; cursor: pointer;
-                         background: rgba(255,255,255,.12);
-                         border: 1px solid rgba(255,255,255,.3);
-                         border-radius: 3px; padding: .1em .5em; }
-    #chrome-swatches { display: none; gap: .3em; }
-    #chrome-swatches.open { display: flex; }
-    #chrome-swatches button { width: 1.1em; height: 1.1em; padding: 0;
-                              border-radius: 2px; cursor: pointer;
-                              border: 1px solid rgba(255,255,255,.55); }
+
+    /* THE IDENTITY CLUSTER (strip right). The user's own name and their
+       word for this device, spoken in CHROME'S voice — plain text, full
+       opacity, slightly heavier — because the user typed them. Same
+       contrast as the petname above: q.foreign means "a component said
+       this", this means "you said this". Nothing here is ever handed to
+       a component (see host/demo.ts's identity record), so the cluster
+       is a second thing an impersonating rectangle cannot reproduce: it
+       would have to guess words it can never read.
+
+       The old standalone "⛨ polymorph" brand mark is deliberately GONE.
+       The anchor's authority is its POSITION and the user's colour, not
+       a word — and a word is precisely the part an app CAN paint inside
+       its own rectangle. What sits here instead is a control: the
+       user's chosen glyph, opening chrome's settings sheet. */
+    #chrome-identity { display: flex; align-items: center; gap: .4em;
+                       min-width: 0; flex: none; }
+    #chrome-identity .who { font-weight: 600; letter-spacing: .01em;
+                            max-width: 12em; overflow: hidden;
+                            text-overflow: ellipsis; white-space: nowrap; }
+    #chrome-identity .sep { opacity: .55; }
+    #chrome-settings { font: inherit; color: inherit; cursor: pointer;
+                       background: rgba(255,255,255,.12);
+                       border: 1px solid rgba(255,255,255,.3);
+                       border-radius: 3px; padding: .1em .45em;
+                       line-height: 1.25; }
 
     /* --- the credential sheet (#22) --------------------------------------
        Credential entry lives on a surface only chrome can produce: a
@@ -234,6 +250,32 @@
                                              border: 1px solid rgba(255,160,160,.5); }
     .name-sheet .name-forget .hint { font-size: 10px; opacity: .75; }
 
+    /* --- the settings sheet ----------------------------------------------
+       THE THIRD TENANT of the same drawer, and lightweight for the same
+       reason the naming sheet is: the reveal above the strip is the
+       unforgeable part and is kept, but there is no arming delay, no
+       runner suspension and no dim. Nothing secret is typed here, the
+       sheet is opened from strip pixels an app can neither draw nor
+       reach, and the worst a mis-tap can do is open a form the user
+       closes. Paying the arming tax where it buys nothing would train
+       users to click through a delay that means something elsewhere —
+       which is the real cost. It ships `.armed` so the button row is
+       never dimmed for a delay that does not exist. */
+    .settings-sheet .settings-icons,
+    .settings-sheet .settings-hues { display: flex; gap: .35em; flex-wrap: wrap;
+                                     margin: .1em 0 .6em; }
+    .settings-sheet .settings-icons button { font: inherit; font-size: 14px;
+                                             width: 1.9em; height: 1.9em; padding: 0;
+                                             cursor: pointer; border-radius: 3px;
+                                             color: inherit; line-height: 1;
+                                             background: rgba(255,255,255,.1);
+                                             border: 1px solid rgba(255,255,255,.35); }
+    .settings-sheet .settings-hues button { width: 1.4em; height: 1.4em; padding: 0;
+                                            border-radius: 3px; cursor: pointer;
+                                            border: 1px solid rgba(255,255,255,.45); }
+    .settings-sheet .picked { outline: 2px solid #fff; outline-offset: 1px; }
+    .settings-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
+
     #banner { padding: .6em 0; background: #1a1a2e; color: #eee; font-size: 13px; }
     #banner .bar-inner { padding: 0 1em; box-sizing: border-box; }
     #controls { padding: .5em 0; background: #16213e; color: #ccc; }
@@ -303,12 +345,16 @@
     @media (max-width: 480px) {
       #chrome-strip .bar-inner { flex-wrap: wrap; row-gap: .3em; }
       /* The persistent rule line is a wide-screen affordance; at this
-         width the appearance button and swatches must stay on-screen
-         instead, so the rule text is dropped rather than wrapped. */
+         width the identity cluster must stay on-screen instead, so the
+         rule text is dropped rather than wrapped. */
       #chrome-rule { display: none; }
       #chrome-context { min-width: 0; flex: 1 1 auto; }
       #chrome-context q.foreign { max-width: 10em; }
       #chrome-context .petname { max-width: 8em; }
+      /* The cluster collapses to the settings button alone: the glyph is
+         the affordance, and the user's name/device words are a
+         convenience that a phone strip has no room for. */
+      #chrome-identity .who, #chrome-identity .sep { display: none; }
 
       #controls { padding: .5em 0; font-size: 12px; }
       #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
@@ -358,12 +404,15 @@
     <div id="chrome-drawer" hidden><div id="chrome-drawer-inner"></div></div>
     <div id="chrome-strip">
       <div class="bar-inner">
-        <span class="mark">⛨ polymorph</span>
         <span id="chrome-context"></span>
         <span class="spacer"></span>
         <span id="chrome-rule">storage secrets are only entered in the sheet this bar reveals above itself</span>
-        <button id="chrome-appearance" title="your chrome colour: randomised on first run, never visible to apps">appearance</button>
-        <span id="chrome-swatches"></span>
+        <span class="spacer"></span>
+        <!-- Filled by host/demo.ts from the identity record: the user's
+             own name and device word (rendered only when set — an unset
+             field is ABSENT, never a fabricated default), then chrome's
+             settings button wearing the glyph the user picked. -->
+        <span id="chrome-identity"></span>
       </div>
     </div>
   </div>
