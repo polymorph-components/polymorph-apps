@@ -285,13 +285,19 @@ let heldCredential: (kind: string) => string = () => "";
 let boundDestination: string | null = null;
 
 /**
- * `polymorph:todomvc-spike/oauth-broker@0.0.1` — the PKCE ceremony runs
- * HERE, in chrome: a sandboxed panel can neither open a popup nor follow
- * a redirect, and must not see the ceremony at all. It names the client
- * it wants authorized; it receives only success or failure. The TOKENS
- * stay in chrome, deposited into chrome's own credential fields (#22) —
- * the powerbox shape: chrome shows what is authorized and holds the
- * resulting capability; the panel never touches it.
+ * The PKCE ceremony, run HERE, in chrome: a sandboxed panel can neither
+ * open a popup nor follow a redirect, and must not see the ceremony at
+ * all. The TOKENS stay in chrome, deposited straight into chrome's own
+ * credential fields (#22) — the powerbox shape: chrome shows what is
+ * authorized and holds the resulting capability; no panel touches it.
+ *
+ * NO PANEL CAN TRIGGER THIS ANY MORE. It is invoked from the Connect
+ * control chrome renders among the drawer's own fields, and `clientId`
+ * comes from the drawer's own App key input — never across the
+ * boundary. `oauth-broker` survives in the WIT as the recorded shape for
+ * future surfaces (its `authorize` now takes no parameter, for exactly
+ * this reason: the client identifier is chrome's), but the Dropbox
+ * panel's import is GONE — an unused capability is a wrong grant (#21).
  */
 async function authorize(clientId: string): Promise<void> {
   const verifierBytes = new Uint8Array(32);
@@ -524,6 +530,23 @@ const CREDENTIAL_VOCABULARY: Record<string, CredentialSpec> = {
     note: "from provider sign-in, or paste a developer token",
   },
   "refresh-token": { label: "Refresh token (optional)", type: "password", required: false },
+  // Provider-console identifiers. These are not secrets in the strict
+  // sense — an app key ships inside every copy of a public client, and a
+  // PKCE public client cannot use an app secret at all. They are here
+  // anyway, because the rule the user is being taught has to hold
+  // WITHOUT EXCEPTIONS: everything you paste out of a provider console
+  // is typed under your colored bar. A panel that could draw one field
+  // labelled "App secret" in its own pixels has already taught the user
+  // that mid-page secret-ish fields are normal, which is the entire
+  // phishing surface back again. Panels keep only provider-specific
+  // NON-secret config (S3: endpoint, bucket; Dropbox: root folder).
+  "app-key": {
+    label: "App key",
+    type: "text",
+    required: true,
+    note: "from the provider's app console",
+  },
+  "app-secret": { label: "App secret", type: "password", required: true },
 };
 
 interface Pane {
@@ -726,7 +749,8 @@ async function boot() {
     const note = document.getElementById("chrome-rule")!;
     note.textContent = "new chrome colour set for this device — remember it";
     setTimeout(() => {
-      note.textContent = "storage secrets are only entered in the sheet under this bar";
+      note.textContent =
+        "storage secrets are only entered in the sheet this bar reveals above itself";
     }, 15000);
   }
 
@@ -1029,12 +1053,25 @@ async function boot() {
   // the dialog they sat mid-page between the sandboxed region and the
   // action row: chrome's pixels by construction, but not RECOGNISABLY so
   // — an app can draw that same rectangle, pixel for pixel, inside its
-  // own region. They now live on a sheet that unfolds from directly
-  // beneath the pinned strip, painted in the user's own anchor colour,
-  // with the panel already torn down and every remaining surface frozen
-  // and dimmed. Position is the anchor; the colour is the secondary one.
+  // own region. They now live on a sheet that unfolds ABOVE the pinned
+  // strip, painted in the user's own anchor colour, with the panel
+  // already torn down and every remaining surface frozen and dimmed.
+  //
+  // ABOVE, not below, and the distinction is the whole defence. A sheet
+  // BENEATH the strip is forgeable by adjacency: the strip floats over
+  // scrollable content, so an app frame can be scrolled flush to the
+  // strip's bottom edge and paint a counterfeit that appears attached to
+  // the real bar. The band ABOVE the strip is unreachable at every scroll
+  // offset — the strip is pinned to the viewport's top edge, so there is
+  // no position an app can occupy there. And the sheet ARRIVES by pushing
+  // the real strip down: an app can paint a sheet, but it cannot move
+  // chrome's bar, so the reveal motion is itself unforgeable. Position is
+  // the anchor, the motion is its proof, and the colour is secondary.
   const drawer = document.getElementById("chrome-drawer") as HTMLElement;
   const drawerInner = document.getElementById("chrome-drawer-inner") as HTMLElement;
+  /** The bar the sheet opens above — measured for the sheet's height
+   * budget, so the anchor can never be pushed off-screen. */
+  const strip = document.getElementById("chrome-strip") as HTMLElement | null;
   const dim = document.getElementById("chrome-dim") as HTMLElement;
   /** The dialog's own refusal line: the commit-time destination checks
    * fail while the dialog is still open and no sheet exists yet. */
@@ -1210,6 +1247,11 @@ async function boot() {
     }
     return {
       ...cfg,
+      // The panel's blob carries `root` and nothing else; app key and app
+      // secret are chrome's fields now, merged in here like every other
+      // held value.
+      appKey: heldCredential("app-key"),
+      appSecret: heldCredential("app-secret"),
       accessToken: heldCredential("bearer-token"),
       refreshToken: heldCredential("refresh-token"),
     };
@@ -1220,7 +1262,12 @@ async function boot() {
    * one, and seeding is the one path that would otherwise hand it back. */
   const redactForPanel = (cfg: StorageConfig): Record<string, unknown> => {
     const copy = { ...cfg } as Record<string, unknown>;
-    for (const secret of ["access", "secret", "accessToken", "refreshToken"]) {
+    // appKey/appSecret join the strip list: the panel does not render
+    // them any more, so seeding them back would hand a component data it
+    // has no field for and no business holding.
+    for (
+      const secret of ["access", "secret", "accessToken", "refreshToken", "appKey", "appSecret"]
+    ) {
       delete copy[secret];
     }
     return copy;
@@ -1253,7 +1300,12 @@ async function boot() {
     return {
       prefill: cfg.provider === "s3"
         ? { "access-key": cfg.access, "secret-key": cfg.secret }
-        : { "bearer-token": cfg.accessToken, "refresh-token": cfg.refreshToken },
+        : {
+          "app-key": cfg.appKey,
+          "app-secret": cfg.appSecret,
+          "bearer-token": cfg.accessToken,
+          "refresh-token": cfg.refreshToken,
+        },
       mismatch: false,
     };
   };
@@ -1289,7 +1341,7 @@ async function boot() {
     }
     | null = null;
   let armTimer = 0;
-  /** Re-anchoring listener for the open sheet, removed on close. */
+  /** Re-fitting listener for the open sheet, removed on close. */
   let drawerAnchor: (() => void) | null = null;
 
   /** Persist and connect: identical to the pre-drawer commit tail, just
@@ -1333,9 +1385,17 @@ async function boot() {
   /** Build chrome's sheet. Every word here is chrome's; the only foreign
    * strings are the component's name and the destination origin, both
    * quoted, clamped and foreign-styled. */
-  const buildSheet = (session: NonNullable<typeof drawerSession>) => {
+  const buildSheet = (session: NonNullable<typeof drawerSession>, needs: string[]) => {
     const root = document.createElement("div");
     root.className = "cred-sheet";
+    // The DRAWER spans the full window width (it hangs off the pinned
+    // strip, which is full-width by construction — that is the anchor).
+    // Its CONTENT is constrained to the same centered column the page
+    // uses, so the sheet's fields line up with everything else instead
+    // of stretching across a wide display.
+    root.style.maxWidth = "72rem"; // rem: aligns with the page's --content-max column
+    root.style.marginLeft = "auto";
+    root.style.marginRight = "auto";
 
     const h = document.createElement("h2");
     h.textContent = "Storage credentials";
@@ -1362,10 +1422,27 @@ async function boot() {
     credReason = document.createElement("div");
     credReason.className = "cred-reason";
 
+    // CHROME'S OWN SIGN-IN CONTROL. It appears only when this session
+    // actually needs both halves of the ceremony's inputs and outputs —
+    // an app key to authorize against, and a bearer token to deposit.
+    // It lives here rather than in the panel for the same reason the
+    // fields do: it acts on the app key, and the app key is chrome's.
+    // The panel cannot render it, cannot trigger it, and cannot observe
+    // it; it only ever sees a later `fetch` that already works.
+    let connectBtn: HTMLButtonElement | null = null;
+    const connectRow = document.createElement("div");
+    connectRow.className = "cred-connect";
+    if (needs.includes("app-key") && needs.includes("bearer-token")) {
+      connectBtn = document.createElement("button");
+      connectBtn.type = "button";
+      connectBtn.textContent = "Connect Dropbox (sign-in)";
+      connectRow.append(connectBtn);
+    }
+
     const note = document.createElement("div");
     note.className = "cred-note";
     note.textContent =
-      "secrets are only ever typed here, under your colored bar — every app surface is frozen and dimmed while this sheet is open";
+      "secrets are only ever typed here, in the space this bar just opened above itself — every app surface is frozen and dimmed while this sheet is open";
 
     const row = document.createElement("div");
     row.className = "cred-row";
@@ -1375,8 +1452,10 @@ async function boot() {
     cancelBtn.textContent = "Cancel";
     row.append(confirmBtn, cancelBtn);
 
-    root.append(h, who, credBinding, credWarning, credFields, note, credReason, row);
-    return { root, confirmBtn, cancelBtn };
+    root.append(h, who, credBinding, credWarning, credFields);
+    if (connectBtn) root.append(connectRow);
+    root.append(note, credReason, row);
+    return { root, confirmBtn, cancelBtn, connectBtn };
   };
 
   const openCredentialDrawer = (
@@ -1397,7 +1476,7 @@ async function boot() {
     // always had (the anchor never changes colour per surface).
     setChromeContext({ ...session.surface, kind: "credentials" });
 
-    const { root, confirmBtn, cancelBtn } = buildSheet(session);
+    const { root, confirmBtn, cancelBtn, connectBtn } = buildSheet(session, needs);
     drawerInner.replaceChildren(root);
     const refused = renderCredentials(needs, prefill);
     if (mismatch) {
@@ -1420,6 +1499,36 @@ async function boot() {
       closeDrawer();
       persistAndConnect(full);
     };
+    if (connectBtn) {
+      const btn = connectBtn;
+      btn.onclick = async () => {
+        // The app key comes from THIS SHEET's own field, never from a
+        // panel: chrome authorizes against what the user typed under the
+        // bar, so nothing a component said can steer the ceremony.
+        const clientId = (credValues.get("app-key") ?? "").trim();
+        if (clientId === "") {
+          drawerNote("enter the App key first");
+          return;
+        }
+        // Re-entrancy: the popup + token exchange is a long await, and a
+        // second ceremony would race the deposit.
+        btn.disabled = true;
+        drawerNote("waiting for the provider's sign-in window…");
+        try {
+          await authorize(clientId);
+          // The sheet may have been confirmed or cancelled while the
+          // popup was up; its held values are gone, so a late deposit
+          // must not be reported as this session's success.
+          if (drawerSession !== session) return;
+          drawerNote("signed in ✓ — the token fields above were filled by chrome");
+        } catch (e) {
+          if (drawerSession !== session) return;
+          drawerNote(`sign-in failed: ${err(e)}`);
+        } finally {
+          if (drawerSession === session) btn.disabled = false;
+        }
+      };
+    }
     cancelBtn.onclick = () => {
       // Nothing was persisted and nothing was released: the held config
       // and the held credentials both die here.
@@ -1427,29 +1536,51 @@ async function boot() {
       tablet.status("storage setup cancelled — nothing saved", true);
     };
 
-    // Hang the sheet off the pinned strip's measured bottom edge. The
-    // strip is sticky at top:0, so while the drawer is open this is the
-    // strip's height — measured rather than hardcoded because the strip
-    // wraps to two rows on a phone.
-    const anchorTo = () => {
-      const strip = document.getElementById("chrome-strip");
-      drawer.style.top = `${strip ? strip.getBoundingClientRect().bottom : 0}px`;
+    // Budget the sheet against the space it actually has. The sheet grows
+    // ABOVE the strip inside one sticky assembly, so a sheet taller than
+    // the viewport would push the strip off the bottom of the screen —
+    // losing the anchor at the exact moment a secret is on screen. The
+    // sheet is therefore capped at viewport-minus-strip and scrolls
+    // internally past that (see .cred-sheet's --chrome-sheet-max).
+    // Measured rather than hardcoded because the strip wraps to two rows
+    // on a phone, and re-measured on resize/rotation.
+    const fit = () => {
+      // ceil: a fractional strip height (it wraps to two rows on a phone)
+      // would otherwise leave the bar hanging a subpixel off the bottom.
+      const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
+      const budget = Math.max(0, globalThis.innerHeight - stripH);
+      drawer.style.setProperty("--chrome-sheet-max", `${budget}px`);
     };
-    anchorTo();
-    drawerAnchor = anchorTo;
-    globalThis.addEventListener("resize", anchorTo);
+    const refit = () => {
+      fit();
+      // The animated height is a pixel target, so it goes stale when the
+      // budget changes under it; re-measure at auto and retarget.
+      if (drawerSession !== session) return;
+      drawerInner.style.height = "auto";
+      const h = drawerInner.offsetHeight;
+      drawerInner.style.height = `${h}px`;
+    };
+    fit();
+    drawerAnchor = refit;
+    globalThis.addEventListener("resize", refit);
 
     // Disabled BEFORE the first frame, inputs included: a secret must not
     // be typeable into a sheet the user has not yet had time to see.
     const controls: Array<HTMLButtonElement | HTMLInputElement> = [
       confirmBtn,
       cancelBtn,
+      // Chrome's sign-in control is armed by the SAME delay as the rest:
+      // it opens a provider window, which is exactly the sort of thing a
+      // baited mis-tap should not be able to reach.
+      ...(connectBtn ? [connectBtn] : []),
       ...credInputs.values(),
     ];
     for (const c of controls) c.disabled = true;
 
-    // Animate 0 → the measured content height (see chrome.ts:84-90:
-    // scrollHeight misses flex-end top-overflow, so measure at auto).
+    // Animate 0 → the measured content height. One property drives the
+    // whole assembly: the sheet's growth pushes the strip down and the
+    // page content with it, on one curve (spikes/todomvc/host/chrome.ts:82-90
+    // — scrollHeight misses the flex-end top-overflow, so measure at auto).
     drawerInner.style.height = "auto";
     const target = drawerInner.offsetHeight;
     drawerInner.style.height = "0px";
@@ -1579,11 +1710,12 @@ async function boot() {
     }
     const surface = createSurface(backend, () => "");
     // The capability profiles, side by side (#21): the S3 panel is PURE —
-    // surface only, no egress. The Dropbox panel additionally holds the
-    // broker and one host-scoped fetch.
+    // surface only, no egress. The Dropbox panel additionally holds
+    // exactly ONE host-scoped fetch. It used to hold the OAuth broker
+    // too; sign-in moved into chrome's drawer (where the app key is), so
+    // the grant went with it rather than lingering unused.
     const imports = provider === "s3" ? { ...surface.imports } : {
       ...surface.imports,
-      "polymorph:todomvc-spike/oauth-broker@0.0.1": { authorize },
       ...dropboxFetchImports,
     };
     const instance = await instantiate(

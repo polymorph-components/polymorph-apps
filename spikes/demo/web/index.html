@@ -4,9 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>polymorph — end-to-end TodoMVC</title>
-  <link rel="stylesheet" href="./todomvc-app.css">
+  <!-- todomvc-app.css is loaded by frame.html INSIDE each app frame, not
+       here: on the top page it was dead weight with one live landmine —
+       its `body { max-width: 550px }` silently squeezed the whole desktop
+       page into a 550px column after the surfaces moved into frames. The
+       shell document styles only chrome. -->
   <style>
     body { margin: 0; background: #f5f5f5; font: 14px 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    :root { --content-max: 72rem; } /* rem, not em: em resolves per-bar font-size -> misaligned columns */
+    /* Wide-viewport centering: chrome bars keep full-bleed backgrounds,
+       but their content sits in a centered column. Each bar's own
+       flex/alignment rules move onto .bar-inner; the bar element itself
+       keeps only the vertical padding and background. */
+    .bar-inner { max-width: var(--content-max); margin: 0 auto; width: 100%;
+                 box-sizing: border-box; }
 
     /* THE CHROME STRIP (#22). The one region an app can never paint, so
        it is where identity lives. Its background is the user's own
@@ -17,15 +28,19 @@
        changes per component would stop being an anchor. */
     /* PINNED. An anchor that scrolls away is not an anchor: the strip
        must be on screen at the moment a secret is typed, which is only
-       guaranteed if it cannot leave the viewport. The z-index puts it
-       above the credential drawer, the dim layer and all page content —
-       nothing an app draws can ever be painted over it. */
-    #chrome-strip { position: sticky; top: 0; z-index: 30;
-                    display: flex; align-items: center; gap: .8em;
-                    padding: .45em .9em; font-size: 12px;
+       guaranteed if it cannot leave the viewport. Pinning now belongs to
+       #chrome-zone, the assembly that holds the sheet ABOVE the strip:
+       both must ride the same sticky box, or the sheet could be scrolled
+       away from the bar it hangs off. The zone's z-index puts the whole
+       assembly above the dim layer and all page content — nothing an app
+       draws can ever be painted over it. */
+    #chrome-zone { position: sticky; top: 0; z-index: 30; }
+    #chrome-strip { padding: .45em 0; font-size: 12px;
                     background: var(--chrome-bg, oklch(38% .07 260));
                     color: var(--chrome-fg, #f2f4fb);
                     border-bottom: 1px solid rgba(0,0,0,.35); }
+    #chrome-strip .bar-inner { display: flex; align-items: center; gap: .8em;
+                               padding: 0 .9em; box-sizing: border-box; }
     #chrome-strip .mark { font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
     #chrome-context { display: flex; align-items: center; gap: .5em; min-width: 0; }
     #chrome-context .chip { width: .8em; height: .8em; border-radius: 2px;
@@ -51,47 +66,80 @@
                               border-radius: 2px; cursor: pointer;
                               border: 1px solid rgba(255,255,255,.55); }
 
-    /* --- the credential drawer (#22) -------------------------------------
-       Credential entry lives on a surface only chrome can produce: a sheet
-       that unfolds from DIRECTLY BENEATH the pinned strip, full width, in
-       the user's own anchor colour. Mid-page fields inside a dialog were
-       indistinguishable from a pixel-perfect fake drawn inside an app's
-       own rectangle; this position is not forgeable, because an app can
-       neither paint the strip nor paint under it.
+    /* --- the credential sheet (#22) --------------------------------------
+       Credential entry lives on a surface only chrome can produce: a
+       sheet that unfolds ABOVE the pinned strip, full width, in the
+       user's own anchor colour, with the strip still fully visible
+       BELOW it.
 
-       Deliberately NOT a <dialog>: the top layer would fight the strip's
+       WHY ABOVE AND NOT BELOW. The first cut hung the sheet beneath the
+       strip, which is forgeable by ADJACENCY: the strip sits over
+       scrollable content, so an app frame can be scrolled flush against
+       the strip's bottom edge and paint a counterfeit sheet that looks
+       attached to the real bar. The space ABOVE the strip has no such
+       reachable position — at every scroll offset the strip is at the
+       viewport's top edge, so nothing but chrome's own pixels can ever
+       occupy the band above it. And the REVEAL ITSELF is unforgeable:
+       the sheet appears by pushing the real bar down, and an app cannot
+       move the real bar. A fake can draw a sheet; it cannot displace the
+       anchor. The open sheet is therefore bracketed — viewport edge
+       above, the user's coloured bar below.
+
+       The assembly is IN FLOW inside the sticky zone, not position:fixed:
+       one animated height drives the strip's descent and the page
+       content's descent together, rigidly glued (the todomvc chrome
+       spike settled on this after fr-interpolation proved nonlinear and
+       engine-varied — spikes/todomvc/host/chrome.ts:82-90).
+
+       Deliberately NOT a <dialog>: the top layer would fight the zone's
        stacking (a modal dialog paints above everything, including the
-       anchor the sheet is supposed to hang from), and this embedding's
-       dialog close events are unreliable — see README findings, and the
-       state-change retirement the storage dialog needs because of it.
-
-       The drawer is position:fixed rather than in flow so opening it does
-       not reflow the page underneath: while a secret is on screen the
-       whole page below is frozen (every runner paused) and dimmed, and it
-       should look frozen too. `top` is set from JS to the pinned strip's
-       measured bottom edge. */
-    #chrome-drawer { position: fixed; left: 0; right: 0; top: 0; z-index: 25;
-                     background: var(--chrome-bg, oklch(38% .07 260));
-                     color: var(--chrome-fg, #f2f4fb);
-                     box-shadow: 0 10px 26px rgba(0,0,0,.5); }
+       anchor the sheet is supposed to be bracketed by), and this
+       embedding's dialog close events are unreliable — see README
+       findings, and the state-change retirement the storage dialog needs
+       because of it. */
+    #chrome-drawer { background: var(--chrome-bg, oklch(38% .07 260));
+                     color: var(--chrome-fg, #f2f4fb); }
     #chrome-drawer[hidden] { display: none; }
+    /* Only while the sheet is up does the assembly cast onto the page and
+       does the strip grow a top edge: closed, the strip must look exactly
+       as it always has at the top of the viewport. */
+    #chrome-zone:has(#chrome-drawer:not([hidden])) {
+      box-shadow: 0 10px 26px rgba(0,0,0,.5);
+    }
+    #chrome-zone:has(#chrome-drawer:not([hidden])) #chrome-strip {
+      border-top: 1px solid rgba(255,255,255,.22);
+    }
     /* Pixel-height animation set from JS at open (0 → measured target):
        the same single-property curve the todomvc chrome spike settled on.
-       The ARMING DELAY is the setTimeout in demo.ts, never this
-       transition — reduced motion drops the animation and keeps the
-       delay. */
+       flex-end keeps the growing content glued to the sheet's BOTTOM edge
+       — i.e. to the strip's top edge — so the sheet unfurls upward out of
+       the bar rather than sliding down over the page. The ARMING DELAY is
+       the setTimeout in demo.ts, never this transition — reduced motion
+       drops the animation and keeps the delay. */
     #chrome-drawer-inner { height: 0; overflow: hidden;
+                           display: flex; flex-direction: column;
+                           justify-content: flex-end;
                            transition: height 700ms cubic-bezier(.2,.8,.2,1); }
     @media (prefers-reduced-motion: reduce) {
       #chrome-drawer-inner { transition: none; }
     }
-    /* The dim layer sits BETWEEN the page and the drawer: strip (30) and
-       drawer (25) above, every app surface below. */
+    /* The dim layer sits BETWEEN the page and the chrome assembly: the
+       zone (30) above, every app surface below. */
     #chrome-dim { position: fixed; inset: 0; z-index: 20;
                   background: rgba(6,8,16,.62); }
     #chrome-dim[hidden] { display: none; }
 
-    .cred-sheet { box-sizing: border-box; max-width: 34em; margin: 0 auto;
+    /* A sheet taller than the space above the strip would push the strip
+       off the bottom of the viewport — losing the anchor exactly when it
+       matters. It scrolls internally instead; --chrome-sheet-max is the
+       measured viewport-minus-strip budget, set from JS at open/resize.
+       `width:100%` is load-bearing now that the container is a flex
+       column: `margin:0 auto` is an AUTO cross-axis margin, which
+       suppresses the default stretch and would size the sheet to its
+       content instead of to the page's centered column. */
+    .cred-sheet { box-sizing: border-box; width: 100%; max-width: 34em; margin: 0 auto;
+                  max-height: var(--chrome-sheet-max, 80dvh); overflow-y: auto;
+                  flex-shrink: 0;
                   padding: .8em 1.1em 1.1em; font-size: 13px; line-height: 1.45; }
     .cred-sheet h2 { margin: 0 0 .35em; font-size: 15px; font-weight: 600; }
     .cred-sheet .cred-line { display: flex; align-items: baseline; gap: .4em;
@@ -131,10 +179,15 @@
     .cred-sheet .cred-row button:first-child { background: #fff; color: #17182b;
                                                border-color: #fff; font-weight: 600; }
 
-    #banner { padding: .6em 1em; background: #1a1a2e; color: #eee; font-size: 13px; }
-    #controls { padding: .5em 1em; background: #16213e; color: #ccc; display: flex; gap: 1em; align-items: center; }
+    #banner { padding: .6em 0; background: #1a1a2e; color: #eee; font-size: 13px; }
+    #banner .bar-inner { padding: 0 1em; box-sizing: border-box; }
+    #controls { padding: .5em 0; background: #16213e; color: #ccc; }
+    #controls .bar-inner { display: flex; gap: 1em; align-items: center;
+                           padding: 0 1em; box-sizing: border-box; }
     #controls button { padding: .3em .8em; }
-    #panes { display: flex; gap: 12px; padding: 12px; align-items: flex-start; flex-wrap: wrap; }
+    #panes { max-width: var(--content-max); margin: 0 auto; width: 100%;
+             box-sizing: border-box; display: flex; gap: 12px; padding: 12px;
+             align-items: flex-start; flex-wrap: wrap; justify-content: center; }
     .pane { flex: 1 1 340px; min-width: 320px; max-width: 560px; }
     .pane h2 { margin: 0 0 4px; font-size: 15px; color: #333; font-weight: 600; }
     .pane h2 small { color: #888; font-weight: 400; }
@@ -143,10 +196,6 @@
     .pane.revoked-mark h2 { color: #b03030; }
     #bob-pane.revoked { opacity: .75; }
     #bob-pane.revoked h2::after { content: " — revoked"; color: #b03030; }
-    .todoapp { margin: 0; }
-    .todoapp h1 { font-size: 40px; top: -40px; }
-    .new-todo, .edit { font-size: 18px; }
-    .todo-list li { font-size: 18px; }
 
     /* The storage dialog: chrome frame vs. sandboxed panel. The boundary
        is deliberately VISIBLE — #22's position-based trust says the user
@@ -197,7 +246,7 @@
        question, not attempted here — this just stops horizontal
        overflow and keeps the strip/controls/dialog usable on a phone. */
     @media (max-width: 480px) {
-      #chrome-strip { flex-wrap: wrap; row-gap: .3em; }
+      #chrome-strip .bar-inner { flex-wrap: wrap; row-gap: .3em; }
       /* The persistent rule line is a wide-screen affordance; at this
          width the appearance button and swatches must stay on-screen
          instead, so the rule text is dropped rather than wrapped. */
@@ -205,7 +254,8 @@
       #chrome-context { min-width: 0; flex: 1 1 auto; }
       #chrome-context q.foreign { max-width: 10em; }
 
-      #controls { flex-wrap: wrap; gap: .5em; padding: .5em .6em; font-size: 12px; }
+      #controls { padding: .5em 0; font-size: 12px; }
+      #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
       #controls button { padding: .25em .6em; font-size: 12px; }
       /* Long explainer text drops to a small full-width row below the
          buttons rather than fighting them for space. */
@@ -218,12 +268,16 @@
       .chrome-actions { flex-wrap: wrap; }
       .chrome-actions .chrome-note { max-width: 100%; }
 
-      /* The drawer is already full width; at phone width it just loses
-         its side padding and the button row stops sharing a line badly.
-         Fields are stacked and box-sized, so nothing overflows at 390px. */
+      /* The sheet is already full width; at phone width it just loses its
+         side padding and the button row stops sharing a line badly.
+         Fields are stacked and box-sized, so nothing overflows at 390px.
+         The strip must never be pushed off-screen by a tall sheet, so the
+         measured budget (--chrome-sheet-max) matters most here — a phone
+         viewport is short and the vocabulary fields are stacked. */
       .cred-sheet { padding: .7em .8em 1em; font-size: 13px; }
       .cred-sheet q.foreign { max-width: 100%; }
       .cred-sheet .cred-row { gap: .6em; }
+      .cred-sheet .cred-line { row-gap: .2em; }
     }
 
     /* Explainer span is hidden entirely below 400px: at that width even
@@ -234,31 +288,42 @@
   </style>
 </head>
 <body>
-  <!-- Chrome strip: trusted shell pixels, always present, never a mount
-       point for any component (#22). -->
-  <div id="chrome-strip">
-    <span class="mark">⛨ polymorph</span>
-    <span id="chrome-context"></span>
-    <span class="spacer"></span>
-    <span id="chrome-rule">storage secrets are only entered in the sheet under this bar</span>
-    <button id="chrome-appearance" title="your chrome colour: randomised on first run, never visible to apps">appearance</button>
-    <span id="chrome-swatches"></span>
+  <!-- The chrome assembly: one pinned box holding the credential sheet
+       ABOVE the strip. Trusted shell pixels, always present, never a
+       mount point for any component (#22). Opening the sheet pushes the
+       strip (and the page below it) down; the strip stays visible under
+       the sheet the whole time, so the sheet is bracketed by the viewport
+       edge above and the user's own coloured bar below — a position no
+       app can reach and a motion no app can imitate. -->
+  <div id="chrome-zone">
+    <!-- Chrome's own pixels: the sheet unfolds above the strip, and no
+         component surface is alive while it is open (the panel is torn
+         down first). -->
+    <div id="chrome-drawer" hidden><div id="chrome-drawer-inner"></div></div>
+    <div id="chrome-strip">
+      <div class="bar-inner">
+        <span class="mark">⛨ polymorph</span>
+        <span id="chrome-context"></span>
+        <span class="spacer"></span>
+        <span id="chrome-rule">storage secrets are only entered in the sheet this bar reveals above itself</span>
+        <button id="chrome-appearance" title="your chrome colour: randomised on first run, never visible to apps">appearance</button>
+        <span id="chrome-swatches"></span>
+      </div>
+    </div>
   </div>
-  <!-- The credential drawer and its dim layer. Chrome's own pixels: the
-       sheet unfolds from beneath the pinned strip above, and no component
-       surface is alive while it is open (the panel is torn down first). -->
-  <div id="chrome-drawer" hidden><div id="chrome-drawer-inner"></div></div>
   <div id="chrome-dim" hidden></div>
-  <div id="banner">booting…</div>
+  <div id="banner"><div class="bar-inner">booting…</div></div>
   <div id="controls">
-    <button id="storage-open">Storage…</button>
-    <button id="bucket-sync" title="flush alice+tablet, pull tablet+alice">Sync via bucket</button>
-    <label><input type="checkbox" id="bucket-auto"> auto (4s)</label>
-    <button id="bob-pull" disabled>Bob: bucket pull</button>
-    <button id="revoke-bob">Revoke Bob</button>
-    <span class="controls-note" style="margin-left:auto; font-size:11px">
-      alice⇄bob: live (public iroh relay) · tablet: your bucket only · bob can also try the bucket — revocation shows the pull tier · all E2E-encrypted
-    </span>
+    <div class="bar-inner">
+      <button id="storage-open">Storage…</button>
+      <button id="bucket-sync" title="flush alice+tablet, pull tablet+alice">Sync via bucket</button>
+      <label><input type="checkbox" id="bucket-auto"> auto (4s)</label>
+      <button id="bob-pull" disabled>Bob: bucket pull</button>
+      <button id="revoke-bob">Revoke Bob</button>
+      <span class="controls-note" style="margin-left:auto; font-size:11px">
+        alice⇄bob: live (public iroh relay) · tablet: your bucket only · bob can also try the bucket — revocation shows the pull tier · all E2E-encrypted
+      </span>
+    </div>
   </div>
   <!-- Chrome owns this frame; the provider's panel is a component with
        its own grants, mounted into #panel-region (#22). -->
@@ -276,8 +341,8 @@
          is an act of the shell rather than of the component (#22). -->
     <div class="chrome-actions">
       <span class="chrome-note">Sign-in opens a browser window showing the provider's address.
-        Secrets are never typed in this dialog — Save &amp; connect opens chrome's own
-        sheet under the coloured bar at the top of the page.</span>
+        Secrets are never typed in this dialog — Save &amp; connect makes the coloured
+        bar at the top of the page slide down and open chrome's own sheet above it.</span>
       <span class="spacer"></span>
       <button id="storage-save"><b>Save &amp; connect</b></button>
       <button id="storage-cancel">Cancel</button>
