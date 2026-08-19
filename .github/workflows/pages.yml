@@ -52,12 +52,16 @@ jobs:
         with:
           deno-version: "2.9.5"
 
-      - name: Set up siblings and tools
-        # Same script developers run: sibling ports pinned by commit, the
-        # toolchain from rust-toolchain.toml, wasm-tools/wac/just pinned.
-        run: ./scripts/setup.sh
+      - name: Check out pinned siblings
+        # Before the cache restore: rust-cache keys on the listed
+        # workspaces' lockfiles, and ../polymorph-iroh must exist to be
+        # keyed. This phase is cheap (blob-less clones, no cargo).
+        run: SIBLINGS_ONLY=1 ./scripts/setup.sh
 
       - name: Cache cargo
+        # Restored BEFORE any cargo work: setup.sh builds the sibling
+        # endpoint component, so the restore has to precede it, not just
+        # precede `just pages`.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -65,6 +69,32 @@ jobs:
             spikes/demo/guest-app
             spikes/demo/guest-panel-s3
             spikes/demo/guest-panel-dropbox
+            ../polymorph-iroh
+          # No registry pruning: the sibling workspace sits outside the
+          # repo, and its deps must survive the post-job save.
+          cache-all-crates: true
+          # Tools are binstalled in seconds; a cached bin/ would roll
+          # pinned tools back to whatever versions the cache holds.
+          cache-bin: false
+          # Sibling pins and tool versions live in setup.sh, the pinned
+          # compilers in rust-toolchain.toml; bumping either must rotate
+          # the key or stale target dirs get restored forever.
+          key: ${{ hashFiles('scripts/setup.sh', '**/rust-toolchain.toml') }}
+          # Save only on main: PR jobs restore but never save, so PR
+          # branches don't churn the cache entries every run depends on.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up tools and the endpoint component
+        # Same script developers run: the toolchain from
+        # rust-toolchain.toml, wasm-tools/wac/just binstalled at pinned
+        # versions, the sibling endpoint built. Siblings are already
+        # pinned; the phase above is idempotent under re-run.
+        run: ./scripts/setup.sh
+        # cargo-binstall resolves releases through api.github.com;
+        # unauthenticated requests share a 60/hour per-IP limit that pooled
+        # runner IPs exhaust. The token moves it to the per-token limit.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Build the demo site
         working-directory: spikes/demo
