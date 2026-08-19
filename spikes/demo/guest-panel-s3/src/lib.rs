@@ -33,8 +33,9 @@ const TOK_ENDPOINT: u32 = 1;
 const TOK_BUCKET: u32 = 2;
 const TOK_ACCESS: u32 = 3;
 const TOK_SECRET: u32 = 4;
-const TOK_SAVE: u32 = 5;
-const TOK_CANCEL: u32 = 6;
+// No save/cancel tokens: those affordances are CHROME's, rendered
+// outside this granted region (#22 — a panel that owns its own Save
+// button owns the user's sense of what saving means).
 
 #[derive(Default, Deserialize, Serialize)]
 struct Seed {
@@ -63,7 +64,8 @@ struct App {
     bucket: String,
     access: String,
     secret: String,
-    outcome: Option<String>,
+    /// Where the panel explains a refused commit, inside its own region.
+    status: Option<Element>,
 }
 
 thread_local! {
@@ -73,7 +75,7 @@ thread_local! {
         bucket: String::new(),
         access: String::new(),
         secret: String::new(),
-        outcome: None,
+        status: None,
     });
 }
 
@@ -133,25 +135,26 @@ fn build(app: &mut App) {
     app.access = app.seed.access.clone();
     app.secret = app.seed.secret.clone();
 
-    let actions = el("div", "actions");
-    let save = el("button", "");
-    save.set_text_content("Save & connect");
-    listen(&save, EventKind::Click, TOK_SAVE);
-    let cancel = el("button", "");
-    cancel.set_text_content("Cancel");
-    listen(&cancel, EventKind::Click, TOK_CANCEL);
-    actions.append_child(&save);
-    actions.append_child(&cancel);
-    panel.append_child(&actions);
+    let status = el("div", "status");
+    panel.append_child(&status);
+    app.status = Some(status);
 
     root.append_child(&panel);
 }
 
-fn try_save(app: &mut App) {
+/// Chrome asks for the configuration when the user presses ITS Save.
+/// `None` means "not valid yet" — the panel says why in its own region.
+fn commit_config(app: &mut App) -> Option<String> {
     let endpoint = app.endpoint.trim_end_matches('/').to_string();
     let bucket = app.bucket.trim().to_string();
     if endpoint.is_empty() || bucket.is_empty() {
-        return;
+        if let Some(status) = &app.status {
+            status.set_text_content("endpoint and bucket are required");
+        }
+        return None;
+    }
+    if let Some(status) = &app.status {
+        status.set_text_content("");
     }
     let out = SaveOutcome {
         provider: "s3",
@@ -160,7 +163,7 @@ fn try_save(app: &mut App) {
         access: &app.access,
         secret: &app.secret,
     };
-    app.outcome = Some(serde_json::to_string(&out).expect("serialize outcome"));
+    Some(serde_json::to_string(&out).expect("serialize outcome"))
 }
 
 fn handle_event(app: &mut App, ev: Event) {
@@ -169,8 +172,6 @@ fn handle_event(app: &mut App, ev: Event) {
         TOK_BUCKET => app.bucket = ev.value.unwrap_or_default(),
         TOK_ACCESS => app.access = ev.value.unwrap_or_default(),
         TOK_SECRET => app.secret = ev.value.unwrap_or_default(),
-        TOK_SAVE => try_save(app),
-        TOK_CANCEL => app.outcome = Some(String::new()),
         _ => {}
     }
 }
@@ -197,8 +198,13 @@ impl Guest for Component {
         APP.with(|a| handle_event(&mut a.borrow_mut(), ev));
     }
 
+    /// Chrome drives completion now; the panel never sets an outcome.
     async fn outcome() -> Option<String> {
-        APP.with(|a| a.borrow().outcome.clone())
+        None
+    }
+
+    async fn commit() -> Option<String> {
+        APP.with(|a| commit_config(&mut a.borrow_mut()))
     }
 }
 

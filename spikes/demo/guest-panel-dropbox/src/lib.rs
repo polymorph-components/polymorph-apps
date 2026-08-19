@@ -41,8 +41,9 @@ const TOK_ACCESS: u32 = 4;
 const TOK_REFRESH: u32 = 5;
 const TOK_CONNECT: u32 = 6;
 const TOK_TEST: u32 = 7;
-const TOK_SAVE: u32 = 8;
-const TOK_CANCEL: u32 = 9;
+// Save/Cancel are CHROME's affordances, outside this region (#22).
+// "Connect Dropbox" and "Test connection" stay here: they are
+// provider-specific actions, not the commit.
 
 const DEFAULT_ROOT: &str = "pm-demo";
 
@@ -104,7 +105,6 @@ struct App {
     access: String,
     refresh: String,
     ui: Option<Ui>,
-    outcome: Option<String>,
 }
 
 thread_local! {
@@ -116,7 +116,6 @@ thread_local! {
         access: String::new(),
         refresh: String::new(),
         ui: None,
-        outcome: None,
     });
 }
 
@@ -188,16 +187,8 @@ fn build(app: &mut App) {
     let test = el("button", "");
     test.set_text_content("Test connection");
     listen(&test, EventKind::Click, TOK_TEST);
-    let save = el("button", "");
-    save.set_text_content("Save & connect");
-    listen(&save, EventKind::Click, TOK_SAVE);
-    let cancel = el("button", "");
-    cancel.set_text_content("Cancel");
-    listen(&cancel, EventKind::Click, TOK_CANCEL);
     actions.append_child(&connect);
     actions.append_child(&test);
-    actions.append_child(&save);
-    actions.append_child(&cancel);
     panel.append_child(&actions);
 
     root_el.append_child(&panel);
@@ -272,12 +263,15 @@ async fn test_connection(access: String) {
     APP.with(|a| set_status(&a.borrow(), &text));
 }
 
-fn try_save(app: &mut App) {
+/// Chrome asks for the configuration when the user presses ITS Save.
+/// `None` = not valid yet, with the reason rendered in this region.
+fn commit_config(app: &mut App) -> Option<String> {
     if app.app_key.trim().is_empty()
         || app.app_secret.trim().is_empty()
         || app.access.trim().is_empty()
     {
-        return;
+        set_status(app, "app key, app secret and an access token are required");
+        return None;
     }
     let root = if app.root.trim().is_empty() {
         DEFAULT_ROOT.to_string()
@@ -292,7 +286,7 @@ fn try_save(app: &mut App) {
         refresh_token: &app.refresh,
         root: &root,
     };
-    app.outcome = Some(serde_json::to_string(&out).expect("serialize outcome"));
+    Some(serde_json::to_string(&out).expect("serialize outcome"))
 }
 
 async fn handle_event(ev: Event) {
@@ -310,8 +304,6 @@ async fn handle_event(ev: Event) {
             let access = APP.with(|a| a.borrow().access.clone());
             test_connection(access).await;
         }
-        TOK_SAVE => APP.with(|a| try_save(&mut a.borrow_mut())),
-        TOK_CANCEL => APP.with(|a| a.borrow_mut().outcome = Some(String::new())),
         _ => {}
     }
 }
@@ -338,8 +330,13 @@ impl Guest for Component {
         handle_event(ev).await;
     }
 
+    /// Chrome drives completion now; the panel never sets an outcome.
     async fn outcome() -> Option<String> {
-        APP.with(|a| a.borrow().outcome.clone())
+        None
+    }
+
+    async fn commit() -> Option<String> {
+        APP.with(|a| commit_config(&mut a.borrow_mut()))
     }
 }
 

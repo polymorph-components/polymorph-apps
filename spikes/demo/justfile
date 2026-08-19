@@ -67,8 +67,13 @@ panels:
 # Assemble the servable demo directory.
 site: translate app panels
     mkdir -p serve
-    deno check host/demo.ts
+    deno check host/demo.ts host/frame.ts host/frame-backend.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/demo.js host/demo.ts
+    # The sandboxed surface frame (#16): its own entry, its own document.
+    # No --external flags needed — the frame imports only the applier and
+    # never touches a node backend.
+    deno bundle --platform browser --minify -o serve/frame.js host/frame.ts
+    cp web/frame.html serve/
     cp build/app.component.wasm build/app.plan.json serve/
     cp build/panel-s3.component.wasm build/panel-s3.plan.json serve/
     cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json serve/
@@ -87,8 +92,10 @@ serve: site
 # ?relay=&s3= overrides — Pages hosts the artifact, not the network.
 pages: translate app panels
     mkdir -p ../../docs/spike-demo
-    deno check host/demo.ts
+    deno check host/demo.ts host/frame.ts host/frame-backend.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o ../../docs/spike-demo/demo.js host/demo.ts
+    deno bundle --platform browser --minify -o ../../docs/spike-demo/frame.js host/frame.ts
+    cp web/frame.html ../../docs/spike-demo/
     cp build/app.component.wasm build/app.plan.json ../../docs/spike-demo/
     cp build/panel-s3.component.wasm build/panel-s3.plan.json ../../docs/spike-demo/
     cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json ../../docs/spike-demo/

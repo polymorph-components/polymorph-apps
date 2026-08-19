@@ -1,0 +1,6 @@
+# The demo site under docs/spike-demo/ is BUILT by CI on every push
+# (.github/workflows/pages.yml) and deployed via the GitHub Actions Pages
+# source (flipped 2026-08-18) — it is generated, not committed. Before
+# the cutover, four rebuilds of an ~11 MB engine composite landed in
+# history. `just pages` still writes here for local preview.
+/docs/spike-demo/
