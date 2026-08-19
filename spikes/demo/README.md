@@ -156,13 +156,12 @@ from source on every push, and deploys `docs/` to Pages from `main`. PRs
 build the site too but do not deploy — a broken demo fails the PR
 instead of the site.
 
-`docs/spike-demo/` is **still committed for now** — the cutover order is
-in the workflow header: prove the Actions build, switch the Pages source
-to GitHub Actions, and only then stop committing the artifacts (four
-rebuilds of an ~11 MB engine composite are already in history). Deleting
-them first would take the live demo offline for the length of the gap.
-`just pages` writes the same tree locally for preview. Bumping a sibling
-pin in `scripts/setup.sh` is deliberate: those ports carry embedder
+`docs/spike-demo/` is **generated, not committed** (cutover completed
+2026-08-18: Actions deploy proven via the served build stamp, Pages
+source switched, then the artifacts deleted from git — four rebuilds of
+an ~11 MB engine composite had landed in history before that). `just
+pages` writes the same tree locally for preview. Bumping a sibling pin
+in `scripts/setup.sh` is deliberate: those ports carry embedder
 conventions that have broken this demo before.
 
 ## Run it
