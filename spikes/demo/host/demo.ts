@@ -115,16 +115,20 @@ function chromeHue(): { hue: number; fresh: boolean } {
 }
 
 function applyChromeHue(hue: number) {
-  // Scoped to the strip ELEMENT, never to :root. A custom property on the
-  // document root is ambient authority: it inherits into every app
-  // region, so a component that ever gained a `style` attribute (or a
-  // chrome class resolving var(--chrome-bg)) could paint chrome's exact
-  // colour without ever reading it. Keeping the value out of scope makes
-  // the secrecy structural instead of a property of the allowlist.
-  const strip = document.getElementById("chrome-strip");
-  if (!strip) return;
-  strip.style.setProperty("--chrome-bg", `oklch(38% .07 ${hue})`);
-  strip.style.setProperty("--chrome-fg", "#f4f6fc");
+  // Scoped to the strip ELEMENT and to the credential drawer (the only
+  // other surface chrome paints in the user's own colour), never to
+  // :root. A custom property on the document root is ambient authority:
+  // it inherits into every app region, so a component that ever gained a
+  // `style` attribute (or a chrome class resolving var(--chrome-bg))
+  // could paint chrome's exact colour without ever reading it. Keeping
+  // the value out of scope makes the secrecy structural instead of a
+  // property of the allowlist.
+  for (const id of ["chrome-strip", "chrome-drawer"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.style.setProperty("--chrome-bg", `oklch(38% .07 ${hue})`);
+    el.style.setProperty("--chrome-fg", "#f4f6fc");
+  }
 }
 
 // Surface marks: the recognition colour chrome shows for a component is
@@ -623,9 +627,13 @@ function err(e: unknown): string {
 
 /** Chrome's context slot: what secondary surface, if any, is on screen.
  * Called with null for "no secondary surface". The strip's own colour is
- * NOT touched here — it is the constant anchor; only the label changes. */
+ * NOT touched here — it is the constant anchor; only the label changes.
+ * `kind` says WHOSE pixels the secondary surface is: a component's
+ * config panel, or chrome's own credential sheet. */
 let setChromeContext: (
-  surface: { name: string; hue: number; isNew: boolean } | null,
+  surface:
+    | { name: string; hue: number; isNew: boolean; kind?: "panel" | "credentials" }
+    | null,
 ) => void = () => {};
 
 function initChrome() {
@@ -644,6 +652,16 @@ function initChrome() {
       context.append(idle);
       return;
     }
+    const credentials = surface.kind === "credentials";
+    // While the sheet is open the strip NAMES it: the anchor and the
+    // surface hanging off it say the same thing, so "which pixels am I
+    // typing into" has a chrome-side answer.
+    if (credentials) {
+      const lead = document.createElement("span");
+      lead.className = "said";
+      lead.textContent = "storage credentials ·";
+      context.append(lead);
+    }
     const chip = document.createElement("span");
     chip.className = "chip";
     chip.style.background = `oklch(62% .16 ${surface.hue})`;
@@ -652,11 +670,14 @@ function initChrome() {
     const name = document.createElement("q");
     name.className = "foreign";
     name.textContent = surface.name.slice(0, 40);
-    const said = document.createElement("span");
-    said.className = "said";
-    said.textContent = "— provider configuration panel · drawn by the component, not by chrome";
-    context.append(chip, name, said);
-    if (surface.isNew) {
+    context.append(chip, name);
+    if (!credentials) {
+      const said = document.createElement("span");
+      said.className = "said";
+      said.textContent = "— provider configuration panel · drawn by the component, not by chrome";
+      context.append(said);
+    }
+    if (surface.isNew && !credentials) {
       // The TOFU moment is the one worth interrupting for: recognition
       // marks mean nothing the first time, and the first time is when
       // impersonation would land.
@@ -705,7 +726,7 @@ async function boot() {
     const note = document.getElementById("chrome-rule")!;
     note.textContent = "new chrome colour set for this device — remember it";
     setTimeout(() => {
-      note.textContent = "chrome never asks for your provider password";
+      note.textContent = "storage secrets are only entered in the sheet under this bar";
     }, 15000);
   }
 
@@ -992,50 +1013,54 @@ async function boot() {
   const region = document.getElementById("panel-region") as HTMLElement;
   const saveBtn = document.getElementById("storage-save") as HTMLButtonElement;
 
-  // --- chrome's own credential fields ------------------------------------
+  // --- chrome's own credential entry: the anchored drawer (#22) -----------
   //
-  // Created here, dynamically, and inserted ONCE between the granted
-  // region and chrome's action row: these pixels are chrome's, drawn
-  // from chrome's vocabulary (CREDENTIAL_VOCABULARY above), populated per
-  // panel from the kinds the panel DECLARED. The panel never sees a
-  // keystroke of them.
-  const credBlock = document.createElement("div");
-  credBlock.id = "chrome-credentials";
-  credBlock.style.cssText =
-    "margin:0 .9em .3em; padding:.6em .8em; background:#16213e; border:1px solid #2a2a44;" +
-    "border-radius:3px; font-size:12px; color:#ddd; display:none;";
-  const credLead = document.createElement("div");
-  credLead.style.cssText = "font-size:11px; color:#8b93b0; margin-bottom:.5em; line-height:1.35;";
-  credLead.textContent =
-    "Held by chrome and handed to the storage engine — the panel below never sees these.";
-  const credFields = document.createElement("div");
-  // The BINDING LINE (#22): chrome's own sentence about where the values
-  // it holds may be released. The origin inside it is panel-influenced
-  // data, so it is quoted, monospaced and clamped — foreign-styled,
-  // exactly like the surface name in the strip — and it is chrome's
-  // NORMALIZED origin, never the panel's string as written.
-  const credBinding = document.createElement("div");
-  credBinding.id = "chrome-cred-binding";
-  credBinding.style.cssText =
-    "font-size:11px; color:#bbb; margin-bottom:.5em; line-height:1.4;" +
-    "display:flex; align-items:baseline; gap:.35em; flex-wrap:wrap;";
-  const credWarning = document.createElement("div");
-  credWarning.style.cssText = "font-size:11px; color:#f5c16c; margin-bottom:.5em; line-height:1.35;";
-  const credReason = document.createElement("div");
-  credReason.style.cssText = "font-size:11px; color:#f5c16c; margin-top:.4em; line-height:1.35;";
-  credBlock.append(credLead, credBinding, credWarning, credFields, credReason);
-  {
-    const actions = dialog.querySelector(".chrome-actions");
-    if (actions) actions.before(credBlock);
-    else region.after(credBlock);
-  }
+  // The phishing surface this closes: a panel that draws its own secret
+  // inputs is asking for credentials in ITS pixels while sitting inside
+  // chrome's dialog, borrowing chrome's authority. So a panel may only
+  // DECLARE a kind from a fixed vocabulary; chrome renders the field with
+  // CHROME'S OWN WORDS (CREDENTIAL_VOCABULARY above). Chrome never
+  // renders a panel-supplied label — that is the whole point: otherwise a
+  // panel declares "your Dropbox password" and chrome's pixels say it.
+  // Unknown kinds are refused outright, and the word "password" is never
+  // a label chrome writes.
+  //
+  // What the drawer changes is WHERE those chrome-owned fields live. In
+  // the dialog they sat mid-page between the sandboxed region and the
+  // action row: chrome's pixels by construction, but not RECOGNISABLY so
+  // — an app can draw that same rectangle, pixel for pixel, inside its
+  // own region. They now live on a sheet that unfolds from directly
+  // beneath the pinned strip, painted in the user's own anchor colour,
+  // with the panel already torn down and every remaining surface frozen
+  // and dimmed. Position is the anchor; the colour is the secondary one.
+  const drawer = document.getElementById("chrome-drawer") as HTMLElement;
+  const drawerInner = document.getElementById("chrome-drawer-inner") as HTMLElement;
+  const dim = document.getElementById("chrome-dim") as HTMLElement;
+  /** The dialog's own refusal line: the commit-time destination checks
+   * fail while the dialog is still open and no sheet exists yet. */
+  const dialogReason = document.getElementById("storage-reason") as HTMLElement;
+  const dialogNote = (text: string) => {
+    dialogReason.textContent = text;
+  };
 
   /** Chrome's per-session credential state, keyed by WIT kind. The
    * inputs are the UI; this map is the value chrome hands onward (and
-   * what the fetch shim injects from). */
+   * what the fetch shim injects from). It outlives the panel: the OAuth
+   * broker deposits into it DURING the panel session, and the drawer
+   * opens after that panel is gone. */
   const credValues = new Map<string, string>();
   const credInputs = new Map<string, HTMLInputElement>();
   let credKinds: string[] = [];
+
+  /** Element refs for the sheet currently on screen; null while the
+   * drawer is closed, in which case every renderer below is a no-op. */
+  let credFields: HTMLElement | null = null;
+  let credBinding: HTMLElement | null = null;
+  let credWarning: HTMLElement | null = null;
+  let credReason: HTMLElement | null = null;
+  const drawerNote = (text: string) => {
+    if (credReason) credReason.textContent = text;
+  };
 
   heldCredential = (kind) => credValues.get(kind) ?? "";
   depositCredential = (kind, value) => {
@@ -1048,12 +1073,7 @@ async function boot() {
     credKinds = [];
     credValues.clear();
     credInputs.clear();
-    credFields.replaceChildren();
-    credReason.textContent = "";
-    credBlock.style.display = "none";
-    saveBtn.disabled = false;
     boundDestination = null;
-    renderBinding();
   };
 
   /** The binding line, in chrome's own words. The origin it names is
@@ -1061,37 +1081,37 @@ async function boot() {
    * foreign-styled because it is panel-INFLUENCED data, even after
    * normalization. No panel-supplied prose ever appears here. */
   function renderBinding() {
+    if (!credBinding || !credWarning) return;
     credBinding.replaceChildren();
     credWarning.textContent = "";
     if (boundDestination === null) {
       // Rule 3: no destination, no fields. Chrome says why, and the
       // inputs cannot be typed into — there is nowhere to release to.
+      // (The commit-time revalidation refuses to open the drawer at all
+      // without a destination, so this is a defensive branch.)
       const said = document.createElement("span");
       said.textContent =
-        "no destination configured yet — credentials cannot be entered until the panel above names one";
+        "no destination configured — credentials cannot be entered until the panel names one";
       credBinding.append(said);
       for (const input of credInputs.values()) input.disabled = true;
       return;
     }
-    for (const input of credInputs.values()) input.disabled = false;
     const lead = document.createElement("span");
     lead.textContent = "released only toward";
     const origin = document.createElement("q");
+    origin.className = "foreign";
     origin.textContent = boundDestination.slice(0, 120);
-    origin.style.cssText =
-      "font-family: ui-monospace, monospace; max-width: 22em; overflow: hidden;" +
-      "text-overflow: ellipsis; white-space: nowrap; color:#eee;";
     credBinding.append(lead, origin);
     if (isCleartextDestination(boundDestination)) {
-      credWarning.textContent =
-        "unencrypted destination — credentials will travel in the clear";
+      credWarning.textContent = "unencrypted destination — credentials will travel in the clear";
     }
   }
 
   /** Re-read the panel's destination and re-bind. A CHANGE is treated as
    * a new secret-handling decision: the values chrome holds were entered
-   * for the old destination, so they are dropped rather than silently
-   * re-aimed (#22 rule 2). Returns the new binding. */
+   * (or deposited by the OAuth broker) for the old destination, so they
+   * are dropped rather than silently re-aimed (#22 rule 2). Returns the
+   * new binding. */
   const rebind = (raw: string, { note = true }: { note?: boolean } = {}): string | null => {
     const next = normalizeOrigin(raw);
     if (next === boundDestination) {
@@ -1100,29 +1120,35 @@ async function boot() {
     }
     const had = boundDestination;
     boundDestination = next;
-    // Clear held values AND the visible inputs: chrome's fields must not
-    // keep showing a secret that is no longer bound to anything.
-    for (const kind of credKinds) credValues.set(kind, "");
+    // Clear held values AND any visible inputs: chrome must not keep
+    // showing (or holding) a secret that is no longer bound to anything.
+    credValues.clear();
     for (const input of credInputs.values()) input.value = "";
     renderBinding();
     if (note && had !== null) {
-      credReason.textContent = "destination changed — enter credentials for the new destination";
+      dialogNote("destination changed — credentials will be requested for the new destination");
     }
     return next;
   };
 
   clearCredentials();
 
-  /** Render the declared kinds — chrome's labels only. An unrecognised
-   * kind is REFUSED rather than guessed at: chrome will not lend its
-   * pixels to a request it has no words for, and Save is disabled so the
-   * refusal cannot be clicked past. */
-  const renderCredentials = (kinds: string[], prefill: Record<string, string>) => {
+  /** Render the declared kinds INTO THE DRAWER — chrome's labels only.
+   * An unrecognised kind is REFUSED rather than guessed at: chrome will
+   * not lend its pixels to a request it has no words for, and Confirm
+   * stays disabled so the refusal cannot be clicked past (Save is
+   * likewise disabled back in the dialog, at mount time). Returns whether
+   * anything was refused. */
+  const renderCredentials = (kinds: string[], prefill: Record<string, string>): boolean => {
     credKinds = kinds;
-    credValues.clear();
     credInputs.clear();
+    // Chrome ends up holding EXACTLY the kinds this sheet shows: anything
+    // left over from the panel session (an OAuth deposit for a kind no
+    // longer asked for) is dropped rather than quietly merged at Confirm.
+    // Deposits that are still relevant arrive through `prefill`.
+    credValues.clear();
+    if (!credFields) return false;
     credFields.replaceChildren();
-    credReason.textContent = "";
     let refused = false;
     for (const kind of kinds) {
       const spec = CREDENTIAL_VOCABULARY[kind];
@@ -1131,17 +1157,13 @@ async function boot() {
         continue;
       }
       const row = document.createElement("div");
-      row.style.cssText = "display:flex; flex-direction:column; gap:.15em; margin-bottom:.5em;";
+      row.className = "cred-field";
       const label = document.createElement("label");
       // CHROME'S OWN WORDS. Never a panel-supplied string.
       label.textContent = spec.label;
-      label.style.cssText = "font-size:11px; color:#bbb;";
       const input = document.createElement("input");
       input.type = spec.type;
       input.autocomplete = "off";
-      input.style.cssText =
-        "width:100%; box-sizing:border-box; background:#0f1424; color:#eee;" +
-        "border:1px solid #2a2a44; border-radius:2px; padding:.3em;";
       const seeded = prefill[kind] ?? "";
       input.value = seeded;
       credValues.set(kind, seeded);
@@ -1150,20 +1172,19 @@ async function boot() {
       row.append(label, input);
       if (spec.note) {
         const note = document.createElement("div");
-        note.style.cssText = "font-size:10px; color:#8b93b0;";
+        note.className = "hint";
         note.textContent = spec.note;
         row.append(note);
       }
       credFields.append(row);
     }
     if (refused) {
-      credReason.textContent = "panel requested an unknown credential kind — refused";
+      drawerNote("panel requested an unknown credential kind — refused");
     }
-    saveBtn.disabled = refused;
-    credBlock.style.display = kinds.length > 0 ? "" : "none";
-    // The binding line sits above these fields and governs whether they
-    // can be typed into at all (rule 3), so it is (re)drawn with them.
+    // The binding line governs whether these fields can be typed into at
+    // all (rule 3), so it is (re)drawn with them.
     renderBinding();
+    return refused;
   };
 
   /** Requiredness is CHROME's rule, by kind — not the panel's. */
@@ -1237,6 +1258,219 @@ async function boot() {
     };
   };
 
+
+  // --- the two-phase commit: dialog decides, drawer collects (#22) --------
+  //
+  // Phase 1 is the storage dialog: tabs, the sandboxed panel region and
+  // Save/Cancel — and NO credential field anywhere in it. Phase 2 is this
+  // drawer. Between them chrome tears the panel down, so by the time a
+  // secret is on screen there is no component surface alive on the page
+  // at all: not in the dialog (closed), not in a pane (paused), nowhere.
+  // That invariant is the reason for the ordering below, and it must be
+  // preserved by anything that touches this flow.
+
+  /** The arming delay, ported from the todomvc chrome spike
+   * (spikes/todomvc/host/chrome.ts:18): controls and inputs stay disabled
+   * until it elapses, which defeats a baited mis-tap — an app training
+   * rapid taps at a position where a chrome control is about to appear.
+   * The TIMER is the enforcement; the slide is only its visible form, so
+   * prefers-reduced-motion drops the animation and never the delay. */
+  const ARM_MS = 700;
+
+  /** What chrome holds between the two phases: the panel's secret-free
+   * config, the destination chrome bound it to, and the surface mark of
+   * the panel that produced it (for the provider line). Non-null exactly
+   * while the drawer owns the interaction. */
+  let drawerSession:
+    | {
+      cfg: StorageConfig;
+      destination: string;
+      surface: { name: string; hue: number; isNew: boolean };
+    }
+    | null = null;
+  let armTimer = 0;
+  /** Re-anchoring listener for the open sheet, removed on close. */
+  let drawerAnchor: (() => void) | null = null;
+
+  /** Persist and connect: identical to the pre-drawer commit tail, just
+   * moved behind the sheet's Confirm. */
+  const persistAndConnect = (cfg: StorageConfig) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+      if (bucketReady) {
+        tablet.status("storage changed — reload the page to reconfigure");
+      } else {
+        setupBucket(cfg);
+      }
+    } catch (e) {
+      tablet.status(`storage config unreadable: ${err(e)}`);
+    }
+  };
+
+  const closeDrawer = () => {
+    if (!drawerSession) return;
+    drawerSession = null;
+    clearTimeout(armTimer);
+    if (drawerAnchor) globalThis.removeEventListener("resize", drawerAnchor);
+    drawerAnchor = null;
+    drawerInner.style.height = "0px";
+    dim.hidden = true;
+    // Input delivery resumes for every pane; the panel is already gone.
+    for (const p of panes) p.runner?.resume();
+    setChromeContext(null);
+    // Held secrets die with the sheet: chrome keeps nothing after the
+    // interaction it collected them for is over.
+    clearCredentials();
+    credFields = credBinding = credWarning = credReason = null;
+    setTimeout(() => {
+      if (!drawerSession) {
+        drawerInner.replaceChildren();
+        drawer.hidden = true;
+      }
+    }, ARM_MS);
+  };
+
+  /** Build chrome's sheet. Every word here is chrome's; the only foreign
+   * strings are the component's name and the destination origin, both
+   * quoted, clamped and foreign-styled. */
+  const buildSheet = (session: NonNullable<typeof drawerSession>) => {
+    const root = document.createElement("div");
+    root.className = "cred-sheet";
+
+    const h = document.createElement("h2");
+    h.textContent = "Storage credentials";
+
+    // The requesting provider, by its surface mark: same chip colour the
+    // strip showed while its panel was up, same quoted name.
+    const who = document.createElement("div");
+    who.className = "cred-line";
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.background = `oklch(62% .16 ${session.surface.hue})`;
+    const lead = document.createElement("span");
+    lead.textContent = "requested by";
+    const name = document.createElement("q");
+    name.className = "foreign";
+    name.textContent = session.surface.name.slice(0, 40);
+    who.append(lead, chip, name);
+
+    credBinding = document.createElement("div");
+    credBinding.className = "cred-line";
+    credWarning = document.createElement("div");
+    credWarning.className = "cred-warning";
+    credFields = document.createElement("div");
+    credReason = document.createElement("div");
+    credReason.className = "cred-reason";
+
+    const note = document.createElement("div");
+    note.className = "cred-note";
+    note.textContent =
+      "secrets are only ever typed here, under your colored bar — every app surface is frozen and dimmed while this sheet is open";
+
+    const row = document.createElement("div");
+    row.className = "cred-row";
+    const confirmBtn = document.createElement("button");
+    confirmBtn.textContent = "Confirm";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    row.append(confirmBtn, cancelBtn);
+
+    root.append(h, who, credBinding, credWarning, credFields, note, credReason, row);
+    return { root, confirmBtn, cancelBtn };
+  };
+
+  const openCredentialDrawer = (
+    session: NonNullable<typeof drawerSession>,
+    needs: string[],
+    prefill: Record<string, string>,
+    mismatch: boolean,
+  ) => {
+    drawerSession = session;
+    // NO COMPONENT SURFACE IS LIVE WHILE SECRETS ARE ON SCREEN: the panel
+    // was torn down by the caller before this ran, and every remaining
+    // pane's runner is paused here — queued invocations are held, not
+    // delivered, so app code can neither observe nor race the entry.
+    for (const p of panes) p.runner?.pause();
+    dim.hidden = false;
+    drawer.hidden = false;
+    // The strip names the sheet hanging off it, in the same colour it has
+    // always had (the anchor never changes colour per surface).
+    setChromeContext({ ...session.surface, kind: "credentials" });
+
+    const { root, confirmBtn, cancelBtn } = buildSheet(session);
+    drawerInner.replaceChildren(root);
+    const refused = renderCredentials(needs, prefill);
+    if (mismatch) {
+      drawerNote("stored credentials are for a different destination — not filled");
+    }
+
+    confirmBtn.onclick = () => {
+      const s = drawerSession;
+      if (!s) return;
+      // Requiredness is chrome's rule, judged in chrome's pixels; the
+      // panel is not told which credential was missing (it is gone).
+      const missing = missingCredential();
+      if (missing !== null) {
+        drawerNote(`${missing} is required`);
+        return;
+      }
+      // Chrome merges its held values into the panel's secret-free
+      // config — the same withCredentials path as before the drawer.
+      const full = withCredentials(s.cfg);
+      closeDrawer();
+      persistAndConnect(full);
+    };
+    cancelBtn.onclick = () => {
+      // Nothing was persisted and nothing was released: the held config
+      // and the held credentials both die here.
+      closeDrawer();
+      tablet.status("storage setup cancelled — nothing saved", true);
+    };
+
+    // Hang the sheet off the pinned strip's measured bottom edge. The
+    // strip is sticky at top:0, so while the drawer is open this is the
+    // strip's height — measured rather than hardcoded because the strip
+    // wraps to two rows on a phone.
+    const anchorTo = () => {
+      const strip = document.getElementById("chrome-strip");
+      drawer.style.top = `${strip ? strip.getBoundingClientRect().bottom : 0}px`;
+    };
+    anchorTo();
+    drawerAnchor = anchorTo;
+    globalThis.addEventListener("resize", anchorTo);
+
+    // Disabled BEFORE the first frame, inputs included: a secret must not
+    // be typeable into a sheet the user has not yet had time to see.
+    const controls: Array<HTMLButtonElement | HTMLInputElement> = [
+      confirmBtn,
+      cancelBtn,
+      ...credInputs.values(),
+    ];
+    for (const c of controls) c.disabled = true;
+
+    // Animate 0 → the measured content height (see chrome.ts:84-90:
+    // scrollHeight misses flex-end top-overflow, so measure at auto).
+    drawerInner.style.height = "auto";
+    const target = drawerInner.offsetHeight;
+    drawerInner.style.height = "0px";
+    void drawerInner.offsetHeight;
+    drawerInner.style.height = `${target}px`;
+
+    clearTimeout(armTimer);
+    armTimer = setTimeout(() => {
+      if (drawerSession !== session) return;
+      for (const c of controls) c.disabled = false;
+      // Rule 3 still governs the inputs after arming: with no bound
+      // destination there is nowhere to release to, so nothing may be
+      // typed. (Refused kinds keep Confirm out of reach for good.)
+      if (boundDestination === null) {
+        for (const input of credInputs.values()) input.disabled = true;
+      }
+      if (refused) confirmBtn.disabled = true;
+      root.classList.add("armed");
+    }, ARM_MS);
+  };
+
   const tabs: Record<"s3" | "dropbox", HTMLButtonElement> = {
     s3: document.getElementById("prov-s3") as HTMLButtonElement,
     dropbox: document.getElementById("prov-dropbox") as HTMLButtonElement,
@@ -1244,7 +1478,14 @@ async function boot() {
   const panelArtifacts = new Map<string, EngineArtifacts>();
   let panelMounted: "s3" | "dropbox" | null = null;
   let activePanel:
-    | { provider: "s3" | "dropbox"; panel: PanelExports; runner: Runner }
+    | {
+      provider: "s3" | "dropbox";
+      panel: PanelExports;
+      runner: Runner;
+      /** The surface mark chrome showed for this panel; the drawer
+       * repeats it so "who asked" survives the panel's teardown. */
+      surface: { name: string; hue: number; isNew: boolean };
+    }
     | null = null;
   let panelDispatch: (ev: UiEvent) => void = () => {};
   /** The live panel surface's sandboxed frame, if any (see
@@ -1273,43 +1514,29 @@ async function boot() {
     region.innerHTML = "";
     panelMounted = null;
     activePanel = null;
-    // No secondary surface on screen: the strip goes back to naming the
-    // app regions. (The strip's COLOUR never changed — it is the anchor.)
-    setChromeContext(null);
+    // The strip goes back to naming the app regions — UNLESS this
+    // teardown is the handoff into the credential drawer: the dialog's
+    // close event/observer fires AFTER the drawer has claimed the strip
+    // context (the same late-teardown ordering the retirement observer
+    // exists for), and resetting here would blank the drawer's line.
+    if (drawerSession) {
+      setChromeContext({ ...drawerSession.surface, kind: "credentials" });
+    } else {
+      setChromeContext(null);
+    }
     region.style.removeProperty("--component-color");
-    // The credential fields are PER-SESSION chrome state: when the
-    // dialog's panel goes, so do the held values. (Durable persistence
-    // of the full config in localStorage is unchanged.)
-    clearCredentials();
-  };
-
-  const finishPanel = (outcome: string) => {
-    // Merge BEFORE teardown: teardown clears chrome's per-session
-    // credential state, so the values have to be taken out first.
-    let cfg: StorageConfig | null = null;
-    let parseError: unknown = null;
-    if (outcome !== "") {
-      try {
-        cfg = withCredentials(JSON.parse(outcome) as StorageConfig);
-      } catch (e) {
-        parseError = e;
-      }
-    }
-    teardownPanel();
-    dialog.close();
-    if (outcome === "") return; // some("") = cancelled
-    try {
-      if (parseError) throw parseError;
-      if (!cfg) return;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
-      if (bucketReady) {
-        tablet.status("storage changed — reload the page to reconfigure");
-      } else {
-        setupBucket(cfg);
-      }
-    } catch (e) {
-      tablet.status(`storage config unreadable: ${err(e)}`);
-    }
+    saveBtn.disabled = false;
+    dialogNote("");
+    // Held credentials are PER-SESSION chrome state: when the panel goes,
+    // so do the values — UNLESS this teardown is the handoff into the
+    // credential drawer, which is the one case where chrome must keep
+    // holding them (the OAuth broker deposits during the panel session,
+    // and the sheet that will show them opens a moment later). The drawer
+    // clears them itself on Confirm or Cancel. Testing drawerSession
+    // rather than a transient flag matters because at least one embedding
+    // delivers the dialog's `close` event LATE — after the drawer is
+    // already up — and that stray teardown must not wipe the sheet.
+    if (drawerSession === null) clearCredentials();
   };
 
   const mountPanel = async (provider: "s3" | "dropbox") => {
@@ -1372,7 +1599,7 @@ async function boot() {
     panelMounted = provider;
     // Chrome keeps the handles it needs to COMMIT; the panel only ever
     // gets events and answers questions.
-    activePanel = { provider, panel, runner };
+    activePanel = { provider, panel, runner, surface: { name, hue, isNew } };
     panelDispatch = (ev) => {
       if (panelMounted !== provider) return;
       runner.call(() => panel.onEvent(ev))
@@ -1397,22 +1624,22 @@ async function boot() {
     await runner.call(() => panel.seed(seedJson));
     await runner.call(() => panel.run());
     if (generation !== panelGeneration) return;
-    // The panel DECLARES its credential kinds; chrome renders them —
-    // bound to the destination chrome reads back from the panel and
-    // normalizes itself.
+    // The panel DECLARES its credential kinds. Chrome does NOT render a
+    // field here any more — entry happens later, in chrome's own drawer.
+    // What chrome checks at mount is only whether it has WORDS for what
+    // was asked: an unrecognised kind is refused up front and Save is
+    // disabled, so the refusal cannot be clicked past into a sheet chrome
+    // could not honestly label.
     const needs = await runner.call(() => panel.credentialNeeds());
     if (generation !== panelGeneration) return;
     const rawDest = await runner.call(() => panel.destination());
     if (generation !== panelGeneration) return;
     // note:false — this is the FIRST binding of the session, not a
     // change of one; there is nothing the user entered to invalidate.
-    const bound = rebind(rawDest ?? "", { note: false });
-    const { prefill, mismatch } = credPrefill(stored, provider, bound);
-    renderCredentials(needs ?? [], prefill);
-    if (mismatch && bound !== null) {
-      credReason.textContent =
-        "stored credentials are for a different destination — not filled";
-    }
+    rebind(rawDest ?? "", { note: false });
+    const unknown = (needs ?? []).some((kind) => !CREDENTIAL_VOCABULARY[kind]);
+    saveBtn.disabled = unknown;
+    dialogNote(unknown ? "panel requested an unknown credential kind — refused" : "");
   };
 
   // <dialog> closes natively on ESC, which used to leave the component
@@ -1431,6 +1658,7 @@ async function boot() {
   }).observe(dialog, { attributes: true, attributeFilter: ["open"] });
 
   const openStorage = () => {
+    dialogNote("");
     dialog.showModal();
     mountPanel(loadStorage()?.provider ?? "s3").catch((e) => {
       region.textContent = `panel failed to mount: ${err(e)}`;
@@ -1451,6 +1679,11 @@ async function boot() {
   // asks the panel for a configuration and chrome that decides the
   // dialog is done. A panel refusing (none) leaves the dialog open with
   // its own explanation showing inside its region.
+  //
+  // PHASE 1 OF TWO. On success this does not connect: it takes the
+  // secret-free config, retires the panel, closes the dialog, and hands
+  // the interaction to chrome's credential drawer. Nothing is persisted
+  // and no credential is released until the sheet's Confirm.
   (document.getElementById("storage-save") as HTMLButtonElement).onclick = (ev) => {
     ev.preventDefault();
     const active = activePanel;
@@ -1462,47 +1695,79 @@ async function boot() {
         // read before the user clicked; between the render and the click
         // the panel could have re-pointed itself. So chrome re-reads the
         // destination NOW and holds it to three tests, in order — each
-        // refusal in chrome's own words, dialog left open, credentials
-        // NOT released.
+        // refusal in chrome's own words, dialog left open, NO drawer
+        // opened and so no credential even askable for.
         const raw = await active.runner.call(() => active.panel.destination());
         if (activePanel !== active) return;
         const now = normalizeOrigin(raw ?? "");
         if (now === null) {
-          credReason.textContent =
-            "no destination configured — credentials were not released";
+          dialogNote("no destination configured — credentials were not released");
           return;
         }
         if (now !== boundDestination) {
-          // The displayed binding is what the user consented to; a panel
-          // that moved since then gets the values dropped, not carried.
+          // The binding chrome has been tracking is what the following
+          // sheet would name; a panel that moved since then gets the
+          // held values dropped, not carried.
           rebind(raw ?? "");
-          credReason.textContent =
-            "the destination changed since these credentials were entered — nothing was released";
+          dialogNote(
+            "the destination changed since these credentials were entered — nothing was released",
+          );
           return;
         }
+        let cfg: StorageConfig | null = null;
         let cfgDest: string | null = null;
         try {
-          cfgDest = configDestination(JSON.parse(out) as StorageConfig);
+          cfg = JSON.parse(out) as StorageConfig;
+          cfgDest = configDestination(cfg);
         } catch {
+          cfg = null;
           cfgDest = null;
         }
-        if (cfgDest === null || cfgDest !== boundDestination) {
+        if (cfg === null || cfgDest === null || cfgDest !== boundDestination) {
           // The TOCTOU that motivates all of this: `destination()` says
           // one thing and the committed config points somewhere else.
-          credReason.textContent =
-            "the panel's configuration points somewhere else than the destination shown — nothing was released";
+          dialogNote(
+            "the panel's configuration points somewhere else than the destination shown — nothing was released",
+          );
           return;
         }
-        // The panel said its (secret-free) half is valid. Chrome now
-        // judges ITS OWN fields, and says so in its own pixels — the
-        // panel is not told which credential is missing.
-        const missing = missingCredential();
-        if (missing !== null) {
-          credReason.textContent = `${missing} is required`;
+        // Chrome asks ONE more time what the panel needs: the drawer's
+        // fields are drawn from this answer, and it must be the answer
+        // the committed configuration was produced with.
+        const needs = (await active.runner.call(() => active.panel.credentialNeeds())) ?? [];
+        if (activePanel !== active) return;
+        const stored = loadStorage();
+        // Prefill is decided BEFORE teardown, while chrome still knows
+        // which provider produced this config (#22 rule 5, unchanged).
+        const { prefill, mismatch } = credPrefill(stored, active.provider, now);
+        // Anything the OAuth broker deposited during the panel session is
+        // chrome's own capture of a ceremony chrome ran; it survives into
+        // the sheet, where the user can see it before releasing it.
+        for (const [kind, value] of credValues) {
+          if (value !== "") prefill[kind] = value;
+        }
+        const session = {
+          cfg,
+          destination: now,
+          surface: active.surface,
+        };
+        // Claim the handoff BEFORE the teardown, so the panel's retirement
+        // (and any late `close` event) leaves the held values alone.
+        drawerSession = session;
+        // ORDERING IS THE INVARIANT: the panel is retired and the dialog
+        // is closed FIRST, so no component surface is alive on the page
+        // when the credential sheet appears.
+        teardownPanel();
+        dialog.close();
+        if (needs.length === 0) {
+          // Nothing to ask for: no sheet, connect straight away.
+          drawerSession = null;
+          const full = withCredentials(cfg);
+          clearCredentials();
+          persistAndConnect(full);
           return;
         }
-        credReason.textContent = "";
-        finishPanel(out);
+        openCredentialDrawer(session, needs, prefill, mismatch);
       })
       .catch((e) => console.warn(`[panel] commit: ${err(e)}`));
   };
@@ -1593,6 +1858,21 @@ async function boot() {
     // The live credential binding, for driving: what chrome believes the
     // held values may be released toward (null = nothing may).
     boundDestination: () => boundDestination,
+    // The credential sheet, for driving. `confirm`/`cancel` CLICK the
+    // real buttons rather than calling the handlers, so a driver sees the
+    // arming delay exactly as a user does: a click before ARM_MS lands on
+    // a disabled button and does nothing.
+    drawer: {
+      open: () => drawerSession !== null,
+      confirm: () =>
+        (drawerInner.querySelector(".cred-row button:first-child") as
+          | HTMLButtonElement
+          | null)?.click(),
+      cancel: () =>
+        (drawerInner.querySelector(".cred-row button:last-child") as
+          | HTMLButtonElement
+          | null)?.click(),
+    },
   };
   say("ready — E2E-encrypted, three replicas, two sync paths");
 }

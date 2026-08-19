@@ -15,7 +15,13 @@
        case where an app mimics chrome inside its own rectangle. It stays
        CONSTANT while secondary surfaces come and go: an anchor that
        changes per component would stop being an anchor. */
-    #chrome-strip { display: flex; align-items: center; gap: .8em;
+    /* PINNED. An anchor that scrolls away is not an anchor: the strip
+       must be on screen at the moment a secret is typed, which is only
+       guaranteed if it cannot leave the viewport. The z-index puts it
+       above the credential drawer, the dim layer and all page content —
+       nothing an app draws can ever be painted over it. */
+    #chrome-strip { position: sticky; top: 0; z-index: 30;
+                    display: flex; align-items: center; gap: .8em;
                     padding: .45em .9em; font-size: 12px;
                     background: var(--chrome-bg, oklch(38% .07 260));
                     color: var(--chrome-fg, #f2f4fb);
@@ -44,6 +50,86 @@
     #chrome-swatches button { width: 1.1em; height: 1.1em; padding: 0;
                               border-radius: 2px; cursor: pointer;
                               border: 1px solid rgba(255,255,255,.55); }
+
+    /* --- the credential drawer (#22) -------------------------------------
+       Credential entry lives on a surface only chrome can produce: a sheet
+       that unfolds from DIRECTLY BENEATH the pinned strip, full width, in
+       the user's own anchor colour. Mid-page fields inside a dialog were
+       indistinguishable from a pixel-perfect fake drawn inside an app's
+       own rectangle; this position is not forgeable, because an app can
+       neither paint the strip nor paint under it.
+
+       Deliberately NOT a <dialog>: the top layer would fight the strip's
+       stacking (a modal dialog paints above everything, including the
+       anchor the sheet is supposed to hang from), and this embedding's
+       dialog close events are unreliable — see README findings, and the
+       state-change retirement the storage dialog needs because of it.
+
+       The drawer is position:fixed rather than in flow so opening it does
+       not reflow the page underneath: while a secret is on screen the
+       whole page below is frozen (every runner paused) and dimmed, and it
+       should look frozen too. `top` is set from JS to the pinned strip's
+       measured bottom edge. */
+    #chrome-drawer { position: fixed; left: 0; right: 0; top: 0; z-index: 25;
+                     background: var(--chrome-bg, oklch(38% .07 260));
+                     color: var(--chrome-fg, #f2f4fb);
+                     box-shadow: 0 10px 26px rgba(0,0,0,.5); }
+    #chrome-drawer[hidden] { display: none; }
+    /* Pixel-height animation set from JS at open (0 → measured target):
+       the same single-property curve the todomvc chrome spike settled on.
+       The ARMING DELAY is the setTimeout in demo.ts, never this
+       transition — reduced motion drops the animation and keeps the
+       delay. */
+    #chrome-drawer-inner { height: 0; overflow: hidden;
+                           transition: height 700ms cubic-bezier(.2,.8,.2,1); }
+    @media (prefers-reduced-motion: reduce) {
+      #chrome-drawer-inner { transition: none; }
+    }
+    /* The dim layer sits BETWEEN the page and the drawer: strip (30) and
+       drawer (25) above, every app surface below. */
+    #chrome-dim { position: fixed; inset: 0; z-index: 20;
+                  background: rgba(6,8,16,.62); }
+    #chrome-dim[hidden] { display: none; }
+
+    .cred-sheet { box-sizing: border-box; max-width: 34em; margin: 0 auto;
+                  padding: .8em 1.1em 1.1em; font-size: 13px; line-height: 1.45; }
+    .cred-sheet h2 { margin: 0 0 .35em; font-size: 15px; font-weight: 600; }
+    .cred-sheet .cred-line { display: flex; align-items: baseline; gap: .4em;
+                             flex-wrap: wrap; font-size: 12px;
+                             opacity: .92; margin-bottom: .35em; }
+    .cred-sheet .chip { width: .8em; height: .8em; border-radius: 2px; flex: none;
+                        border: 1px solid rgba(255,255,255,.5); }
+    /* Panel-influenced strings (component name, destination origin) are
+       quoted, monospaced and clamped — never part of chrome's sentence. */
+    .cred-sheet q.foreign { font-family: ui-monospace, monospace;
+                            max-width: 20em; overflow: hidden;
+                            text-overflow: ellipsis; white-space: nowrap; }
+    .cred-sheet .cred-warning { font-size: 12px; color: #ffd79a; margin: .3em 0; }
+    .cred-sheet .cred-reason { font-size: 12px; color: #ffd79a; margin-top: .5em;
+                               min-height: 1.2em; }
+    .cred-sheet .cred-note { font-size: 11px; opacity: .8; margin-top: .6em;
+                             line-height: 1.4; }
+    .cred-sheet .cred-field { display: flex; flex-direction: column;
+                              gap: .2em; margin: .55em 0; }
+    .cred-sheet .cred-field label { font-size: 11px; opacity: .85; }
+    .cred-sheet .cred-field .hint { font-size: 10px; opacity: .7; }
+    .cred-sheet .cred-field input { width: 100%; box-sizing: border-box;
+                                    font: inherit; font-size: 13px;
+                                    background: rgba(0,0,0,.32);
+                                    color: var(--chrome-fg, #f2f4fb);
+                                    border: 1px solid rgba(255,255,255,.35);
+                                    border-radius: 3px; padding: .4em .5em; }
+    .cred-sheet .cred-row { display: flex; gap: .8em; margin-top: .9em; }
+    .cred-sheet .cred-row button { flex: 1; font: inherit; font-size: 13px;
+                                   padding: .5em .8em; border-radius: 5px; cursor: pointer;
+                                   border: 1px solid rgba(255,255,255,.4);
+                                   background: transparent; color: inherit;
+                                   opacity: .35; transition: opacity 200ms; }
+    /* Visible arming: dim until the timer elapses. The disabled attribute
+       is the enforcement — this is only its visible form. */
+    .cred-sheet.armed .cred-row button { opacity: 1; }
+    .cred-sheet .cred-row button:first-child { background: #fff; color: #17182b;
+                                               border-color: #fff; font-weight: 600; }
 
     #banner { padding: .6em 1em; background: #1a1a2e; color: #eee; font-size: 13px; }
     #controls { padding: .5em 1em; background: #16213e; color: #ccc; display: flex; gap: 1em; align-items: center; }
@@ -131,6 +217,13 @@
       .provider-tabs { flex-wrap: wrap; }
       .chrome-actions { flex-wrap: wrap; }
       .chrome-actions .chrome-note { max-width: 100%; }
+
+      /* The drawer is already full width; at phone width it just loses
+         its side padding and the button row stops sharing a line badly.
+         Fields are stacked and box-sized, so nothing overflows at 390px. */
+      .cred-sheet { padding: .7em .8em 1em; font-size: 13px; }
+      .cred-sheet q.foreign { max-width: 100%; }
+      .cred-sheet .cred-row { gap: .6em; }
     }
 
     /* Explainer span is hidden entirely below 400px: at that width even
@@ -147,10 +240,15 @@
     <span class="mark">⛨ polymorph</span>
     <span id="chrome-context"></span>
     <span class="spacer"></span>
-    <span id="chrome-rule">chrome never asks for your provider password</span>
+    <span id="chrome-rule">storage secrets are only entered in the sheet under this bar</span>
     <button id="chrome-appearance" title="your chrome colour: randomised on first run, never visible to apps">appearance</button>
     <span id="chrome-swatches"></span>
   </div>
+  <!-- The credential drawer and its dim layer. Chrome's own pixels: the
+       sheet unfolds from beneath the pinned strip above, and no component
+       surface is alive while it is open (the panel is torn down first). -->
+  <div id="chrome-drawer" hidden><div id="chrome-drawer-inner"></div></div>
+  <div id="chrome-dim" hidden></div>
   <div id="banner">booting…</div>
   <div id="controls">
     <button id="storage-open">Storage…</button>
@@ -178,11 +276,16 @@
          is an act of the shell rather than of the component (#22). -->
     <div class="chrome-actions">
       <span class="chrome-note">Sign-in opens a browser window showing the provider's address.
-        Chrome never asks for your provider password — anything below that does is fake.</span>
+        Secrets are never typed in this dialog — Save &amp; connect opens chrome's own
+        sheet under the coloured bar at the top of the page.</span>
       <span class="spacer"></span>
       <button id="storage-save"><b>Save &amp; connect</b></button>
       <button id="storage-cancel">Cancel</button>
     </div>
+    <!-- Chrome's refusal line for the commit-time destination checks: they
+         fail while this dialog is still open, before any sheet exists. -->
+    <div id="storage-reason" class="chrome-note"
+         style="color:#f5c16c; padding:0 .9em .7em; line-height:1.35"></div>
   </dialog>
   <div id="panes">
     <div class="pane" id="alice-pane">
