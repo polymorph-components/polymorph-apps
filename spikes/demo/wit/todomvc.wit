@@ -211,6 +211,15 @@ world s3-panel {
   /// Declared once after `run`; chrome renders these in its own pixels.
   export credential-needs: func() -> list<credential-kind>;
 
+  /// The destination this panel's credentials are bound to: a URL origin
+  /// (scheme://host[:port]) or "" while none is configured. Chrome
+  /// re-reads this after every event, DISPLAYS it in its own credential
+  /// fields, and refuses to release credentials toward anything else —
+  /// the binding is chrome's, the panel only reports where its config
+  /// points. (#22; the enforcement of the engine's actual egress is #7's
+  /// network grant, out of scope here.)
+  export destination: func() -> string;
+
   /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its
   /// configuration when the user commits. `none` = not valid yet; the
@@ -240,6 +249,15 @@ world dropbox-panel {
 
   /// Declared once after `run`; chrome renders these in its own pixels.
   export credential-needs: func() -> list<credential-kind>;
+
+  /// The destination this panel's credentials are bound to: a URL origin
+  /// (scheme://host[:port]) or "" while none is configured. Chrome
+  /// re-reads this after every event, DISPLAYS it in its own credential
+  /// fields, and refuses to release credentials toward anything else —
+  /// the binding is chrome's, the panel only reports where its config
+  /// points. (#22; the enforcement of the engine's actual egress is #7's
+  /// network grant, out of scope here.)
+  export destination: func() -> string;
 
   /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its

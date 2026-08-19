@@ -49,6 +49,10 @@ const TOK_TEST: u32 = 5;
 
 const DEFAULT_ROOT: &str = "pm-demo";
 
+/// The one destination this panel's credentials may be released toward
+/// (#22) — the same origin its granted fetch is scoped to.
+const DESTINATION: &str = "https://api.dropboxapi.com";
+
 #[derive(Default, Deserialize, Serialize)]
 struct Seed {
     #[serde(default, rename = "appKey")]
@@ -328,6 +332,14 @@ impl Guest for Component {
     /// the values never cross back into this component.
     fn credential_needs() -> Vec<CredentialKind> {
         vec![CredentialKind::BearerToken, CredentialKind::RefreshToken]
+    }
+
+    /// This panel's configuration always points at one place: the Dropbox
+    /// API origin (#22). Chrome binds the credentials it holds to it and
+    /// re-derives the same constant from the committed config, so this
+    /// panel has no way to steer chrome's tokens elsewhere.
+    fn destination() -> String {
+        DESTINATION.to_string()
     }
 }
 

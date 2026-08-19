@@ -156,6 +156,29 @@ fn commit_config(app: &mut App) -> Option<String> {
     Some(serde_json::to_string(&out).expect("serialize outcome"))
 }
 
+/// Best-effort "origin" of the endpoint field: trim, drop any path, and
+/// lowercase the scheme+authority. Plain string manipulation is enough
+/// here — chrome re-normalizes with `new URL()` and compares origins
+/// itself, so a sloppy answer costs the panel its binding, not chrome
+/// its enforcement. "" when there is nothing to report.
+fn origin_of(endpoint: &str) -> String {
+    let raw = endpoint.trim().trim_end_matches('/');
+    if raw.is_empty() {
+        return String::new();
+    }
+    let (scheme, rest) = match raw.split_once("://") {
+        Some((s, r)) => (s, r),
+        // No scheme: chrome cannot parse it either, so report nothing
+        // rather than inventing one.
+        None => return String::new(),
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return String::new();
+    }
+    format!("{}://{}", scheme.to_lowercase(), authority.to_lowercase())
+}
+
 fn handle_event(app: &mut App, ev: Event) {
     match ev.token {
         TOK_ENDPOINT => app.endpoint = ev.value.unwrap_or_default(),
@@ -200,6 +223,16 @@ impl Guest for Component {
     /// the values never cross back into this component.
     fn credential_needs() -> Vec<CredentialKind> {
         vec![CredentialKind::AccessKey, CredentialKind::SecretKey]
+    }
+
+    /// Where this panel's configuration currently points (#22). Chrome
+    /// re-reads this after every event, shows it, and binds the
+    /// credentials it holds to it. Best-effort origin normalization only:
+    /// chrome re-parses with its own URL machinery and is the one that
+    /// enforces — this string is an INPUT to chrome's normalization,
+    /// never a claim chrome trusts as written.
+    fn destination() -> String {
+        APP.with(|a| origin_of(&a.borrow().endpoint))
     }
 }
 
