@@ -51,6 +51,33 @@
                                 max-width: 22em; overflow: hidden;
                                 text-overflow: ellipsis; white-space: nowrap; }
     #chrome-context .said { opacity: .85; }
+    /* THE PETNAME: the user's own word for a component, so chrome says it
+       in CHROME'S voice — no quotes, no monospace, full opacity, slightly
+       heavier than the surrounding chrome text. The contrast with
+       q.foreign above is the whole message: quoted+monospace means "a
+       component said this", plain chrome text means "you said this". */
+    #chrome-context .petname { font-weight: 600; letter-spacing: .01em;
+                               max-width: 14em; overflow: hidden;
+                               text-overflow: ellipsis; white-space: nowrap;
+                               /* The user's word is never the thing flex
+                                  squeezes: the max-width above caps a
+                                  pathological record, but within it the
+                                  petname wins the space fight — the
+                                  descriptive chrome sentences shrink
+                                  first. */
+                               flex: none; }
+    /* "calls itself" is one phrase; breaking it mid-air reads as two
+       stray words. The LONG chrome sentence stays wrappable. */
+    #chrome-context .calls-itself, .cred-sheet .calls-itself { white-space: nowrap; }
+    /* Clickable petname / "name it": chrome pixels in the strip, which is
+       the one place a component can never draw or reach. */
+    #chrome-context .petname.clickable { cursor: pointer;
+                                         text-decoration: underline dotted;
+                                         text-underline-offset: .2em; }
+    #chrome-name-it { font: inherit; color: inherit; cursor: pointer;
+                      background: rgba(255,255,255,.12);
+                      border: 1px solid rgba(255,255,255,.3);
+                      border-radius: 3px; padding: .05em .5em; white-space: nowrap; }
     #chrome-context .fresh { background: #b03030; color: #fff; font-weight: 600;
                              padding: .05em .5em; border-radius: 2px;
                              letter-spacing: .03em; white-space: nowrap; }
@@ -179,6 +206,34 @@
     .cred-sheet .cred-row button:first-child { background: #fff; color: #17182b;
                                                border-color: #fff; font-weight: 600; }
 
+    /* --- the naming sheet -----------------------------------------------
+       The SAME reveal above the strip (that geometry is the unforgeable
+       part), a LIGHTER session: no arming delay, no frozen surfaces, no
+       dim — nothing secret is typed here and the ceremony starts from
+       strip pixels no app can draw. It ships with `.armed` already set,
+       so the button row is never dimmed for a delay that does not exist.
+       The user's own word is shown in chrome's voice; what the component
+       calls itself stays in q.foreign, quoted and monospaced. */
+    .name-sheet .petname { font-weight: 600; }
+    .name-sheet .name-swatches { display: flex; gap: .35em; flex-wrap: wrap;
+                                 margin: .1em 0 .6em; }
+    .name-sheet .name-swatches button { width: 1.4em; height: 1.4em; padding: 0;
+                                        border-radius: 3px; cursor: pointer;
+                                        border: 1px solid rgba(255,255,255,.45); }
+    .name-sheet .name-swatches button.picked { outline: 2px solid #fff;
+                                               outline-offset: 1px; }
+    .name-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
+    .name-sheet .name-forget { display: flex; align-items: center; gap: .6em;
+                               flex-wrap: wrap; margin-top: .8em;
+                               padding-top: .6em;
+                               border-top: 1px solid rgba(255,255,255,.18); }
+    .name-sheet .name-forget button.forget { font: inherit; font-size: 12px;
+                                             cursor: pointer; padding: .3em .7em;
+                                             border-radius: 4px; color: #ffd0d0;
+                                             background: transparent;
+                                             border: 1px solid rgba(255,160,160,.5); }
+    .name-sheet .name-forget .hint { font-size: 10px; opacity: .75; }
+
     #banner { padding: .6em 0; background: #1a1a2e; color: #eee; font-size: 13px; }
     #banner .bar-inner { padding: 0 1em; box-sizing: border-box; }
     #controls { padding: .5em 0; background: #16213e; color: #ccc; }
@@ -253,6 +308,7 @@
       #chrome-rule { display: none; }
       #chrome-context { min-width: 0; flex: 1 1 auto; }
       #chrome-context q.foreign { max-width: 10em; }
+      #chrome-context .petname { max-width: 8em; }
 
       #controls { padding: .5em 0; font-size: 12px; }
       #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }

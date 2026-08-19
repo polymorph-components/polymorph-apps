@@ -64,8 +64,15 @@ panels:
     deno run --allow-read --allow-write tools/translate.ts \
         build/panel-dropbox.component.wasm build/panel-dropbox.plan.json
 
+# Source-level invariant checks (#22 ruling table): the petname never
+# crosses the frame seam, chrome never renders the word "password", and
+# the anchor colour is never made ambient. Cheap tripwires on properties
+# whose loss is otherwise invisible until it is a security bug.
+check:
+    bash scripts/check-invariants.sh
+
 # Assemble the servable demo directory.
-site: translate app panels
+site: translate app panels check
     mkdir -p serve
     deno check host/demo.ts host/frame.ts host/frame-backend.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/demo.js host/demo.ts
@@ -90,7 +97,7 @@ serve: site
 # todomvc spike: docs/ is served by GitHub Pages, the build is
 # committed). The page still needs LOCAL infra (relay + MinIO) or
 # ?relay=&s3= overrides — Pages hosts the artifact, not the network.
-pages: translate app panels
+pages: translate app panels check
     mkdir -p ../../docs/spike-demo
     deno check host/demo.ts host/frame.ts host/frame-backend.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o ../../docs/spike-demo/demo.js host/demo.ts
