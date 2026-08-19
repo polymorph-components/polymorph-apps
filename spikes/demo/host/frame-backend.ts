@@ -154,6 +154,7 @@ export function createFrameBackend(
       if (destroyed) return;
       destroyed = true;
       globalThis.removeEventListener("message", onWindowMessage);
+      globalThis.removeEventListener("message", onFault);
       // Resolve every waiter rather than leaving them hanging: a drain
       // on a dead surface is vacuously complete.
       for (const done of pendingDrains.values()) done();
