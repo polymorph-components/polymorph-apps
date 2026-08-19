@@ -234,6 +234,14 @@ impl Guest for Component {
     fn destination() -> String {
         APP.with(|a| origin_of(&a.borrow().endpoint))
     }
+
+    /// What this panel calls itself. SELF-DECLARED, therefore worth
+    /// nothing as identity: chrome renders it foreign-quoted and clamped,
+    /// keys its trust record on the artifact name it fetched, and lets
+    /// the user assign the name they will actually recognise.
+    fn nickname() -> String {
+        "S3 object storage".to_string()
+    }
 }
 
 export!(Component);

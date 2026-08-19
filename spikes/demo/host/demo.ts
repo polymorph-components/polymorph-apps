@@ -160,18 +160,50 @@ function applyChromeHue(hue: number) {
 // the chrome-hue story: these live with device state (#11), and a lost
 // table means reassignment — visible, so it must be announced, never
 // silent.
+// THREE NAMES, STRICTLY SEPARATED (the petname triangle):
+//   KEY       — the artifact name chrome fetched itself. Unforgeable
+//               provenance; the only thing that may address a record.
+//   NICKNAME  — what the component calls itself (`nickname()`).
+//               Self-declared, so it is rendered as foreign-quoted text
+//               and is never a key, never chrome's own voice.
+//   PETNAME   — what the USER calls it, typed in chrome's pixels and
+//               stored in the record. Chrome speaks this one in its own
+//               voice, because the user wrote it.
+// The demotion is the point: once a petname exists, the component's
+// self-description drops to a footnote ("calls itself …") and the name
+// with authority is the one the user chose.
 const MARKS_KEY = "pm-demo-surface-marks";
 
 interface SurfaceMark {
   hue: number;
   firstSeen: number;
+  /** THE PETNAME: the user's own word for this component, typed in
+   * chrome's own pixels and stored beside the mark. Optional — records
+   * written before petnames existed stay valid and simply have none, so
+   * there is no migration and an unnamed component keeps working exactly
+   * as it did. It is NEVER a key (the key is provenance, above) and it
+   * NEVER crosses the frame seam: no component may learn, influence, or
+   * collide with the word the user chose for it. */
+  petname?: string;
+}
+
+function loadMarks(): Record<string, SurfaceMark> {
+  try {
+    const table = JSON.parse(localStorage.getItem(MARKS_KEY) ?? "{}");
+    return (table && typeof table === "object") ? table as Record<string, SurfaceMark> : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveMarks(table: Record<string, SurfaceMark>): void {
+  try {
+    localStorage.setItem(MARKS_KEY, JSON.stringify(table));
+  } catch { /* nothing durable to write to */ }
 }
 
 function surfaceMark(provenance: string): { mark: SurfaceMark; isNew: boolean } {
-  let table: Record<string, SurfaceMark> = {};
-  try {
-    table = JSON.parse(localStorage.getItem(MARKS_KEY) ?? "{}");
-  } catch { /* treat as empty */ }
+  const table = loadMarks();
   const existing = table[provenance];
   if (existing) return { mark: existing, isNew: false };
   const used = new Set(Object.values(table).map((m) => m.hue));
@@ -180,11 +212,61 @@ function surfaceMark(provenance: string): { mark: SurfaceMark; isNew: boolean } 
   const hue = pool[Math.floor(Math.random() * pool.length)];
   const mark = { hue, firstSeen: Date.now() };
   table[provenance] = mark;
-  try {
-    localStorage.setItem(MARKS_KEY, JSON.stringify(table));
-  } catch { /* nothing durable to write to */ }
+  saveMarks(table);
   return { mark, isNew: true };
 }
+
+/** The hues no OTHER record is using, plus the one this record already
+ * has. Local uniqueness is the property assignment buys (see above), so
+ * the naming ceremony offers only colours that keep it. */
+function freeHues(provenance: string): number[] {
+  const table = loadMarks();
+  const used = new Set(
+    Object.entries(table).filter(([k]) => k !== provenance).map(([, m]) => m.hue),
+  );
+  const mine = table[provenance]?.hue;
+  return CHROME_HUES.filter((h) => !used.has(h) || h === mine);
+}
+
+/** Is this word already the user's name for a DIFFERENT component?
+ * Two records answering to one word would defeat the whole point of a
+ * petname — the user would have no way to tell which one is speaking.
+ * Compared trimmed and case-insensitively; returns the colliding record
+ * (its petname as the user wrote it, and its unforgeable provenance key)
+ * so chrome can say, in its own words, what the clash is. */
+function petnameCollision(
+  provenance: string,
+  petname: string,
+): { key: string; petname: string } | null {
+  const want = petname.trim().toLowerCase();
+  for (const [key, mark] of Object.entries(loadMarks())) {
+    if (key === provenance) continue;
+    const other = (mark.petname ?? "").trim();
+    if (other !== "" && other.toLowerCase() === want) return { key, petname: other };
+  }
+  return null;
+}
+
+/** Commit a petname + mark hue for one record. */
+function setPetname(provenance: string, petname: string, hue: number): void {
+  const table = loadMarks();
+  const mark = table[provenance] ?? { hue, firstSeen: Date.now() };
+  mark.hue = hue;
+  mark.petname = petname;
+  table[provenance] = mark;
+  saveMarks(table);
+}
+
+/** Delete the WHOLE record — mark, first-sight timestamp and petname
+ * together. Forgetting must be honest: a component whose petname was
+ * dropped but whose mark survived would still be greeted as familiar.
+ * After this the next mount is genuinely NEW again, and says so. */
+function forgetSurface(provenance: string): void {
+  const table = loadMarks();
+  delete table[provenance];
+  saveMarks(table);
+}
+
 
 /** Pre-provider-split key; read once as an S3 config so a configured
  * browser keeps working across the rework. */
@@ -464,6 +546,10 @@ interface PanelExports {
    * its held credentials to it, and revalidates at commit time — the
    * panel REPORTS a destination, chrome DECIDES what it means. */
   destination(): Promise<string>;
+  /** What the panel CALLS ITSELF. Self-declared and unverified: read
+   * once at mount, clamped, and rendered only as foreign-quoted text.
+   * It is never a table key and never chrome's own voice. */
+  nickname(): Promise<string>;
 }
 
 /** Chrome's own normalization of a panel-reported destination: parse
@@ -648,16 +734,53 @@ function err(e: unknown): string {
   return typeof p === "string" ? p : String(e);
 }
 
+/** What chrome knows about one component surface. `name` is the
+ * unforgeable provenance key chrome fetched the artifact by; `nickname`
+ * is what the component says about itself; `petname` is what the user
+ * decided to call it. Only the last of the three is ever spoken in
+ * chrome's own voice. */
+interface SurfaceIdentity {
+  name: string;
+  nickname: string;
+  hue: number;
+  isNew: boolean;
+  petname?: string;
+}
+
 /** Chrome's context slot: what secondary surface, if any, is on screen.
  * Called with null for "no secondary surface". The strip's own colour is
  * NOT touched here — it is the constant anchor; only the label changes.
  * `kind` says WHOSE pixels the secondary surface is: a component's
- * config panel, or chrome's own credential sheet. */
+ * config panel, chrome's own credential sheet, or chrome's own naming
+ * sheet. */
 let setChromeContext: (
-  surface:
-    | { name: string; hue: number; isNew: boolean; kind?: "panel" | "credentials" }
-    | null,
+  surface: (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" }) | null,
 ) => void = () => {};
+
+/** Chrome's naming ceremony, installed by `boot`. Module-level because
+ * the strip's "name it" control is rendered by `initChrome`, which runs
+ * before the drawer machinery exists. */
+let requestNaming: (surface: SurfaceIdentity) => void = () => {};
+
+/** The user's word for a component, in CHROME'S voice: not quoted, not
+ * monospaced, because the user wrote it and chrome is entitled to say
+ * it. Clamped anyway — the naming sheet caps input at 40, but a record
+ * hand-edited in devtools should not be able to stretch the strip. */
+function petnameSpan(petname: string): HTMLElement {
+  const el = document.createElement("span");
+  el.className = "petname";
+  el.textContent = petname.slice(0, 40);
+  return el;
+}
+
+/** The component's own account of itself, always foreign: quoted,
+ * monospaced, clamped, never joined into a chrome sentence. */
+function nicknameQuote(nickname: string): HTMLElement {
+  const q = document.createElement("q");
+  q.className = "foreign";
+  q.textContent = nickname.slice(0, 40);
+  return q;
+}
 
 function initChrome() {
   const { hue, fresh } = chromeHue();
@@ -676,31 +799,61 @@ function initChrome() {
       return;
     }
     const credentials = surface.kind === "credentials";
-    // While the sheet is open the strip NAMES it: the anchor and the
+    const naming = surface.kind === "naming";
+    // While a chrome sheet is open the strip NAMES it: the anchor and the
     // surface hanging off it say the same thing, so "which pixels am I
     // typing into" has a chrome-side answer.
-    if (credentials) {
+    if (credentials || naming) {
       const lead = document.createElement("span");
       lead.className = "said";
-      lead.textContent = "storage credentials ·";
+      lead.textContent = credentials ? "storage credentials ·" : "naming ·";
       context.append(lead);
     }
     const chip = document.createElement("span");
     chip.className = "chip";
     chip.style.background = `oklch(62% .16 ${surface.hue})`;
-    // Untrusted-string discipline: the component's name is QUOTED,
-    // clamped by CSS, and never joined into chrome's own sentence.
-    const name = document.createElement("q");
-    name.className = "foreign";
-    name.textContent = surface.name.slice(0, 40);
-    context.append(chip, name);
-    if (!credentials) {
+    context.append(chip);
+    // THE DEMOTION. With a petname, the name chrome SAYS is the user's
+    // own, in chrome's voice, and the component's self-description drops
+    // to a footnote. Without one, all chrome has is what the component
+    // calls itself — untrusted-string discipline: QUOTED, clamped by CSS,
+    // never joined into chrome's own sentence.
+    const petname = (surface.petname ?? "").trim();
+    if (petname !== "") {
+      const named = petnameSpan(petname);
+      if (!credentials && !naming) {
+        // The click target is chrome pixels in the strip — a place no
+        // component can draw — so the ceremony cannot be baited from
+        // inside an app rectangle.
+        named.setAttribute("role", "button");
+        named.setAttribute("tabindex", "0");
+        named.classList.add("clickable");
+        named.title = "rename or forget";
+        named.onclick = () => requestNaming(surface);
+        // A control that announces itself as a button to assistive tech
+        // must BE one: Enter and Space activate it, exactly as they would
+        // a real <button>. (Space is prevented from scrolling the page
+        // out from under the ceremony it is about to open.)
+        named.onkeydown = (ev: KeyboardEvent) => {
+          if (ev.key !== "Enter" && ev.key !== " ") return;
+          if (ev.key === " ") ev.preventDefault();
+          requestNaming(surface);
+        };
+      }
+      const said = document.createElement("span");
+      said.className = "said calls-itself";
+      said.textContent = "calls itself";
+      context.append(named, said, nicknameQuote(surface.nickname));
+    } else {
+      context.append(nicknameQuote(surface.nickname));
+    }
+    if (!credentials && !naming) {
       const said = document.createElement("span");
       said.className = "said";
       said.textContent = "— provider configuration panel · drawn by the component, not by chrome";
       context.append(said);
     }
-    if (surface.isNew && !credentials) {
+    if (surface.isNew && !credentials && !naming) {
       // The TOFU moment is the one worth interrupting for: recognition
       // marks mean nothing the first time, and the first time is when
       // impersonation would land.
@@ -708,6 +861,17 @@ function initChrome() {
       fresh.className = "fresh";
       fresh.textContent = "NEW — first time this component draws here";
       context.append(fresh);
+    }
+    if (petname === "" && !credentials && !naming) {
+      // Chrome's own control, in chrome's own pixels: the offer to stop
+      // relying on what the component says about itself.
+      const nameIt = document.createElement("button");
+      nameIt.id = "chrome-name-it";
+      nameIt.type = "button";
+      nameIt.textContent = "name it";
+      nameIt.title = "give this component your own name";
+      nameIt.onclick = () => requestNaming(surface);
+      context.append(nameIt);
     }
   };
   setChromeContext(null);
@@ -1337,12 +1501,35 @@ async function boot() {
     | {
       cfg: StorageConfig;
       destination: string;
-      surface: { name: string; hue: number; isNew: boolean };
+      surface: SurfaceIdentity;
     }
     | null = null;
   let armTimer = 0;
   /** Re-fitting listener for the open sheet, removed on close. */
   let drawerAnchor: (() => void) | null = null;
+
+  /** THE NAMING SESSION — a second, LIGHTWEIGHT tenant of the same
+   * drawer. It reuses the sheet's geometry (the reveal above the strip,
+   * which is the unforgeable part) but NOT the credential session's
+   * defences: no arming delay, no runner suspension, no page dim.
+   *
+   * Why that is not a downgrade. Arming defends SECRET ENTRY against a
+   * baited mis-tap — an app training rapid taps where a chrome control is
+   * about to appear — and suspension keeps component code from observing
+   * or racing a secret. Naming is neither: nothing secret is typed, the
+   * ceremony is initiated from strip pixels an app cannot draw or reach,
+   * and the worst outcome of a mis-tap is an empty text field the user
+   * closes. Paying the arming tax here would train users to click through
+   * a delay that means something elsewhere, which is the real cost.
+   *
+   * THE CREDENTIAL SESSION ALWAYS WINS: naming refuses to open while a
+   * credential sheet is up or arming, and an opening credential sheet
+   * evicts a naming sheet. Both sessions share `drawer`/`drawerInner`, so
+   * every deferred teardown below tests BOTH — a close timer from one
+   * session must never blank the other's sheet (the late-teardown
+   * ordering bug this file has hit before, in session-aware form). */
+  let namingSession: { surface: SurfaceIdentity; hue: number } | null = null;
+  let namingAnchor: (() => void) | null = null;
 
   /** Persist and connect: identical to the pre-drawer commit tail, just
    * moved behind the sheet's Confirm. */
@@ -1375,11 +1562,246 @@ async function boot() {
     clearCredentials();
     credFields = credBinding = credWarning = credReason = null;
     setTimeout(() => {
-      if (!drawerSession) {
+      // Session-aware, not drawer-scoped: a naming sheet may have claimed
+      // the drawer in the meantime, and blanking it here would erase a
+      // live sheet belonging to somebody else.
+      if (!drawerSession && !namingSession) {
         drawerInner.replaceChildren();
         drawer.hidden = true;
       }
     }, ARM_MS);
+  };
+
+  /** Close the naming sheet. Deliberately NOT `closeDrawer`: that one
+   * resumes runners, un-dims and clears held credentials, none of which
+   * this session ever touched. */
+  const closeNamingDrawer = ({ context = true }: { context?: boolean } = {}) => {
+    if (!namingSession) return;
+    namingSession = null;
+    if (namingAnchor) globalThis.removeEventListener("resize", namingAnchor);
+    namingAnchor = null;
+    drawerInner.style.height = "0px";
+    if (context) setChromeContext(null);
+    setTimeout(() => {
+      // Same session-aware test as the credential close: the credential
+      // sheet may have evicted this one and be live in the drawer now.
+      if (!namingSession && !drawerSession) {
+        drawerInner.replaceChildren();
+        drawer.hidden = true;
+      }
+    }, ARM_MS);
+  };
+
+  /** Build chrome's naming sheet. EVERY pixel here is chrome's. The only
+   * component-influenced strings are the nickname and the provenance
+   * key, both quoted, clamped and foreign-styled. */
+  const buildNameSheet = (surface: SurfaceIdentity, hue: number) => {
+    const root = document.createElement("div");
+    root.className = "cred-sheet name-sheet armed";
+    root.style.maxWidth = "72rem";
+    root.style.marginLeft = "auto";
+    root.style.marginRight = "auto";
+
+    const h = document.createElement("h2");
+    h.textContent = "Name this component";
+
+    // Context, in the two voices that are not the user's: what the
+    // component says about itself, and what chrome fetched it as.
+    const says = document.createElement("div");
+    says.className = "cred-line";
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.style.background = `oklch(62% .16 ${hue})`;
+    const saysLead = document.createElement("span");
+    saysLead.className = "said";
+    saysLead.textContent = "calls itself";
+    says.append(chip, saysLead, nicknameQuote(surface.nickname));
+
+    const from = document.createElement("div");
+    from.className = "cred-line";
+    const fromLead = document.createElement("span");
+    fromLead.className = "said";
+    fromLead.textContent = "chrome fetched it as";
+    const key = document.createElement("q");
+    key.className = "foreign";
+    key.textContent = surface.name.slice(0, 60);
+    from.append(fromLead, key);
+
+    const field = document.createElement("div");
+    field.className = "cred-field";
+    const label = document.createElement("label");
+    label.textContent = "Your name for it";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.autocomplete = "off";
+    input.maxLength = 40;
+    // NEVER PREFILLED FROM THE NICKNAME. A prefilled self-declared name
+    // would let attacker-chosen words walk into chrome's voice by
+    // accept-the-default — the user would "assign" a petname they never
+    // wrote, and chrome would then speak it unquoted, which is exactly
+    // the authority the whole three-name split exists to withhold. An
+    // EXISTING petname is prefilled, because that one the user typed.
+    input.value = surface.petname ?? "";
+    input.placeholder = "a word you will recognise";
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent =
+      "chrome will use this name in its own voice; what the component calls itself stays quoted";
+    field.append(label, input, hint);
+
+    // Mark hue: the current one preselected, plus every hue no other
+    // record is using (local uniqueness — see freeHues).
+    const swatchLabel = document.createElement("div");
+    swatchLabel.className = "cred-line said";
+    swatchLabel.textContent = "recognition colour";
+    const swatchRow = document.createElement("div");
+    swatchRow.className = "name-swatches";
+    let picked = hue;
+    const buttons: HTMLButtonElement[] = [];
+    for (const h of freeHues(surface.name)) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.style.background = `oklch(62% .16 ${h})`;
+      b.title = `hue ${h}`;
+      b.classList.toggle("picked", h === hue);
+      b.onclick = () => {
+        picked = h;
+        for (const other of buttons) other.classList.toggle("picked", other === b);
+      };
+      buttons.push(b);
+      swatchRow.append(b);
+    }
+
+    const reason = document.createElement("div");
+    reason.className = "cred-reason";
+
+    const note = document.createElement("div");
+    note.className = "cred-note";
+    note.textContent =
+      "this sheet is chrome's, opened from the bar below it — a component cannot draw here, and the name you choose is never given back to it";
+
+    const row = document.createElement("div");
+    row.className = "cred-row";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    row.append(saveBtn, cancelBtn);
+
+    // Forgetting is offered only when there is something to forget.
+    let forgetBtn: HTMLButtonElement | null = null;
+    const forgetRow = document.createElement("div");
+    forgetRow.className = "name-forget";
+    if ((surface.petname ?? "").trim() !== "") {
+      forgetBtn = document.createElement("button");
+      forgetBtn.type = "button";
+      forgetBtn.className = "forget";
+      forgetBtn.textContent = "forget this component";
+      const forgetNote = document.createElement("span");
+      forgetNote.className = "hint";
+      forgetNote.textContent = "drops the name AND the colour — next time it is NEW again";
+      forgetRow.append(forgetBtn, forgetNote);
+    }
+
+    root.append(h, says, from, field, swatchLabel, swatchRow, note, reason, row);
+    if (forgetBtn) root.append(forgetRow);
+    return { root, input, saveBtn, cancelBtn, forgetBtn, reason, hue: () => picked };
+  };
+
+  const openNamingDrawer = (surface: SurfaceIdentity) => {
+    // MUTUAL EXCLUSION, and the credential session wins outright: a sheet
+    // that is collecting (or about to accept) secrets is never displaced
+    // by a naming ceremony.
+    if (drawerSession) return;
+    if (namingSession) closeNamingDrawer({ context: false });
+    const session = { surface, hue: surface.hue };
+    namingSession = session;
+    drawer.hidden = false;
+    setChromeContext({ ...surface, kind: "naming" });
+
+    const built = buildNameSheet(surface, surface.hue);
+    drawerInner.replaceChildren(built.root);
+
+    const finish = (status: string) => {
+      closeNamingDrawer();
+      // Chrome's own line in chrome's own bar — not a pane's status
+      // line: this is a statement about the shell's trust table, not
+      // about anybody's replica. Restored to the standing rule after,
+      // the same way the fresh-anchor announcement is.
+      if (status) {
+        const rule = document.getElementById("chrome-rule");
+        if (rule) {
+          rule.textContent = status;
+          setTimeout(() => {
+            rule.textContent =
+              "storage secrets are only entered in the sheet this bar reveals above itself";
+          }, 8000);
+        }
+      }
+    };
+
+    built.saveBtn.onclick = () => {
+      if (namingSession !== session) return;
+      const petname = built.input.value.trim();
+      if (petname === "") {
+        // Refused rather than treated as "forget": clearing the field is
+        // an ambiguous gesture, and Cancel is the unambiguous way out.
+        built.reason.textContent = "type a name, or Cancel to leave it unnamed";
+        return;
+      }
+      const clash = petnameCollision(surface.name, petname);
+      if (clash) {
+        // Chrome's own words, naming the colliding record by BOTH its
+        // petname and its unforgeable provenance key — the user needs to
+        // know which component already answers to this word.
+        built.reason.textContent =
+          `you already call another component "${clash.petname}" (fetched as ${clash.key}) — pick a different name`;
+        return;
+      }
+      setPetname(surface.name, petname, built.hue());
+      finish(`saved — chrome will call this component ${petname} from now on`);
+    };
+    built.cancelBtn.onclick = () => {
+      if (namingSession !== session) return;
+      finish("");
+    };
+    if (built.forgetBtn) {
+      built.forgetBtn.onclick = () => {
+        if (namingSession !== session) return;
+        forgetSurface(surface.name);
+        finish("forgotten — this component will be announced as NEW next time");
+      };
+    }
+
+    // Same height budget as the credential sheet: the anchor must never
+    // be pushed off-screen by a sheet that hangs off it.
+    const fit = () => {
+      const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
+      drawer.style.setProperty(
+        "--chrome-sheet-max",
+        `${Math.max(0, globalThis.innerHeight - stripH)}px`,
+      );
+    };
+    const refit = () => {
+      fit();
+      if (namingSession !== session) return;
+      drawerInner.style.height = "auto";
+      drawerInner.style.height = `${drawerInner.offsetHeight}px`;
+    };
+    fit();
+    namingAnchor = refit;
+    globalThis.addEventListener("resize", refit);
+
+    drawerInner.style.height = "auto";
+    const target = drawerInner.offsetHeight;
+    drawerInner.style.height = "0px";
+    void drawerInner.offsetHeight;
+    drawerInner.style.height = `${target}px`;
+    // No arming delay (see namingSession): focus is given immediately,
+    // because there is nothing here a mis-tap could spend.
+    built.input.focus();
   };
 
   /** Build chrome's sheet. Every word here is chrome's; the only foreign
@@ -1401,7 +1823,10 @@ async function boot() {
     h.textContent = "Storage credentials";
 
     // The requesting provider, by its surface mark: same chip colour the
-    // strip showed while its panel was up, same quoted name.
+    // strip showed while its panel was up. WHO is named the same way the
+    // strip names it — the user's petname in chrome's voice when there is
+    // one, with the component's self-description demoted to a foreign
+    // footnote; otherwise only what the component calls itself, quoted.
     const who = document.createElement("div");
     who.className = "cred-line";
     const chip = document.createElement("span");
@@ -1409,10 +1834,16 @@ async function boot() {
     chip.style.background = `oklch(62% .16 ${session.surface.hue})`;
     const lead = document.createElement("span");
     lead.textContent = "requested by";
-    const name = document.createElement("q");
-    name.className = "foreign";
-    name.textContent = session.surface.name.slice(0, 40);
-    who.append(lead, chip, name);
+    who.append(lead, chip);
+    const petname = (session.surface.petname ?? "").trim();
+    if (petname !== "") {
+      const said = document.createElement("span");
+      said.className = "said calls-itself";
+      said.textContent = "calls itself";
+      who.append(petnameSpan(petname), said, nicknameQuote(session.surface.nickname));
+    } else {
+      who.append(nicknameQuote(session.surface.nickname));
+    }
 
     credBinding = document.createElement("div");
     credBinding.className = "cred-line";
@@ -1464,6 +1895,11 @@ async function boot() {
     prefill: Record<string, string>,
     mismatch: boolean,
   ) => {
+    // The credential session takes the drawer from anything else holding
+    // it: naming is an interruptible convenience, secret entry is not.
+    // Closed WITHOUT touching the strip context, which this session is
+    // about to claim for itself.
+    if (namingSession) closeNamingDrawer({ context: false });
     drawerSession = session;
     // NO COMPONENT SURFACE IS LIVE WHILE SECRETS ARE ON SCREEN: the panel
     // was torn down by the caller before this ran, and every remaining
@@ -1615,7 +2051,7 @@ async function boot() {
       runner: Runner;
       /** The surface mark chrome showed for this panel; the drawer
        * repeats it so "who asked" survives the panel's teardown. */
-      surface: { name: string; hue: number; isNew: boolean };
+      surface: SurfaceIdentity;
     }
     | null = null;
   let panelDispatch: (ev: UiEvent) => void = () => {};
@@ -1645,13 +2081,16 @@ async function boot() {
     region.innerHTML = "";
     panelMounted = null;
     activePanel = null;
-    // The strip goes back to naming the app regions — UNLESS this
-    // teardown is the handoff into the credential drawer: the dialog's
-    // close event/observer fires AFTER the drawer has claimed the strip
-    // context (the same late-teardown ordering the retirement observer
-    // exists for), and resetting here would blank the drawer's line.
+    // The strip goes back to naming the app regions — UNLESS a chrome
+    // sheet has already claimed the strip context: the dialog's close
+    // event/observer fires AFTER the handoff (the same late-teardown
+    // ordering the retirement observer exists for), and resetting here
+    // would blank the live sheet's line. Session-aware, not
+    // surface-scoped: BOTH tenants of the drawer must be tested.
     if (drawerSession) {
       setChromeContext({ ...drawerSession.surface, kind: "credentials" });
+    } else if (namingSession) {
+      setChromeContext({ ...namingSession.surface, kind: "naming" });
     } else {
       setChromeContext(null);
     }
@@ -1696,7 +2135,17 @@ async function boot() {
     // The component's colour is public (derived from its own bytes), but
     // scope it to the region anyway: chrome's document root stays clean.
     region.style.setProperty("--component-color", `oklch(62% .16 ${hue})`);
-    setChromeContext({ name, hue, isNew });
+    // Before instantiation chrome has nothing but provenance to show, so
+    // that is what it shows — the nickname is a claim only the running
+    // component can make, and it lands a moment later.
+    let identity: SurfaceIdentity = {
+      name,
+      nickname: name,
+      hue,
+      isNew,
+      petname: mark.petname,
+    };
+    setChromeContext(identity);
 
     // Same sandboxed-frame treatment as the app panes: the panel handles
     // provider credentials, so the argument for keeping it out of
@@ -1728,10 +2177,30 @@ async function boot() {
     }
     const panel = instance.exports as unknown as PanelExports;
     const runner = createRunner(surface);
+    // WHAT THE COMPONENT CALLS ITSELF: read ONCE, here, and never again —
+    // a name that could change under chrome's feet would be a name chrome
+    // could not have shown the user before they acted on it. Clamped to
+    // 40 at the read, exactly as `destination` is clamped at render, so
+    // no downstream renderer has to remember. A hostile or broken panel
+    // that traps, hangs the read, or answers with whitespace does NOT
+    // take chrome down: chrome falls back to the provenance key it
+    // fetched the artifact by, rendered foreign-quoted like any other
+    // machine string.
+    let nickname = name;
+    try {
+      const declared = await runner.call(() => panel.nickname());
+      const clamped = (declared ?? "").trim().slice(0, 40);
+      if (clamped !== "") nickname = clamped;
+    } catch (e) {
+      console.warn(`[panel] nickname: ${err(e)}`);
+    }
+    if (generation !== panelGeneration) return;
+    identity = { ...identity, nickname };
+    setChromeContext(identity);
     panelMounted = provider;
     // Chrome keeps the handles it needs to COMMIT; the panel only ever
     // gets events and answers questions.
-    activePanel = { provider, panel, runner, surface: { name, hue, isNew } };
+    activePanel = { provider, panel, runner, surface: identity };
     panelDispatch = (ev) => {
       if (panelMounted !== provider) return;
       runner.call(() => panel.onEvent(ev))
@@ -1789,7 +2258,30 @@ async function boot() {
     if (!dialog.open && panelMounted !== null) teardownPanel();
   }).observe(dialog, { attributes: true, attributeFilter: ["open"] });
 
+  // Chrome's naming ceremony, reachable ONLY from the strip's own
+  // pixels (see setChromeContext).
+  requestNaming = (surface) => {
+    // The credential session wins: while secrets are on screen (or
+    // arming) the drawer is not available for anything else.
+    if (drawerSession) return;
+    // A modal <dialog> paints in the TOP LAYER — above the pinned chrome
+    // zone, and therefore above the sheet the strip would reveal. So the
+    // ceremony takes the page back first: the panel is retired and the
+    // dialog closed (the same retirement path ESC takes) BEFORE chrome's
+    // own sheet appears. Naming outliving the panel session is correct
+    // anyway — the name is a statement about the component, not about
+    // this visit to its configuration.
+    if (dialog.open) {
+      teardownPanel();
+      dialog.close();
+    }
+    openNamingDrawer(surface);
+  };
+
   const openStorage = () => {
+    // The dialog would paint over the naming sheet (top layer); close it
+    // rather than leave a live sheet stranded behind a modal.
+    closeNamingDrawer();
     dialogNote("");
     dialog.showModal();
     mountPanel(loadStorage()?.provider ?? "s3").catch((e) => {
@@ -2004,6 +2496,31 @@ async function boot() {
         (drawerInner.querySelector(".cred-row button:last-child") as
           | HTMLButtonElement
           | null)?.click(),
+    },
+    // The naming ceremony, for driving. `nameIt` clicks the strip's own
+    // control — chrome pixels, the only place the ceremony can start.
+    naming: {
+      open: () => namingSession !== null,
+      nameIt: () =>
+        (document.getElementById("chrome-name-it") as HTMLButtonElement | null)?.click(),
+      type: (value: string) => {
+        const input = drawerInner.querySelector(".name-sheet input") as HTMLInputElement | null;
+        if (input) input.value = value;
+      },
+      save: () =>
+        (drawerInner.querySelector(".name-sheet .cred-row button:first-child") as
+          | HTMLButtonElement
+          | null)?.click(),
+      cancel: () =>
+        (drawerInner.querySelector(".name-sheet .cred-row button:last-child") as
+          | HTMLButtonElement
+          | null)?.click(),
+      forget: () =>
+        (drawerInner.querySelector(".name-sheet .forget") as HTMLButtonElement | null)?.click(),
+      reason: () =>
+        (drawerInner.querySelector(".name-sheet .cred-reason") as HTMLElement | null)?.textContent ??
+          "",
+      marks: () => loadMarks(),
     },
   };
   say("ready — E2E-encrypted, three replicas, two sync paths");

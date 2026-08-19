@@ -299,6 +299,14 @@ impl Guest for Component {
     fn destination() -> String {
         DESTINATION.to_string()
     }
+
+    /// What this panel calls itself. SELF-DECLARED, therefore worth
+    /// nothing as identity: chrome renders it foreign-quoted and clamped,
+    /// keys its trust record on the artifact name it fetched, and lets
+    /// the user assign the name they will actually recognise.
+    fn nickname() -> String {
+        "Dropbox".to_string()
+    }
 }
 
 export!(Component);

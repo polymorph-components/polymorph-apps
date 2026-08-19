@@ -245,6 +245,16 @@ world s3-panel {
   /// network grant, out of scope here.)
   export destination: func() -> string;
 
+  /// What this component CALLS ITSELF. Self-declared and therefore
+  /// unverified: chrome reads it once at mount and renders it ONLY as
+  /// foreign-quoted text, clamped, never joined into chrome's own
+  /// sentence and never used as a lookup key. The unforgeable identity
+  /// is the artifact name chrome fetched (provenance); the name the
+  /// USER trusts is the petname the user types in chrome's own pixels.
+  /// Three names, strictly separated — a self-declared name that could
+  /// address a trust record would be impersonation through the table.
+  export nickname: func() -> string;
+
   /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its
   /// configuration when the user commits. `none` = not valid yet; the
@@ -287,6 +297,10 @@ world dropbox-panel {
   /// points. (#22; the enforcement of the engine's actual egress is #7's
   /// network grant, out of scope here.)
   export destination: func() -> string;
+
+  /// What this component CALLS ITSELF — see `s3-panel.nickname`. Read
+  /// once at mount, rendered only as foreign-quoted text, never a key.
+  export nickname: func() -> string;
 
   /// Chrome-driven commit: chrome owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its
