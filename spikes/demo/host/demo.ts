@@ -749,7 +749,8 @@ async function boot() {
     const note = document.getElementById("chrome-rule")!;
     note.textContent = "new chrome colour set for this device — remember it";
     setTimeout(() => {
-      note.textContent = "storage secrets are only entered in the sheet under this bar";
+      note.textContent =
+        "storage secrets are only entered in the sheet this bar reveals above itself";
     }, 15000);
   }
 
@@ -1052,12 +1053,25 @@ async function boot() {
   // the dialog they sat mid-page between the sandboxed region and the
   // action row: chrome's pixels by construction, but not RECOGNISABLY so
   // — an app can draw that same rectangle, pixel for pixel, inside its
-  // own region. They now live on a sheet that unfolds from directly
-  // beneath the pinned strip, painted in the user's own anchor colour,
-  // with the panel already torn down and every remaining surface frozen
-  // and dimmed. Position is the anchor; the colour is the secondary one.
+  // own region. They now live on a sheet that unfolds ABOVE the pinned
+  // strip, painted in the user's own anchor colour, with the panel
+  // already torn down and every remaining surface frozen and dimmed.
+  //
+  // ABOVE, not below, and the distinction is the whole defence. A sheet
+  // BENEATH the strip is forgeable by adjacency: the strip floats over
+  // scrollable content, so an app frame can be scrolled flush to the
+  // strip's bottom edge and paint a counterfeit that appears attached to
+  // the real bar. The band ABOVE the strip is unreachable at every scroll
+  // offset — the strip is pinned to the viewport's top edge, so there is
+  // no position an app can occupy there. And the sheet ARRIVES by pushing
+  // the real strip down: an app can paint a sheet, but it cannot move
+  // chrome's bar, so the reveal motion is itself unforgeable. Position is
+  // the anchor, the motion is its proof, and the colour is secondary.
   const drawer = document.getElementById("chrome-drawer") as HTMLElement;
   const drawerInner = document.getElementById("chrome-drawer-inner") as HTMLElement;
+  /** The bar the sheet opens above — measured for the sheet's height
+   * budget, so the anchor can never be pushed off-screen. */
+  const strip = document.getElementById("chrome-strip") as HTMLElement | null;
   const dim = document.getElementById("chrome-dim") as HTMLElement;
   /** The dialog's own refusal line: the commit-time destination checks
    * fail while the dialog is still open and no sheet exists yet. */
@@ -1327,7 +1341,7 @@ async function boot() {
     }
     | null = null;
   let armTimer = 0;
-  /** Re-anchoring listener for the open sheet, removed on close. */
+  /** Re-fitting listener for the open sheet, removed on close. */
   let drawerAnchor: (() => void) | null = null;
 
   /** Persist and connect: identical to the pre-drawer commit tail, just
@@ -1428,7 +1442,7 @@ async function boot() {
     const note = document.createElement("div");
     note.className = "cred-note";
     note.textContent =
-      "secrets are only ever typed here, under your colored bar — every app surface is frozen and dimmed while this sheet is open";
+      "secrets are only ever typed here, in the space this bar just opened above itself — every app surface is frozen and dimmed while this sheet is open";
 
     const row = document.createElement("div");
     row.className = "cred-row";
@@ -1522,17 +1536,33 @@ async function boot() {
       tablet.status("storage setup cancelled — nothing saved", true);
     };
 
-    // Hang the sheet off the pinned strip's measured bottom edge. The
-    // strip is sticky at top:0, so while the drawer is open this is the
-    // strip's height — measured rather than hardcoded because the strip
-    // wraps to two rows on a phone.
-    const anchorTo = () => {
-      const strip = document.getElementById("chrome-strip");
-      drawer.style.top = `${strip ? strip.getBoundingClientRect().bottom : 0}px`;
+    // Budget the sheet against the space it actually has. The sheet grows
+    // ABOVE the strip inside one sticky assembly, so a sheet taller than
+    // the viewport would push the strip off the bottom of the screen —
+    // losing the anchor at the exact moment a secret is on screen. The
+    // sheet is therefore capped at viewport-minus-strip and scrolls
+    // internally past that (see .cred-sheet's --chrome-sheet-max).
+    // Measured rather than hardcoded because the strip wraps to two rows
+    // on a phone, and re-measured on resize/rotation.
+    const fit = () => {
+      // ceil: a fractional strip height (it wraps to two rows on a phone)
+      // would otherwise leave the bar hanging a subpixel off the bottom.
+      const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
+      const budget = Math.max(0, globalThis.innerHeight - stripH);
+      drawer.style.setProperty("--chrome-sheet-max", `${budget}px`);
     };
-    anchorTo();
-    drawerAnchor = anchorTo;
-    globalThis.addEventListener("resize", anchorTo);
+    const refit = () => {
+      fit();
+      // The animated height is a pixel target, so it goes stale when the
+      // budget changes under it; re-measure at auto and retarget.
+      if (drawerSession !== session) return;
+      drawerInner.style.height = "auto";
+      const h = drawerInner.offsetHeight;
+      drawerInner.style.height = `${h}px`;
+    };
+    fit();
+    drawerAnchor = refit;
+    globalThis.addEventListener("resize", refit);
 
     // Disabled BEFORE the first frame, inputs included: a secret must not
     // be typeable into a sheet the user has not yet had time to see.
@@ -1547,8 +1577,10 @@ async function boot() {
     ];
     for (const c of controls) c.disabled = true;
 
-    // Animate 0 → the measured content height (see chrome.ts:84-90:
-    // scrollHeight misses flex-end top-overflow, so measure at auto).
+    // Animate 0 → the measured content height. One property drives the
+    // whole assembly: the sheet's growth pushes the strip down and the
+    // page content with it, on one curve (spikes/todomvc/host/chrome.ts:82-90
+    // — scrollHeight misses the flex-end top-overflow, so measure at auto).
     drawerInner.style.height = "auto";
     const target = drawerInner.offsetHeight;
     drawerInner.style.height = "0px";
