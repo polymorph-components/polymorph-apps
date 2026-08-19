@@ -103,11 +103,27 @@ lightness/chroma in OKLCH, so contrast cannot be customised away), and
 never disclosed to components. It stays CONSTANT while secondary
 surfaces come and go: an anchor that changed per component would stop
 being an anchor. While a provider panel is open, the strip names it — a
-colour chip derived from the component's own bytes (assigned, so a
-component cannot choose how it is labelled), its name QUOTED and
-clamped, then chrome's own words ("drawn by the component, not by
-chrome"). The same derived colour edges the panel region, so the
-rectangle and its label visibly agree. A reset (storage eviction) is
+recognition chip whose colour is **assigned at first sight** (a TOFU
+trust table, locally unique), its name QUOTED and clamped, then
+chrome's own words ("drawn by the component, not by chrome") — plus a
+loud **"NEW — first time this component draws here"** marker on first
+sight, which is the moment impersonation would land. The same assigned
+colour edges the panel region, so the rectangle and its label visibly
+agree.
+
+Recognition colours are **never derived**. Two derivations died here to
+one attack — making chrome's own strip vouch the wrong colour: deriving
+from component bytes let an impersonator grind its artifact until the
+strip assigned it the target's colour (and reshuffled on every
+legitimate update); deriving from HMAC(user-secret, name) closed the
+grind but reopened it through the other input, since names are
+self-declared. Assignment also buys what no derivation can: local
+uniqueness — hues are handed out from the unused set, so two trust
+records on one device never share a mark while the palette lasts. The
+trust-record key must be unforgeable provenance (here: the artifact
+name as fetched by chrome from its own origin; with #3/#10, the
+publisher's verifying key) — a self-declared name must never be able to
+look up someone else's record. A reset (storage eviction) is
 ANNOUNCED, never silent — an anchor that quietly changes trains the user
 that it changes.
 
@@ -333,6 +349,15 @@ reports background queue depth and per-timer skip counts.
      port could have become another frame's shell. The embedder check is
      `e.source === window.parent`; origin cannot be used, because every
      sandboxed frame reports "null".
+- **The paseo webview does not deliver `<dialog>` close events.** Native
+  `close()` flips `.open`, manual `dispatchEvent` delivers fine, but the
+  engine-queued close event never arrives — and modals also close
+  spuriously without any event. Retirement therefore triggers on the
+  **state change** (a MutationObserver on the `open` attribute) with the
+  close event kept as belt-and-braces. Same lesson as the memory-leak
+  hunt: the automation webview is not a reference environment — the
+  companion CDP probe confirms real Chromium delivers the event and
+  tears down correctly.
 - **Isolation costs the old verification path**: chrome (and any test
   driver) can no longer read into surfaces, and `browser_snapshot` stops
   at the iframe. Driving is now engine-level assertions plus frame

@@ -127,17 +127,59 @@ function applyChromeHue(hue: number) {
   strip.style.setProperty("--chrome-fg", "#f4f6fc");
 }
 
-/** The component's assigned colour: derived from the component's own
- * bytes, so a component cannot CHOOSE how it is labelled (it aids
- * continuity — "the same component as last time" — and is not an
- * authenticator). Distinct from chrome's personal colour by
- * construction: this one is public, that one is not. */
-async function componentHue(bytes: Uint8Array): Promise<number> {
-  // Copy into a plain ArrayBuffer: the dom lib's BufferSource excludes
-  // SharedArrayBuffer-backed views.
-  const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
-  return ((digest[0] << 8) | digest[1]) % 360;
+// Surface marks: the recognition colour chrome shows for a component is
+// ASSIGNED at first sight and stored in a trust record — never derived.
+//
+// Two derivations died here, both to the same attack: making CHROME'S
+// OWN STRIP vouch the wrong colour. Deriving from component bytes let an
+// impersonator grind its artifact until the strip assigned it the
+// target's colour (and reshuffled every legitimate update). Deriving
+// from HMAC(user-secret, name) fixed the grind only to reopen it
+// through the other input: names are self-declared, so declaring the
+// target's name yields the target's colour. Any copyable-pixel colour is
+// trivially fakeable INSIDE an attacker's rectangle; the strip is the
+// only place it means anything, so what renders there must not be a
+// function of anything an attacker chooses.
+//
+// Assignment also buys the property no derivation can: LOCAL
+// UNIQUENESS. Hues are handed out from the unused set, so two trust
+// records on this device never share a mark while the palette lasts
+// (past that, colours stop distinguishing and the framework needs
+// shapes/patterns — recorded, not solved).
+//
+// The record key must be unforgeable PROVENANCE, never self-declared
+// identity — a name that can look up someone else's record is the same
+// attack through the table. Here the key is the artifact name AS
+// FETCHED BY CHROME from its own origin (chrome-verified provenance in
+// this demo); when signed releases and publisher identity land (#3,
+// #10), it becomes the publisher's verifying key. Durability follows
+// the chrome-hue story: these live with device state (#11), and a lost
+// table means reassignment — visible, so it must be announced, never
+// silent.
+const MARKS_KEY = "pm-demo-surface-marks";
+
+interface SurfaceMark {
+  hue: number;
+  firstSeen: number;
+}
+
+function surfaceMark(provenance: string): { mark: SurfaceMark; isNew: boolean } {
+  let table: Record<string, SurfaceMark> = {};
+  try {
+    table = JSON.parse(localStorage.getItem(MARKS_KEY) ?? "{}");
+  } catch { /* treat as empty */ }
+  const existing = table[provenance];
+  if (existing) return { mark: existing, isNew: false };
+  const used = new Set(Object.values(table).map((m) => m.hue));
+  const free = CHROME_HUES.filter((h) => !used.has(h));
+  const pool = free.length > 0 ? free : CHROME_HUES;
+  const hue = pool[Math.floor(Math.random() * pool.length)];
+  const mark = { hue, firstSeen: Date.now() };
+  table[provenance] = mark;
+  try {
+    localStorage.setItem(MARKS_KEY, JSON.stringify(table));
+  } catch { /* nothing durable to write to */ }
+  return { mark, isNew: true };
 }
 
 /** Pre-provider-split key; read once as an S3 config so a configured
@@ -465,8 +507,9 @@ function err(e: unknown): string {
 /** Chrome's context slot: what secondary surface, if any, is on screen.
  * Called with null for "no secondary surface". The strip's own colour is
  * NOT touched here — it is the constant anchor; only the label changes. */
-let setChromeContext: (surface: { name: string; hue: number } | null) => void =
-  () => {};
+let setChromeContext: (
+  surface: { name: string; hue: number; isNew: boolean } | null,
+) => void = () => {};
 
 function initChrome() {
   const { hue, fresh } = chromeHue();
@@ -496,6 +539,15 @@ function initChrome() {
     said.className = "said";
     said.textContent = "— provider configuration panel · drawn by the component, not by chrome";
     context.append(chip, name, said);
+    if (surface.isNew) {
+      // The TOFU moment is the one worth interrupting for: recognition
+      // marks mean nothing the first time, and the first time is when
+      // impersonation would land.
+      const fresh = document.createElement("span");
+      fresh.className = "fresh";
+      fresh.textContent = "NEW — first time this component draws here";
+      context.append(fresh);
+    }
   };
   setChromeContext(null);
 
@@ -898,11 +950,15 @@ async function boot() {
     // hue is derived from the component's own bytes (assigned, not
     // chosen), and the same value tints the region's edge so the
     // untrusted rectangle and its chrome label visibly agree.
-    const hue = await componentHue(art.bytes);
+    // The mark is looked up by PROVENANCE (chrome fetched this artifact
+    // itself, by this name, from its own origin) and assigned on first
+    // sight — see surfaceMark.
+    const { mark, isNew } = surfaceMark(name);
+    const hue = mark.hue;
     // The component's colour is public (derived from its own bytes), but
     // scope it to the region anyway: chrome's document root stays clean.
     region.style.setProperty("--component-color", `oklch(62% .16 ${hue})`);
-    setChromeContext({ name, hue });
+    setChromeContext({ name, hue, isNew });
 
     // Same sandboxed-frame treatment as the app panes: the panel handles
     // provider credentials, so the argument for keeping it out of
@@ -949,9 +1005,19 @@ async function boot() {
   };
 
   // <dialog> closes natively on ESC, which used to leave the component
-  // running in a hidden region. The close event is the one place that
-  // sees every path, so retirement hangs off it.
+  // running in a hidden region — so retirement must cover every close
+  // path. The close EVENT should be that place, but at least one
+  // embedding (the paseo webview: native close(), listener verified by
+  // manual dispatch) flips `open` without ever delivering the queued
+  // event, and also closes modals spuriously. So retirement triggers on
+  // the STATE CHANGE itself — the `open` attribute — with the event kept
+  // as belt-and-braces for engines where the attribute mutation and the
+  // event race differently. teardownPanel is idempotent, so double
+  // firing is free.
   dialog.addEventListener("close", () => teardownPanel());
+  new MutationObserver(() => {
+    if (!dialog.open && panelMounted !== null) teardownPanel();
+  }).observe(dialog, { attributes: true, attributeFilter: ["open"] });
 
   const openStorage = () => {
     dialog.showModal();
