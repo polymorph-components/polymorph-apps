@@ -33,6 +33,7 @@ mod bindings {
 }
 
 use bindings::exports::polymorph::engine_spike::driver::{Guest as Driver, S3Config, StoreConfig};
+use bindings::polymorph::engine_spike::store_fetch_types::Response as FetchResponse;
 use bindings::exports::polymorph_data::tasks::tasks::{Guest as Tasks, TodoItem};
 
 struct Ctx {
@@ -41,6 +42,7 @@ struct Ctx {
     websocket: WasiWebsocketCtx,
     webrtc: WebrtcCtx,
     http: wasmtime_wasi_http::WasiHttpCtx,
+    egress: Egress,
     table: ResourceTable,
 }
 
@@ -94,6 +96,251 @@ impl WebrtcView for Ctx {
     }
 }
 
+
+// --- storage egress: what the guest's three named imports are wired to ---
+//
+// The retrofit's host half (#7 "authority in the instance, selection by
+// import name"; #11 escrowed signing credential). The guest builds
+// requests and asks for signatures; the credential bytes live only here.
+//
+// HONEST LIMITATION OF THIS RIG: all six instances in the act share one
+// `Store<Ctx>` and therefore one credential set. That is fine for a test
+// rig — the acts exercise the SHAPE (which import a call site travels
+// through, and what each seam will and will not do), not per-user
+// authority. The browser host wires per-instance authority for real; the
+// asymmetry is deliberate, not an oversight.
+
+/// A scheme+host+port triple: the unit of "which network destination this
+/// grant reaches". Compared structurally, never by string prefix — prefix
+/// matching on URLs is how origin confinement is usually gotten wrong.
+#[derive(Clone, PartialEq, Eq)]
+struct Origin {
+    scheme: String,
+    host: String,
+    port: u16,
+}
+
+impl Origin {
+    fn parse(url: &str) -> Result<Self> {
+        let u = reqwest::Url::parse(url).with_context(|| format!("parsing origin from {url}"))?;
+        let host = u
+            .host_str()
+            .ok_or_else(|| format_err!("{url} has no host"))?
+            .to_string();
+        let port = u
+            .port_or_known_default()
+            .ok_or_else(|| format_err!("{url} has no port and no default for its scheme"))?;
+        Ok(Origin { scheme: u.scheme().to_string(), host, port })
+    }
+}
+
+impl std::fmt::Display for Origin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}://{}:{}", self.scheme, self.host, self.port)
+    }
+}
+
+/// The rig's storage authority, held host-side.
+#[derive(Clone)]
+struct Egress {
+    /// The one origin these grants reach (from `--endpoint`).
+    granted: Origin,
+    /// The escrowed SigV4 signing credential. It never leaves this
+    /// struct: `store-signer` returns a signature, never key material.
+    secret: std::sync::Arc<String>,
+    http: reqwest::Client,
+}
+
+impl Egress {
+    fn new(endpoint: &str, secret: String) -> Result<Self> {
+        Ok(Egress {
+            granted: Origin::parse(endpoint)?,
+            secret: std::sync::Arc::new(secret),
+            http: reqwest::Client::builder()
+                .build()
+                .context("building the egress HTTP client")?,
+        })
+    }
+}
+
+/// Which of the three egress seams a request arrived on. The host learns
+/// this from WHICH IMPORT was called, never from the request — that is
+/// the whole mechanism (#7).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    /// Acts as the user (SigV4 here; a bearer on Dropbox).
+    Owner,
+    /// Acts as the app, never as the user.
+    Shared,
+    /// Carries no identity at all.
+    Public,
+}
+
+impl Tier {
+    fn label(self) -> &'static str {
+        match self {
+            Tier::Owner => "owner-fetch",
+            Tier::Shared => "shared-fetch",
+            Tier::Public => "public-fetch",
+        }
+    }
+
+    /// Only the owner tier may carry a guest-supplied authorization
+    /// header (the SigV4 Authorization the guest assembled from a
+    /// signature it was given). On the other two, whatever authority
+    /// applies is the seam's to inject, so anything the guest set is
+    /// dropped rather than forwarded.
+    fn strips_authorization(self) -> bool {
+        !matches!(self, Tier::Owner)
+    }
+}
+
+/// The shared body of all three fetch seams. Origin confinement is
+/// common; the tier decides authorization handling, and that decision is
+/// made by which import was called, which is why the anonymity property
+/// is structural rather than a convention.
+async fn egress_request(
+    eg: Egress,
+    tier: Tier,
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+) -> Result<FetchResponse, String> {
+    let strip_authorization = tier.strips_authorization();
+    let tier = tier.label();
+    let target = Origin::parse(&url).map_err(|e| format!("{tier}: {e}"))?;
+    if target != eg.granted {
+        // Destination confinement, checked before anything is sent: a
+        // grant names an origin, and a request outside it is refused
+        // rather than sent unauthenticated.
+        return Err(format!("{tier}: origin not granted: {target}"));
+    }
+    let m = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|e| format!("{tier}: bad method {method}: {e}"))?;
+    let mut req = eg.http.request(m, &url);
+    for (name, value) in headers {
+        if strip_authorization && name.eq_ignore_ascii_case("authorization") {
+            // Boundary hygiene: a component-supplied authorization header
+            // is dropped, not forwarded. Whether anything replaces it is
+            // the seam's business (app-auth on the shared tier; nothing
+            // at all on the public tier), never the guest's.
+            continue;
+        }
+        req = req.header(name, value);
+    }
+    let resp = req
+        .body(body)
+        .send()
+        .await
+        // Transport failures come back as an error string, which is what
+        // the guest's 3-attempt retry loop is looking for.
+        .map_err(|e| format!("{tier}: send: {e}"))?;
+    let status = resp.status().as_u16();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("{tier}: body: {e}"))?;
+    Ok(FetchResponse { status, body: bytes.to_vec() })
+}
+
+impl bindings::store_owner_fetch::Host for Ctx {}
+impl bindings::store_shared_fetch::Host for Ctx {}
+impl bindings::store_public_fetch::Host for Ctx {}
+impl bindings::store_signer::Host for Ctx {}
+impl bindings::polymorph::engine_spike::store_fetch_types::Host for Ctx {}
+
+impl bindings::store_owner_fetch::HostWithStore<Ctx> for Ctx {
+    async fn request(
+        accessor: &Accessor<Ctx, Self>,
+        method: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    ) -> Result<Result<FetchResponse, String>> {
+        let eg = accessor.with(|mut a| a.get().egress.clone());
+        Ok(egress_request(eg, Tier::Owner, method, url, headers, body).await)
+    }
+}
+
+/// The app tier. In THIS RIG it behaves exactly like the public seam:
+/// origin-confined, guest-supplied authorization stripped, nothing
+/// injected. That is not the tier's definition — a host wiring a real
+/// Dropbox grant injects the app key/secret here, which is what makes
+/// shared-link fetches work at all. The act rig exercises S3 only, where
+/// no call site takes this route, so there is no app credential to wire
+/// and injecting a placeholder would be worse than injecting nothing.
+impl bindings::store_shared_fetch::HostWithStore<Ctx> for Ctx {
+    async fn request(
+        accessor: &Accessor<Ctx, Self>,
+        method: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    ) -> Result<Result<FetchResponse, String>> {
+        let eg = accessor.with(|mut a| a.get().egress.clone());
+        Ok(egress_request(eg, Tier::Shared, method, url, headers, body).await)
+    }
+}
+
+impl bindings::store_public_fetch::HostWithStore<Ctx> for Ctx {
+    async fn request(
+        accessor: &Accessor<Ctx, Self>,
+        method: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    ) -> Result<Result<FetchResponse, String>> {
+        let eg = accessor.with(|mut a| a.get().egress.clone());
+        Ok(egress_request(eg, Tier::Public, method, url, headers, body).await)
+    }
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    use hmac::Mac as _;
+    let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(key)
+        .expect("HMAC accepts keys of any length");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+impl bindings::store_signer::HostWithStore<Ctx> for Ctx {
+    /// The escrowed-credential seam (#11). What the guest hands over is
+    /// public request metadata (a string-to-sign plus its scope); what
+    /// comes back is one signature. The credential is never returned, so
+    /// a compromised guest can only obtain signatures this function
+    /// agrees to produce.
+    async fn sign(
+        accessor: &Accessor<Ctx, Self>,
+        string_to_sign: String,
+        date: String,
+        region: String,
+        service: String,
+    ) -> Result<Result<String, String>> {
+        let secret = accessor.with(|mut a| a.get().egress.secret.clone());
+        // Scope refusal is the point of the handle: a raw SigV4 secret
+        // signs for every service and region in the account, whereas this
+        // capability signs only S3 requests in the granted region. The
+        // handle is strictly narrower than the key it wraps.
+        if service != "s3" {
+            return Ok(Err(format!("signer: out of scope: service {service} != s3")));
+        }
+        if region != "us-east-1" {
+            return Ok(Err(format!(
+                "signer: out of scope: region {region} != us-east-1"
+            )));
+        }
+        // SigV4 key derivation: AWS4<secret> chained through date, region,
+        // service, "aws4_request", then the final MAC over the
+        // string-to-sign (AWS SigV4, "Calculate the signature").
+        let mut key = format!("AWS4{secret}").into_bytes();
+        for step in [date.as_str(), region.as_str(), service.as_str(), "aws4_request"] {
+            key = hmac_sha256(&key, step.as_bytes());
+        }
+        Ok(Ok(hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()))))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -118,11 +365,13 @@ async fn main() -> Result<()> {
             other => bail!("unknown argument {other}"),
         }
     }
+    // The credential leaves the CLI and goes straight into the host-side
+    // egress/signer seams; nothing below ever puts it in guest config.
+    let egress = Egress::new(&endpoint, secret)?;
     let s3 = S3Args {
         endpoint,
         bucket,
         access,
-        secret,
     };
 
     let mut config = Config::new();
@@ -140,6 +389,17 @@ async fn main() -> Result<()> {
     polymorph_webcrypto_wasmtime::add_to_linker(&mut linker)?;
     wasmtime_websocket::add_to_linker(&mut linker)?;
     webrtc_host::add_to_linker(&mut linker)?;
+    // The three storage-egress imports. Each is a separately NAMED world
+    // import satisfied by its own host implementation — the linker is
+    // where authority is attached (#7).
+    bindings::polymorph::engine_spike::store_fetch_types::add_to_linker::<Ctx, Ctx>(
+        &mut linker,
+        |c| c,
+    )?;
+    bindings::store_owner_fetch::add_to_linker::<Ctx, Ctx>(&mut linker, |c| c)?;
+    bindings::store_shared_fetch::add_to_linker::<Ctx, Ctx>(&mut linker, |c| c)?;
+    bindings::store_public_fetch::add_to_linker::<Ctx, Ctx>(&mut linker, |c| c)?;
+    bindings::store_signer::add_to_linker::<Ctx, Ctx>(&mut linker, |c| c)?;
 
     let mut store = Store::new(
         &engine,
@@ -149,6 +409,7 @@ async fn main() -> Result<()> {
             websocket: WasiWebsocketCtx::new(),
             webrtc: WebrtcCtx::new(),
             http: wasmtime_wasi_http::WasiHttpCtx::new(),
+            egress,
             table: ResourceTable::new(),
         },
     );
@@ -176,7 +437,6 @@ struct S3Args {
     endpoint: String,
     bucket: String,
     access: String,
-    secret: String,
 }
 
 macro_rules! step {
@@ -579,11 +839,18 @@ async fn scenario(
     // surface. Laptop configures the store and grants K_p to every
     // member individual; the TABLET — which has never touched the wire —
     // cold-boots from the bucket alone.
-    for (d, name, ak, sk) in [
-        (l, "laptop", s3.access.as_str(), s3.secret.as_str()),
-        (p, "phone ", s3.access.as_str(), s3.secret.as_str()),
-        (tb, "tablet", s3.access.as_str(), s3.secret.as_str()),
-        (b, "bob   ", "", ""),
+    //
+    // The access key is a public identifier, not a credential: bob's
+    // empty one records "this instance is a reader" in the config, but
+    // what actually confines bob is the wiring (in this rig, see the
+    // Egress note: one credential set for all six instances, so bob's
+    // read-only behaviour is a property of which imports his call sites
+    // use, not of a separate grant).
+    for (d, name, ak) in [
+        (l, "laptop", s3.access.as_str()),
+        (p, "phone ", s3.access.as_str()),
+        (tb, "tablet", s3.access.as_str()),
+        (b, "bob   ", ""),
     ] {
         d.call_init_store(
             acc,
@@ -591,7 +858,6 @@ async fn scenario(
                 endpoint: s3.endpoint.clone(),
                 bucket: s3.bucket.clone(),
                 access_key: ak.to_string(),
-                secret_key: sk.to_string(),
             }),
         )
         .await?
@@ -796,7 +1062,6 @@ async fn scenario(
             endpoint: s3.endpoint.clone(),
             bucket: s3.bucket.clone(),
             access_key: s3.access.clone(),
-            secret_key: s3.secret.clone(),
         }),
     )
     .await?

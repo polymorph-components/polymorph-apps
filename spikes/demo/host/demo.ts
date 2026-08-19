@@ -23,11 +23,21 @@ import {
   type Driver,
   type Engine,
   type EngineArtifacts,
+  type EngineNet,
   newEngine,
   type StoreConfig,
+  type StoreFetch,
+  type StoreSign,
   unhex,
   until,
 } from "./engine.ts";
+import {
+  getSigningKey,
+  makeSigner,
+  putSigningKey,
+  refusingSigner,
+  type Signer,
+} from "./keystore.ts";
 
 // The live path rides n0's PUBLIC relay by default (interop proven in
 // polymorph-iroh's `just interop-prod`); override with ?relay=… — e.g.
@@ -57,8 +67,15 @@ if (isAuthPopup) {
 // The bucket (non-realtime path + the tablet pane) is USER-CONFIGURED,
 // per provider. Stored in localStorage; the s3 query params
 // (?s3=&bucket=&access=&secret=) still pre-seed an S3 config.
+//
+// WHAT IS NO LONGER IN HERE (#11): the S3 secret key. A stored config
+// carries ADDRESSING plus public identifiers only; the signing
+// credential lives in the keystore as a non-extractable handle, and the
+// Dropbox tokens live in chrome's per-session credential state and the
+// egress grant. A blob read out of localStorage can therefore no longer
+// sign anything or be replayed as a bearer for S3.
 type StorageConfig =
-  | { provider: "s3"; endpoint: string; bucket: string; access: string; secret: string }
+  | { provider: "s3"; endpoint: string; bucket: string; access: string }
   | {
     provider: "dropbox";
     appKey: string;
@@ -272,19 +289,51 @@ function forgetSurface(provenance: string): void {
  * browser keeps working across the rework. */
 const LEGACY_S3_KEY = "pm-demo-s3";
 
+/** A secret found in a place secrets no longer live: an old stored blob,
+ * or the `?secret=` seed URL. It is escrowed into the keystore and the
+ * source is scrubbed — see `escrowPending`. Module-scoped and cleared on
+ * use: it is the ONE transient the migration needs. */
+let pendingEscrow: { origin: string; access: string; secret: string } | null = null;
+
+/** Split a possibly-legacy S3 blob into today's addressing-only config
+ * plus the secret that has to be escrowed and scrubbed. */
+function splitLegacyS3(
+  raw: { endpoint: string; bucket: string; access: string; secret?: string },
+): StorageConfig {
+  const cfg: StorageConfig = {
+    provider: "s3",
+    endpoint: raw.endpoint,
+    bucket: raw.bucket,
+    access: raw.access,
+  };
+  const origin = normalizeOrigin(raw.endpoint);
+  if (raw.secret && origin !== null) {
+    pendingEscrow = { origin, access: raw.access, secret: raw.secret };
+  }
+  return cfg;
+}
+
 function loadStorage(): StorageConfig | null {
   if (params.get("s3")) {
-    return {
-      provider: "s3",
+    // The ?secret= seed is treated exactly like a legacy stored secret:
+    // escrowed on the way in, never re-persisted as a string.
+    return splitLegacyS3({
       endpoint: params.get("s3")!,
       bucket: params.get("bucket") ?? "pm-demo",
       access: params.get("access") ?? "",
       secret: params.get("secret") ?? "",
-    };
+    });
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as StorageConfig;
+    if (raw) {
+      const cfg = JSON.parse(raw) as StorageConfig & { secret?: string };
+      // MIGRATION: a config written before #11 still carries the raw
+      // secret. Split it out here; `escrowPending` imports it and writes
+      // the blob back without the field.
+      if (cfg.provider === "s3") return splitLegacyS3(cfg);
+      return cfg;
+    }
     const legacy = localStorage.getItem(LEGACY_S3_KEY);
     if (legacy) {
       const s3 = JSON.parse(legacy) as {
@@ -293,11 +342,28 @@ function loadStorage(): StorageConfig | null {
         access: string;
         secret: string;
       };
-      return { provider: "s3", ...s3 };
+      return splitLegacyS3(s3);
     }
     return null;
   } catch {
     return null;
+  }
+}
+
+/** Finish the migration: import any secret found in cleartext storage as
+ * a non-extractable handle, then rewrite the stored config WITHOUT it.
+ * Idempotent — after one run there is nothing left to find. */
+async function escrowPending(cfg: StorageConfig | null): Promise<void> {
+  const pending = pendingEscrow;
+  pendingEscrow = null;
+  if (!pending || pending.secret === "") return;
+  try {
+    await putSigningKey(pending.origin, pending.access, pending.secret);
+    if (cfg) localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    localStorage.removeItem(LEGACY_S3_KEY);
+    console.log("[keystore] migrated a stored secret into a non-extractable signing key");
+  } catch (e) {
+    console.warn(`[keystore] migration failed: ${e}`);
   }
 }
 
@@ -517,6 +583,277 @@ const dropboxFetchImports = {
   },
 };
 
+// --- the engine's storage egress: three named seams per instance (#7) --------
+//
+// The engine composite no longer imports a generic fetch. It imports
+// `store-owner-fetch`, `store-public-fetch` and `store-signer`, and what
+// each one is wired to IS the grant. Selection is by IMPORT NAME: a call
+// site that wants to act as the user had to be written against the owner
+// import when the guest was compiled, so attaching the wrong credential
+// is inexpressible rather than checked. The near-miss the memo names is
+// live here — on Dropbox the owner tier, the link tier and anonymous
+// reads all talk to the SAME hosts, so destination-based injection would
+// silently deanonymize the recipient path.
+//
+// REBIND, NOT RELINK. The wiring is fixed at instantiation; what changes
+// when the user saves new storage settings is the CONTENTS of the mutable
+// grant object each seam closes over. The handle names the relationship,
+// not the token bytes — which is also why a refreshed Dropbox bearer
+// needs no re-instantiation, and why an instance wired without authority
+// can never acquire it by a later save.
+interface EgressGrant {
+  provider: "s3" | "dropbox" | null;
+  /** Origins reachable AS THE USER. */
+  origins: Set<string>;
+  /** Origins reachable anonymously. */
+  publicOrigins: Set<string>;
+  /** Origins reachable as the APP (app auth, never user identity). */
+  sharedOrigins: Set<string>;
+  /** Dropbox owner tier only; never in a config, never in a component. */
+  bearer?: string;
+  refresh?: string;
+  /** The app identifiers. Public by nature, and held by EVERY tier's
+   * grant including the recipient's — app auth is the link tier's only
+   * credential, and it says nothing about who is reading. */
+  appKey?: string;
+  appSecret?: string;
+}
+
+function emptyGrant(): EgressGrant {
+  return {
+    provider: null,
+    origins: new Set(),
+    publicOrigins: new Set(),
+    sharedOrigins: new Set(),
+  };
+}
+
+/** Chrome's own reading of where a request is going. Structural
+ * (scheme+host+port via the platform's URL parser), never a string
+ * prefix test — prefix matching on URLs is how origin confinement is
+ * usually gotten wrong. */
+function requestOriginOf(url: string, tier: string): string {
+  const o = normalizeOrigin(url);
+  if (o === null) witErr(`${tier}: unparseable url`);
+  return o;
+}
+
+/** One outbound request. The body is copied out of the guest's view
+ * before it crosses back, and the dom lib wants a plain ArrayBuffer. */
+async function sendRequest(
+  method: string,
+  url: string,
+  headers: Array<[string, string]>,
+  body: Uint8Array,
+): Promise<{ status: number; body: Uint8Array }> {
+  const empty = method === "GET" || method === "HEAD" || body.length === 0;
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: empty ? undefined : body.buffer.slice(
+      body.byteOffset,
+      body.byteOffset + body.byteLength,
+    ) as ArrayBuffer,
+  });
+  return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
+}
+
+const DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
+
+/** Percent-encode one `application/x-www-form-urlencoded` value — the
+ * refresh body the guest used to build for itself. */
+function formEncode(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+/**
+ * `store-owner-fetch` for an instance holding `grant`. Acts as the user,
+ * and the two providers differ in HOW:
+ *
+ * - S3: the request passes through untouched. The authority is the
+ *   SIGNER — the guest built the x-amz headers and an Authorization
+ *   value out of public parts plus a signature it had to ask for. There
+ *   is nothing here to inject.
+ * - Dropbox: a bearer token is disclosed to the destination by design
+ *   (the SigV4-vs-bearer asymmetry recorded on #22), so this seam owns
+ *   it: any component-supplied `authorization` is DROPPED — it could
+ *   only be a guess or an attempt to echo something to the wire — and
+ *   chrome attaches the token it holds, on the way out.
+ */
+function makeOwnerFetch(grant: EgressGrant): StoreFetch {
+  return async (method, url, headers, body) => {
+    if (grant.provider === null) {
+      witErr("store-owner-fetch: no storage grant configured yet");
+    }
+    const target = requestOriginOf(url, "store-owner-fetch");
+    if (!grant.origins.has(target)) {
+      witErr(`store-owner-fetch: origin not granted: ${target}`);
+    }
+    if (grant.provider === "s3") {
+      return await sendRequest(method, url, headers, body);
+    }
+    const outbound = (token: string): Array<[string, string]> => {
+      const h = headers.filter(([k]) => k.toLowerCase() !== "authorization");
+      h.unshift(["authorization", `Bearer ${token}`]);
+      return h;
+    };
+    const bearer = grant.bearer ?? "";
+    if (bearer === "") {
+      witErr("store-owner-fetch: no bearer token held for this instance");
+    }
+    const first = await sendRequest(method, url, outbound(bearer), body);
+    if (first.status !== 401 || !grant.refresh || !grant.appKey) return first;
+    // TOKEN REFRESH IS THE SEAM'S BUSINESS NOW: the guest deleted its own
+    // 401-refresh-retry along with the token it used to hold, so an
+    // expired token must never become guest business again. Request shape
+    // ported verbatim from what the guest deleted (see
+    // spikes/tasks-engine/guest/src/lib.rs `dbx_refresh` in this branch's
+    // diff): form-encoded, `client_id` in the body.
+    //
+    // CONTRACT: the dispatch described this as "Basic app auth". The
+    // deleted guest code — and chrome's own PKCE authorization-code
+    // exchange above — use the public-client shape instead, with no
+    // Authorization header at all. The conservative reading is to
+    // reproduce the code path that is known to have worked; a PKCE
+    // public client cannot use an app secret anyway.
+    const refreshBody =
+      `grant_type=refresh_token&refresh_token=${formEncode(grant.refresh)}&client_id=${
+        formEncode(grant.appKey)
+      }`;
+    const res = await sendRequest(
+      "POST",
+      DROPBOX_TOKEN_URL,
+      [["content-type", "application/x-www-form-urlencoded"]],
+      new TextEncoder().encode(refreshBody),
+    );
+    if (res.status !== 200) return first;
+    let fresh = "";
+    try {
+      fresh = (JSON.parse(new TextDecoder().decode(res.body)) as { access_token?: string })
+        .access_token ?? "";
+    } catch { /* an unparseable refresh answer is just a failed refresh */ }
+    if (fresh === "") return first;
+    // Rebind: the grant's CONTENTS change, the wiring does not.
+    grant.bearer = fresh;
+    onBearerRefreshed(fresh);
+    // Exactly ONE retry: a second 401 is an answer, not a race.
+    return await sendRequest(method, url, outbound(fresh), body);
+  };
+}
+
+/**
+ * `store-shared-fetch`: the APP-IDENTITY tier, and the third distinct
+ * answer to "who is this request from". Dropbox will not serve a
+ * shared-link read to an unauthenticated caller, but the credential it
+ * wants identifies the APP — an app key and secret that ship inside every
+ * copy of a public client, which is exactly why confidentiality can never
+ * rest on them. Injecting them here is CALLER IDENTIFICATION, not
+ * secrecy.
+ *
+ * What makes this worth its own import rather than a flag: the user's
+ * bearer is wired to `store-owner-fetch`, so a recipient-path read cannot
+ * identify the user BY CONSTRUCTION — there is no code path from this
+ * seam to that credential. The memo's live near-miss (owner, link and
+ * anonymous calls all going to the same host) is defused by the wiring
+ * rather than by remembering to check.
+ */
+function makeSharedFetch(grant: EgressGrant): StoreFetch {
+  return async (method, url, headers, body) => {
+    if (grant.provider === null) {
+      witErr("store-shared-fetch: no storage grant configured yet");
+    }
+    if (grant.provider !== "dropbox") {
+      // S3 has no app tier at all: a request here would be a call site
+      // asking for an identity this provider cannot mint.
+      witErr("store-shared-fetch: no app tier on this provider");
+    }
+    const target = requestOriginOf(url, "store-shared-fetch");
+    if (!grant.sharedOrigins.has(target)) {
+      witErr(`store-shared-fetch: origin not granted: ${target}`);
+    }
+    // Any guest-supplied authorization is dropped first: what goes out is
+    // the app identity chrome holds, or nothing at all.
+    const outbound = headers.filter(([k]) => k.toLowerCase() !== "authorization");
+    const appKey = grant.appKey ?? "";
+    const appSecret = grant.appSecret ?? "";
+    if (appKey !== "" && appSecret !== "") {
+      // Standard HTTP Basic app auth. NOTE the deliberate asymmetry with
+      // the refresh path in `makeOwnerFetch`: the PKCE token endpoint
+      // takes `client_id` in the form body and no Authorization header,
+      // whereas `get_shared_link_file` wants the Basic header. Two
+      // endpoints, two shapes — neither is the other's bug.
+      outbound.unshift(["authorization", `Basic ${btoa(`${appKey}:${appSecret}`)}`]);
+    }
+    // With nothing held, the request goes out unauthenticated and the
+    // provider's refusal is honest — the same rule the owner shim's
+    // missing-token path follows.
+    return await sendRequest(method, url, outbound, body);
+  };
+}
+
+/**
+ * `store-public-fetch`: the anonymous tier. It holds no identity, so
+ * there is nothing it could attach; what it actively does is STRIP any
+ * `authorization` the guest set. Anonymity is then a property of which
+ * import the call site went through, not of a runtime check that could
+ * be forgotten.
+ */
+function makePublicFetch(grant: EgressGrant): StoreFetch {
+  return async (method, url, headers, body) => {
+    if (grant.provider === null) {
+      witErr("store-public-fetch: no storage grant configured yet");
+    }
+    const target = requestOriginOf(url, "store-public-fetch");
+    if (!grant.publicOrigins.has(target)) {
+      witErr(`store-public-fetch: origin not granted: ${target}`);
+    }
+    // Note the honest limit: `fetch` follows redirects itself, so the
+    // allowlist governs the FIRST hop only. It is not a credential leak
+    // (nothing is attached on this tier), which is exactly why the
+    // Dropbox link tier's redirect chain is tolerable here and would not
+    // be on the owner tier.
+    return await sendRequest(
+      method,
+      url,
+      headers.filter(([k]) => k.toLowerCase() !== "authorization"),
+      body,
+    );
+  };
+}
+
+/** The owner seam for an instance wired NO storage authority. It exists
+ * and refuses — bob's read-only confinement is now visible in the
+ * WIRING, where an auditor can see it, instead of being inferred from an
+ * empty credential field in a config he could have filled in himself. */
+const refusingOwnerFetch: StoreFetch = () =>
+  Promise.reject(
+    new ComponentException("store-owner-fetch: no storage credential wired for this instance"),
+  );
+
+/** Where a Dropbox instance may go, by tier. The owner tier talks to the
+ * RPC host and the content host (uploads/downloads); the link tier's
+ * pickup read goes to the content host, whose redirect hops land on
+ * www.dropbox.com / dl.dropboxusercontent.com (spikes/dropbox/README.md:
+ * "Network grant for this provider"). */
+const DROPBOX_OWNER_ORIGINS = [
+  "https://api.dropboxapi.com",
+  "https://content.dropboxapi.com",
+];
+const DROPBOX_PUBLIC_ORIGINS = [
+  "https://content.dropboxapi.com",
+  "https://www.dropbox.com",
+  "https://dl.dropboxusercontent.com",
+];
+/** The app tier reaches exactly one endpoint: the shared-link read. */
+const DROPBOX_SHARED_ORIGINS = ["https://content.dropboxapi.com"];
+
+/** Set when a grant's bearer is refreshed behind the seam, so chrome's
+ * own copy (and its localStorage mirror) follow. Installed in `boot`. */
+let onBearerRefreshed: (token: string) => void = () => {};
+
 // --- panes ---------------------------------------------------------------------
 
 interface AppExports {
@@ -664,8 +1001,9 @@ function statusLine(name: string): (line: string, sticky?: boolean) => void {
 async function newPane(
   name: string,
   engineArtifacts: EngineArtifacts,
+  net: EngineNet,
 ): Promise<Pane> {
-  const engine = await newEngine(name, engineArtifacts);
+  const engine = await newEngine(name, engineArtifacts, net);
   const status = statusLine(name);
   status("engine up");
   return { name, engine, id: new Uint8Array(), status };
@@ -925,9 +1263,50 @@ async function boot() {
   ]);
 
   say("instantiating engines…");
-  const alice = await newPane("alice", engineArt);
-  const bob = await newPane("bob", engineArt);
-  const tablet = await newPane("tablet", engineArt);
+  // THE GRANTS, one per authority rather than one per instance: alice and
+  // the tablet are the SAME user's two devices, so they share the owner
+  // grant (a refreshed Dropbox bearer is thereby refreshed for both, with
+  // no re-instantiation). Bob is a different party and gets his own,
+  // public-only grant.
+  const ownerGrant = emptyGrant();
+  const readerGrant = emptyGrant();
+
+  // The signer behind alice's and the tablet's `store-signer` import. The
+  // WIRING is fixed here at instantiation; `setupBucket` swaps what this
+  // box holds when the user binds a new destination (rebind, not relink).
+  // Null = nothing escrowed yet, and the seam says so rather than
+  // pretending to be absent.
+  let ownerSigner: Signer | null = null;
+  const wiredSigner: StoreSign = (stringToSign, date, region, service) => {
+    if (!ownerSigner) {
+      return Promise.reject(
+        new ComponentException("store-signer: no signing credential wired for this instance"),
+      );
+    }
+    return ownerSigner(stringToSign, date, region, service);
+  };
+  const ownerNet: EngineNet = {
+    ownerFetch: makeOwnerFetch(ownerGrant),
+    publicFetch: makePublicFetch(ownerGrant),
+    sharedFetch: makeSharedFetch(ownerGrant),
+    signer: wiredSigner,
+  };
+  // BOB'S CONFINEMENT IS IN THE WIRING. His owner seam and his signer are
+  // present and refuse; nothing about his config says "reader", and
+  // nothing about it could say otherwise — he holds no import that could
+  // act as anybody.
+  // ...and the app tier is REAL for him: app auth is the recipient's only
+  // credential, and it identifies the shipped client rather than the
+  // person, so holding it costs him no anonymity.
+  const readerNet: EngineNet = {
+    ownerFetch: refusingOwnerFetch,
+    publicFetch: makePublicFetch(readerGrant),
+    sharedFetch: makeSharedFetch(readerGrant),
+    signer: refusingSigner,
+  };
+  const alice = await newPane("alice", engineArt, ownerNet);
+  const bob = await newPane("bob", engineArt, readerNet);
+  const tablet = await newPane("tablet", engineArt, ownerNet);
   const panes = [alice, bob, tablet];
 
   say("identities…");
@@ -1072,19 +1451,48 @@ async function boot() {
         currentProvider = cfg.provider;
         bobPickup = undefined;
         if (cfg.provider === "s3") {
+          const origin = normalizeOrigin(cfg.endpoint);
+          if (origin === null) {
+            throw new Error(`storage endpoint is not a usable origin: ${cfg.endpoint}`);
+          }
+          // THE SIGNING AUTHORITY IS FETCHED FROM THE KEYSTORE, not from
+          // the config: what the config carries is the address and the
+          // public access-key identifier. No escrowed key for this
+          // origin means this device cannot write, and saying so plainly
+          // beats discovering it as a 403 twenty provider calls later.
+          const held = await getSigningKey(origin);
+          if (!held) {
+            throw new Error(
+              `no signing credential held for ${origin} — open Storage… and enter the secret key`,
+            );
+          }
+          // REBIND: the grants' contents change; the instances' wiring
+          // does not, and never will for the life of the page.
+          ownerGrant.provider = "s3";
+          ownerGrant.origins = new Set([origin]);
+          ownerGrant.publicOrigins = new Set([origin]);
+          // S3 has no app tier; an empty allowlist plus the provider
+          // check in the shim means the seam refuses by name.
+          ownerGrant.sharedOrigins = new Set();
+          readerGrant.provider = "s3";
+          readerGrant.origins = new Set();
+          readerGrant.publicOrigins = new Set([origin]);
+          readerGrant.sharedOrigins = new Set();
+          ownerSigner = makeSigner(origin);
           const owner: StoreConfig = {
             kind: "s3",
             value: {
               endpoint: cfg.endpoint,
               bucket: cfg.bucket,
               accessKey: cfg.access,
-              secretKey: cfg.secret,
             },
           };
-          // Bob is the recipient tier: no credentials, pulls only.
+          // Bob's config is the SAME SHAPE. His reader tier is not a
+          // blank field any more — it is the fact that his owner seam
+          // and his signer refuse.
           const reader: StoreConfig = {
             kind: "s3",
-            value: { endpoint: cfg.endpoint, bucket: cfg.bucket, accessKey: "", secretKey: "" },
+            value: { endpoint: cfg.endpoint, bucket: cfg.bucket, accessKey: "" },
           };
           await alice.engine.driver.initStore(owner);
           await tablet.engine.driver.initStore(owner);
@@ -1097,20 +1505,34 @@ async function boot() {
           }
         } else {
           const root = cfg.root + sessionSuffix();
-          const val = {
-            appKey: cfg.appKey,
-            appSecret: cfg.appSecret,
-            accessToken: cfg.accessToken,
-            refreshToken: cfg.refreshToken,
-            root,
-          };
-          // The tablet is Alice's OWN device: owner tier, same token.
-          const owner: StoreConfig = { kind: "dropbox", value: val };
-          // Bob is the link tier: no token, pulls ride his pickup link.
-          const reader: StoreConfig = {
-            kind: "dropbox",
-            value: { ...val, accessToken: "", refreshToken: "" },
-          };
+          // Chrome-held, grant-fed, config-free: the bearer and its
+          // refresh (and the app identifiers the refresh needs) go into
+          // the GRANT the owner seam closes over. The engine's config
+          // gets addressing and nothing else.
+          ownerGrant.provider = "dropbox";
+          ownerGrant.origins = new Set(DROPBOX_OWNER_ORIGINS);
+          ownerGrant.publicOrigins = new Set(DROPBOX_PUBLIC_ORIGINS);
+          ownerGrant.sharedOrigins = new Set(DROPBOX_SHARED_ORIGINS);
+          ownerGrant.bearer = cfg.accessToken;
+          ownerGrant.refresh = cfg.refreshToken;
+          ownerGrant.appKey = cfg.appKey;
+          ownerGrant.appSecret = cfg.appSecret;
+          readerGrant.provider = "dropbox";
+          readerGrant.origins = new Set();
+          readerGrant.publicOrigins = new Set(DROPBOX_PUBLIC_ORIGINS);
+          readerGrant.sharedOrigins = new Set(DROPBOX_SHARED_ORIGINS);
+          // The recipient's grant carries the APP identifiers and NOTHING
+          // else: no bearer, no refresh. That asymmetry is the whole
+          // recipient-anonymity claim, and it is visible right here.
+          readerGrant.appKey = cfg.appKey;
+          readerGrant.appSecret = cfg.appSecret;
+          // No S3 signing on this provider; a stale signer from an
+          // earlier S3 session must not survive the switch.
+          ownerSigner = null;
+          // The tablet is Alice's OWN device: owner tier, same grant.
+          const owner: StoreConfig = { kind: "dropbox", value: { root } };
+          // Bob is the link tier: same config, different wiring.
+          const reader: StoreConfig = { kind: "dropbox", value: { root } };
           await alice.engine.driver.initStore(owner);
           await tablet.engine.driver.initStore(owner);
           await bob.engine.driver.initStore(reader);
@@ -1146,6 +1568,22 @@ async function boot() {
         setupInFlight = false;
       }
     });
+  };
+
+  // A bearer refreshed BEHIND the seam is chrome's news, not the
+  // component's: the grant already holds the new token (the seam wrote
+  // it), and chrome's durable mirror follows so a reload does not start
+  // from the expired one. The engine is never told; that is the point of
+  // the handle naming the relationship rather than the bytes.
+  onBearerRefreshed = (token: string) => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const cfg = JSON.parse(raw) as StorageConfig;
+      if (cfg.provider !== "dropbox") return;
+      cfg.accessToken = token;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    } catch { /* nothing durable to write to; the grant still has it */ }
   };
 
   // The body, callable both from the button (queued once) and from the
@@ -1252,6 +1690,15 @@ async function boot() {
   const credValues = new Map<string, string>();
   const credInputs = new Map<string, HTMLInputElement>();
   let credKinds: string[] = [];
+  /** True when chrome ALREADY holds an escrowed signing key for the
+   * destination this sheet is bound to. It changes two things and
+   * nothing else: the secret-key field renders empty with a placeholder
+   * saying so, and "empty" passes chrome's requiredness rule (empty =
+   * keep the held key; non-empty = replace it). It is deliberately NOT a
+   * relaxation of the destination binding — the lookup is keyed by the
+   * SAME bound origin the triple revalidation just agreed on, so a panel
+   * that re-points itself gets `false` here for free. */
+  let heldSigningKey = false;
 
   /** Element refs for the sheet currently on screen; null while the
    * drawer is closed, in which case every renderer below is a no-op. */
@@ -1274,6 +1721,7 @@ async function boot() {
     credKinds = [];
     credValues.clear();
     credInputs.clear();
+    heldSigningKey = false;
     boundDestination = null;
   };
 
@@ -1365,6 +1813,12 @@ async function boot() {
       const input = document.createElement("input");
       input.type = spec.type;
       input.autocomplete = "off";
+      if (kind === "secret-key" && heldSigningKey) {
+        // Chrome's own words for a credential it holds but cannot show:
+        // the key is a non-extractable handle, so "leave blank to keep
+        // it" is literally the only offer chrome can make.
+        input.placeholder = "held as a non-extractable signing key — leave blank to keep it";
+      }
       const seeded = prefill[kind] ?? "";
       input.value = seeded;
       credValues.set(kind, seeded);
@@ -1393,6 +1847,11 @@ async function boot() {
     for (const kind of credKinds) {
       const spec = CREDENTIAL_VOCABULARY[kind];
       if (!spec || !spec.required) continue;
+      // A held key satisfies requiredness: the credential IS present,
+      // chrome simply cannot render it. Requiredness stays chrome's rule
+      // — this is chrome answering its own question with what it holds,
+      // not the panel being allowed to skip a field.
+      if (kind === "secret-key" && heldSigningKey) continue;
       if ((credValues.get(kind) ?? "").trim() === "") return spec.label;
     }
     return null;
@@ -1403,11 +1862,10 @@ async function boot() {
    * are added here, on chrome's side of the boundary. */
   const withCredentials = (cfg: StorageConfig): StorageConfig => {
     if (cfg.provider === "s3") {
-      return {
-        ...cfg,
-        access: heldCredential("access-key"),
-        secret: heldCredential("secret-key"),
-      };
+      // The secret key is NOT merged in: it is escrowed into the keystore
+      // at release time (`releaseCredentials`) and never becomes part of
+      // a config object, in memory or in storage.
+      return { ...cfg, access: heldCredential("access-key") };
     }
     return {
       ...cfg,
@@ -1463,7 +1921,10 @@ async function boot() {
     }
     return {
       prefill: cfg.provider === "s3"
-        ? { "access-key": cfg.access, "secret-key": cfg.secret }
+        // No secret to prefill any more — there is no readable copy of
+        // it anywhere. A HELD key shows as an empty field with chrome's
+        // "already held" placeholder instead (see `heldKeyForSession`).
+        ? { "access-key": cfg.access }
         : {
           "app-key": cfg.appKey,
           "app-secret": cfg.appSecret,
@@ -1894,7 +2355,12 @@ async function boot() {
     needs: string[],
     prefill: Record<string, string>,
     mismatch: boolean,
+    /** Chrome already holds an escrowed signing key for this session's
+     * bound destination (looked up by the caller, under the same
+     * binding the commit-time revalidation agreed on). */
+    held: boolean,
   ) => {
+    heldSigningKey = held;
     // The credential session takes the drawer from anything else holding
     // it: naming is an interruptible convenience, secret entry is not.
     // Closed WITHOUT touching the strip context, which this session is
@@ -1931,9 +2397,31 @@ async function boot() {
       }
       // Chrome merges its held values into the panel's secret-free
       // config — the same withCredentials path as before the drawer.
+      // The S3 secret is NOT among them: it goes straight into the
+      // keystore as a non-extractable handle and is never part of any
+      // config object. Read the sheet's values HERE, because closing the
+      // drawer drops them.
+      const secret = heldCredential("secret-key").trim();
+      const access = heldCredential("access-key").trim();
+      const destination = s.destination;
       const full = withCredentials(s.cfg);
       closeDrawer();
-      persistAndConnect(full);
+      void (async () => {
+        if (full.provider === "s3" && secret !== "") {
+          // Non-empty = replace the held key; empty = keep it (the
+          // field's placeholder said so, and requiredness agreed).
+          // Escrow BEFORE persisting: a config that points at a
+          // destination with no usable key is the one state worth
+          // avoiding, since setup would then refuse.
+          try {
+            await putSigningKey(destination, access, secret);
+          } catch (e) {
+            tablet.status(`could not escrow the signing key: ${err(e)}`, true);
+            return;
+          }
+        }
+        persistAndConnect(full);
+      })();
     };
     if (connectBtn) {
       const btn = connectBtn;
@@ -2364,6 +2852,12 @@ async function boot() {
         // Prefill is decided BEFORE teardown, while chrome still knows
         // which provider produced this config (#22 rule 5, unchanged).
         const { prefill, mismatch } = credPrefill(stored, active.provider, now);
+        // Does chrome already hold a signing key for THIS destination?
+        // Keyed by the origin the revalidation above just agreed on, so
+        // the destination binding governs this exactly as it governs
+        // prefill: a panel pointing somewhere else finds nothing held.
+        const held = active.provider === "s3" && (await getSigningKey(now)) !== null;
+        if (activePanel !== active) return;
         // Anything the OAuth broker deposited during the panel session is
         // chrome's own capture of a ceremony chrome ran; it survives into
         // the sheet, where the user can see it before releasing it.
@@ -2391,7 +2885,7 @@ async function boot() {
           persistAndConnect(full);
           return;
         }
-        openCredentialDrawer(session, needs, prefill, mismatch);
+        openCredentialDrawer(session, needs, prefill, mismatch, held);
       })
       .catch((e) => console.warn(`[panel] commit: ${err(e)}`));
   };
@@ -2402,6 +2896,10 @@ async function boot() {
   };
 
   const stored = loadStorage();
+  // Migration runs FIRST: a config written before #11 still carries a
+  // readable secret, which is escrowed and scrubbed here, so the setup
+  // below finds a keystore entry instead of a field.
+  await escrowPending(stored);
   if (stored) setupBucket(stored);
 
   (document.getElementById("revoke-bob") as HTMLButtonElement).onclick = () => {

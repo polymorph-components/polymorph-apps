@@ -10,6 +10,7 @@
 // Infra (relay, MinIO) is started by the justfile.
 
 import { type Engine, hex, newEngine, unhex, until } from "./engine.ts";
+import { probeNet, probeNoNet, probeReaderNet } from "./probe-net.ts";
 
 const RELAY = "http://127.0.0.1:3340";
 const S3 = {
@@ -51,7 +52,7 @@ function dumpOnFail(engines: [string, Engine][]) {
 async function solo() {
   const artifacts = await loadArtifacts();
   const t0 = performance.now();
-  const a = await newEngine("solo", artifacts);
+  const a = await newEngine("solo", artifacts, probeNoNet);
   step(`instantiated (${(performance.now() - t0).toFixed(0)}ms total)`);
   try {
     const id = await a.driver.init(false);
@@ -83,8 +84,8 @@ async function solo() {
 
 async function wire() {
   const artifacts = await loadArtifacts();
-  const alice = await newEngine("alice", artifacts);
-  const bob = await newEngine("bob", artifacts);
+  const alice = await newEngine("alice", artifacts, probeNoNet);
+  const bob = await newEngine("bob", artifacts, probeNoNet);
   step("instantiated alice + bob");
   try {
     const aliceId = unhex(await alice.driver.init(false));
@@ -172,8 +173,11 @@ async function wire() {
 
 async function bucket() {
   const artifacts = await loadArtifacts();
-  const owner = await newEngine("owner", artifacts);
-  const cold = await newEngine("cold", artifacts);
+  // The credential goes into the OWNER instance's seams and nowhere
+  // else; the cold device is wired reader-only and its refusals are the
+  // rig's proof that pulls really do ride the anonymous tier.
+  const owner = await newEngine("owner", artifacts, probeNet(S3.endpoint, S3.secret));
+  const cold = await newEngine("cold", artifacts, probeReaderNet(S3.endpoint));
   step("instantiated owner + cold");
   try {
     const ownerId = unhex(await owner.driver.init(false));
@@ -190,7 +194,10 @@ async function bucket() {
     await owner.driver.sealPartition(part);
     step("partition sealed with cold member");
 
-    await owner.driver.initStore({ kind: "s3", value: { endpoint: S3.endpoint, bucket: S3.bucket, accessKey: S3.access, secretKey: S3.secret } });
+    await owner.driver.initStore({
+      kind: "s3",
+      value: { endpoint: S3.endpoint, bucket: S3.bucket, accessKey: S3.access },
+    });
     await owner.driver.ensureBucket();
     await owner.driver.storeGrant(part, ownerId);
     await owner.driver.storeGrant(part, coldId);
@@ -201,7 +208,10 @@ async function bucket() {
     console.log("  flush:", await owner.driver.bucketFlush(part));
     step("authored + flushed");
 
-    await cold.driver.initStore({ kind: "s3", value: { endpoint: S3.endpoint, bucket: S3.bucket, accessKey: "", secretKey: "" } });
+    await cold.driver.initStore({
+      kind: "s3",
+      value: { endpoint: S3.endpoint, bucket: S3.bucket, accessKey: "" },
+    });
     await cold.driver.adoptPartition(part);
     console.log("  pull:", await cold.driver.bucketPull(part, ownerId, undefined));
     const snap = await cold.tasks.items();
