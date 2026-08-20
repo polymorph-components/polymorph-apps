@@ -4,12 +4,12 @@
 # jsr-pins branch: relay is the SAME pinned binary the tasks-engine
 # spike installs (`spikes/tasks-engine`'s `just relay-bin`,
 # iroh-relay@1.0.3, repo-local, no sibling checkout); the deltic ports
-# (webcrypto/websocket/webrtc-datachannels) are jsr:@polymorph/*@0.1.0
-# per deno.json. The endpoint wasm itself is still IROH_CHECKOUT-sourced
-# via `../tasks-engine`'s `compose` — see that spike's README "JSR pins"
-# section for why (a guest-WIT rebase is needed first).
-
-IROH_CHECKOUT := env_var_or_default("IROH_CHECKOUT", "../../../polymorph-iroh")
+# (webcrypto/websocket) are jsr:@polymorph/*@0.2.0 per deno.json
+# (webrtc-datachannels stays on a sibling checkout, see deno.json's
+# MODULE-IDENTITY comment). The endpoint wasm comes from `../tasks-engine`'s
+# default `compose` target, which is JSR-sourced
+# (jsr:@polymorph/iroh@0.1.0, see that spike's justfile PINS block) —
+# no IROH_CHECKOUT is needed by this justfile's default path.
 
 # Build the engine composite (delegates to the tasks-engine spike).
 engine:

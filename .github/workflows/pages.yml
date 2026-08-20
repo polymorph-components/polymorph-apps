@@ -54,13 +54,13 @@ jobs:
 
       - name: Check out pinned siblings
         # Before the cache restore: rust-cache keys on the listed
-        # workspaces' lockfiles, and ../polymorph-iroh must exist to be
-        # keyed. This phase is cheap (blob-less clones, no cargo).
+        # workspaces' lockfiles. This phase is cheap (blob-less clones,
+        # no cargo).
         run: SIBLINGS_ONLY=1 ./scripts/setup.sh
 
       - name: Cache cargo
-        # Restored BEFORE any cargo work: setup.sh builds the sibling
-        # endpoint component, so the restore has to precede it, not just
+        # Restored BEFORE any cargo work: setup.sh builds sibling
+        # dependencies, so the restore has to precede it, not just
         # precede `just pages`.
         uses: Swatinem/rust-cache@v2
         with:
@@ -69,7 +69,6 @@ jobs:
             spikes/demo/guest-app
             spikes/demo/guest-panel-s3
             spikes/demo/guest-panel-dropbox
-            ../polymorph-iroh
           # No registry pruning: the sibling workspace sits outside the
           # repo, and its deps must survive the post-job save.
           cache-all-crates: true
@@ -98,8 +97,6 @@ jobs:
 
       - name: Build the demo site
         working-directory: spikes/demo
-        env:
-          IROH_CHECKOUT: ../../../polymorph-iroh
         run: just pages
 
       - name: Assemble the site

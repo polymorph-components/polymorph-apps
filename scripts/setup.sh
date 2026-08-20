@@ -30,8 +30,11 @@ JUST_VERSION="${JUST_VERSION:-1.54.0}"
 # Pinned to the revisions the demo was last verified against. Bumping one
 # is a deliberate act: the deltic ports carry embedder conventions that
 # have already broken this demo once (see spikes/demo/README.md).
-IROH_REPO=https://github.com/polymorph-components/polymorph-iroh.git
-IROH_PIN=1808cccc437fd2eafe66003e3c0b00518fb94f78
+#
+# polymorph-iroh is NOT checked out here (jsr-pins branch): the tasks-engine
+# spike's default `compose` target consumes the endpoint from
+# jsr:@polymorph/iroh (spikes/tasks-engine/justfile's PINS block), so no
+# sibling clone/cargo-build of it is needed by any default-path target.
 WEBCRYPTO_REPO=https://github.com/polymorph-components/polymorph-webcrypto.git
 WEBCRYPTO_PIN=b13d25230d34bbb65ba657be906fd59151a201f7
 WEBRTC_REPO=https://github.com/polymorph-components/polymorph-webrtc-datachannels.git
@@ -53,7 +56,6 @@ pin_repo() { # url pin dir
 }
 
 mkdir -p "$SIBLINGS_DIR"
-pin_repo "$IROH_REPO" "$IROH_PIN" "$SIBLINGS_DIR/polymorph-iroh"
 pin_repo "$WEBCRYPTO_REPO" "$WEBCRYPTO_PIN" "$SIBLINGS_DIR/polymorph-webcrypto"
 pin_repo "$WEBRTC_REPO" "$WEBRTC_PIN" "$SIBLINGS_DIR/polymorph-webrtc-datachannels"
 
@@ -181,15 +183,5 @@ EOF
         binstall "wac-cli@${WAC_VERSION}"
     fi
 fi
-
-# polymorph-iroh vendors its own dependencies (a TLS profile crate among
-# them) through its setup script, so a fresh clone cannot build the
-# endpoint until that has run. Defer to its contract rather than
-# reimplementing it here; it is idempotent.
-log "Running polymorph-iroh's own setup (its vendored deps)"
-(cd "$SIBLINGS_DIR/polymorph-iroh" && ./scripts/setup.sh)
-
-log "Building the iroh endpoint component (the demo composite plugs it)"
-(cd "$SIBLINGS_DIR/polymorph-iroh" && cargo build -p iroh-endpoint --target wasm32-wasip2 --release)
 
 log "Setup complete. Siblings in $SIBLINGS_DIR"
