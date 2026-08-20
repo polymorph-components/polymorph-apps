@@ -81,7 +81,7 @@ export interface Runner {
   settle(): Promise<void>;
   /** Monotonic count of queued invocations (quiescence detection). */
   readonly generation: number;
-  /** Suspend guest invocations (modal chrome, #22): queued, not delivered. */
+  /** Suspend guest invocations (modal visor, #22): queued, not delivered. */
   pause(): void;
   /** Resume delivery of queued invocations. */
   resume(): void;
@@ -95,7 +95,7 @@ export function createRunner(surface: Surface): Runner {
   const call = <T>(f: () => Promise<T>): Promise<T> => {
     generation++;
     // Ops emitted before a trap are applied; the flush runs on both paths.
-    // The gate (chrome-owned input suspension) is crossed before the guest
+    // The gate (visor-owned input suspension) is crossed before the guest
     // sees the invocation.
     const next = chain.then(() => gate).then(f).then(
       (v) => {

@@ -5,7 +5,7 @@
 // behind the exact same function names the real engine composite will
 // export once Track A lands. Swapping this module for a thin adapter
 // over the real `driver` export is the whole integration step — nothing
-// in host/pairing-chrome.ts is aware this is a mock.
+// in host/pairing-visor.ts is aware this is a mock.
 //
 // WHAT IS MOCKED, DELIBERATELY:
 //   - Transport: an in-page "network" object shared by every mock
@@ -27,14 +27,14 @@
 //     reference across every mock instance that has adopted the same
 //     user-group-id. A real doc is CRDT-merged across a network; this
 //     mock skips convergence because every instance already shares the
-//     same object, which is sufficient to develop chrome's reconcile/
+//     same object, which is sufficient to develop the visor's reconcile/
 //     announce paths without also faking automerge.
 //   - Marks conflict repair (§4) is implemented for the two cases the
 //     contract states (petname collision, hue collision) so
 //     mark-conflict-repaired has something real to fire on.
 //
-// Nothing here is chrome. This module knows nothing about DOM, strips,
-// sheets or ceremonies — see host/pairing-chrome.ts, which is the ONLY
+// Nothing here is visor. This module knows nothing about DOM, strips,
+// sheets or ceremonies — see host/pairing-visor.ts, which is the ONLY
 // module allowed to render a pairing code or a SAS (invariant (f) in
 // scripts/check-invariants.sh).
 
@@ -96,7 +96,7 @@ export type UsEvent =
   | { tag: "device-revoked"; name: string };
 
 /** The async, WIT-shaped surface every mock instance (and, later, the
- * real composite's adapter) implements. Chrome code is written against
+ * real composite's adapter) implements. Visor code is written against
  * exactly this interface. */
 export interface PairingDriver {
   pairJoinStart(): Promise<{ ok: true; value: PairOffer } | { ok: false; error: string }>;
@@ -178,8 +178,8 @@ function ensureQueue(doc: UserGroupDoc, instanceId: string) {
 // Hues are PALETTE INDICES (PAIRING.md §4: "u16 index into the #22
 // framework palette, ~10 entries"), not raw OKLCH angles — the mock
 // carries the same u16 index space the WIT type promises; the
-// index-to-angle mapping is chrome's own table (host/pairing-chrome.ts
-// mirrors host/demo.ts's existing CHROME_HUES), never the mock's
+// index-to-angle mapping is the visor's own table (host/pairing-visor.ts
+// mirrors host/demo.ts's existing VISOR_HUES), never the mock's
 // concern.
 const PALETTE_SIZE = 10;
 
@@ -299,14 +299,14 @@ function randomToken(bytes: number): string {
  * nothing on the mock side needs to DECODE the code — only look it up in
  * the shared network by exact string match, matching the real protocol's
  * "the adder dials the endpoint id from the code" without needing an
- * actual endpoint id. The LENGTH (79) and ALPHABET are real: chrome's
+ * actual endpoint id. The LENGTH (79) and ALPHABET are real: the visor's
  * grouped-by-4 rendering and the join/add code fields are built and
  * tested against production dimensions. */
 function makeCode(): string {
   // 33 raw bytes -> ceil(33*8/5) = 53 symbols is base32's true ratio;
   // the contract states 79 chars for its specific 1+32+16 = 49-byte
   // payload (49*8/5 = 78.4 -> 79 with padding). Mirror 79 directly so
-  // chrome's "groups of 4" renderer is exercised against the real length.
+  // the visor's "groups of 4" renderer is exercised against the real length.
   let out = "";
   while (out.length < 79) out += randomToken(8);
   return out.slice(0, 79);

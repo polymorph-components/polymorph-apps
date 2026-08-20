@@ -1,13 +1,13 @@
-// Standalone host page for the pairing chrome (Track B gate surface):
+// Standalone host page for the pairing visor (Track B gate surface):
 // two mock "devices" sharing one in-page network (host/pairing-mock.ts),
-// each driving the join/add chrome (host/pairing-chrome.ts). This is
+// each driving the join/add visor (host/pairing-visor.ts). This is
 // deliberately NOT wired into host/demo.ts's three-pane engine
 // choreography — that demo requires the real engine composite (Track A,
 // in progress in parallel) and sibling wasm/relay/bucket infra neither
-// available nor relevant to developing/gating chrome's pairing UI.
+// available nor relevant to developing/gating the visor's pairing UI.
 // Swapping the mock for the real composite is an integration step that
 // touches this file's driver construction only (see pairing-mock.ts's
-// header comment) — host/pairing-chrome.ts does not know the
+// header comment) — host/pairing-visor.ts does not know the
 // difference.
 import { createMockDriver, MockPairingNetwork } from "./pairing-mock.ts";
 import {
@@ -17,7 +17,7 @@ import {
   paletteAngle,
   reconcileFromDriver,
   statusWriter,
-} from "./pairing-chrome.ts";
+} from "./pairing-visor.ts";
 
 const net = new MockPairingNetwork();
 
@@ -28,7 +28,7 @@ const tablet = createMockDriver("tablet", net);
 // user-system partition (user-create), matching the contract's "first
 // device only" call. The tablet has none yet — that's what "join" is
 // for. `hue` is a PALETTE INDEX (PAIRING.md §4), not an angle — index 0
-// is chrome's palette entry 265°, chosen here only for a stable initial
+// is the visor's palette entry 265°, chosen here only for a stable initial
 // swatch on this demo page.
 await alice.userCreate({ displayName: "Alice", hue: 0 });
 
@@ -48,10 +48,10 @@ const addHandle = mountAddPane(addPaneEl, alice, addStatus);
 const joinHandle = mountJoinPane(joinPaneEl, tablet, joinStatus, (profile) => {
   // The hue-adoption beat (§5): repaint SOMETHING visibly on the join
   // pane so Playwright (and a human) can see the synced colour land.
-  // Chrome, not pairing-chrome.ts, owns painting its own strip/pane —
-  // pairing-chrome.ts only reports the value (see its mountJoinPane doc
+  // The visor, not pairing-visor.ts, owns painting its own strip/pane —
+  // pairing-visor.ts only reports the value (see its mountJoinPane doc
   // comment), consistent with the anchor-colour discipline in
-  // host/demo.ts (applyChromeHue is host-page code, not shared code).
+  // host/demo.ts (applyVisorHue is host-page code, not shared code).
   // `profile.hue` is a palette INDEX; `paletteAngle` is the one place
   // that turns it into a paintable angle (PAIRING.md §4).
   const angle = paletteAngle(profile.hue);

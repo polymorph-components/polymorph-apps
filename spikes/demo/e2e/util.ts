@@ -44,7 +44,7 @@ export interface FreshOptions {
  * the harness. If a key is renamed there, the scenario that depends on
  * it fails loudly — which is the point of a tripwire. */
 export const KEYS = {
-  hue: "pm-demo-chrome-hue",
+  hue: "pm-demo-visor-hue",
   identity: "pm-demo-identity",
   marks: "pm-demo-surface-marks",
   storage: "pm-demo-storage",
@@ -171,11 +171,11 @@ export async function waitForBoot(page: Page): Promise<void> {
   );
 }
 
-/** The strip's two lines, as text. The whole harness reads the chrome
+/** The strip's two lines, as text. The whole harness reads the visor
  * through these — they are what a user sees. */
 export function stripText(page: Page): Promise<{ top: string; bottom: string }> {
   return page.evaluate(() => {
-    const ctx = document.getElementById("chrome-context");
+    const ctx = document.getElementById("visor-context");
     return {
       top: (ctx?.querySelector(".ctx-top") as HTMLElement | null)?.textContent ?? "",
       bottom: (ctx?.querySelector(".ctx-bottom") as HTMLElement | null)?.textContent ?? "",
@@ -196,7 +196,7 @@ export async function waitForBottom(
   const handle = await page.waitForFunction(
     (src: string) => {
       const fn = new Function("t", `return (${src})(t)`) as (t: string) => boolean;
-      const el = document.querySelector("#chrome-context .ctx-bottom");
+      const el = document.querySelector("#visor-context .ctx-bottom");
       const text = el?.textContent ?? "";
       return fn(text) ? text : false;
     },
@@ -209,7 +209,7 @@ export async function waitForBottom(
   return await handle.jsonValue() as string;
 }
 
-/** Is a chrome sheet of the given tenant open? Read through `__demo`,
+/** Is a visor sheet of the given tenant open? Read through `__demo`,
  * which is the demo's own account of its drawer state. */
 export function sheetOpen(page: Page, tenant: "naming" | "settings" | "drawer"): Promise<boolean> {
   return page.evaluate((t: string) => {
@@ -243,19 +243,19 @@ export async function waitForSheet(
 }
 
 /** Wait until the storage dialog's panel is not merely PRESENT but
- * REGISTERED: chrome fetches the artifact, mounts it, asks it for its
+ * REGISTERED: the visor fetches the artifact, mounts it, asks it for its
  * nickname and computes the DESTINATION it is bound to. An iframe in the
  * region appears before all that finishes, so "the iframe is there" is a
  * weaker claim — a Save clicked in between finds a panel with nothing to
  * commit, and the scenario fails for a reason that is not the one under
  * test.
  *
- * `boundDestination()` is the signal: it is null until chrome has bound
+ * `boundDestination()` is the signal: it is null until the visor has bound
  * the panel to an origin, and a non-null binding is exactly the
- * precondition chrome's own Save re-validates against. Side-effect free.
+ * precondition the visor's own Save re-validates against. Side-effect free.
  *
  * (The strip's context is NOT usable for this, for a plainer reason than
- * this comment once gave: chrome claims the top line for the panel in
+ * this comment once gave: the visor claims the top line for the panel in
  * STAGES — the provenance key at mount, the self-declared nickname a
  * moment later — so the line is a poor readiness signal even though it
  * is never WRONG. That it is never wrong is its own claim, made by
@@ -282,7 +282,7 @@ export async function waitForPanelSurface(page: Page, timeout = UI_TIMEOUT): Pro
  * first), so "the drawer is away" is a wait rather than a sample. */
 export async function waitForDrawerHidden(page: Page, timeout = UI_TIMEOUT): Promise<void> {
   await page.waitForFunction(
-    () => (document.getElementById("chrome-drawer") as HTMLElement).hidden === true,
+    () => (document.getElementById("visor-drawer") as HTMLElement).hidden === true,
     undefined,
     { timeout },
   ).catch((e) => {
@@ -293,7 +293,7 @@ export async function waitForDrawerHidden(page: Page, timeout = UI_TIMEOUT): Pro
 /** The text of the sheet currently in the drawer. */
 export function sheetText(page: Page): Promise<string> {
   return page.evaluate(() =>
-    document.getElementById("chrome-drawer-inner")?.textContent ?? ""
+    document.getElementById("visor-drawer-inner")?.textContent ?? ""
   );
 }
 
@@ -333,7 +333,7 @@ export async function waitForPaneStatus(
  *
  * Some commits are deliberately QUIET on screen: a pane's status line
  * suppresses a non-sticky message while a sticky one is still holding
- * (host/demo.ts:1132), so "chrome persisted the config" can be true and
+ * (host/demo.ts:1132), so "the visor persisted the config" can be true and
  * invisible at the same time. The durable write is the honest observable
  * for those beats — and for a credential path it is also the one worth
  * checking, because WHAT was written is the security claim. */
@@ -409,7 +409,7 @@ export async function recordPaneStatus(
 /** Record EVERY value the strip's TOP line takes, from now on.
  *
  * The top line is the trust anchor's component-identity line, and the
- * claim being made about it is a NEVER: no deferred chrome timer may put
+ * claim being made about it is a NEVER: no deferred visor timer may put
  * one surface's name up while a different surface owns the context. A
  * `never` cannot be checked by sampling — the wrong label may be up for
  * one frame — so this records rather than polls, on BOTH edges:
@@ -424,7 +424,7 @@ export async function recordStripTop(page: Page): Promise<{
   stop(): Promise<string[]>;
 }> {
   await page.evaluate(() => {
-    const el = document.querySelector("#chrome-context .ctx-top") as HTMLElement;
+    const el = document.querySelector("#visor-context .ctx-top") as HTMLElement;
     const store = ((globalThis as Record<string, unknown>).__e2e_ctx_top = [] as string[]);
     const push = () => {
       const text = (el.textContent ?? "").trim();
@@ -466,7 +466,7 @@ export async function recordStripTop(page: Page): Promise<{
  * The runner attaches the collector at `ctx.fresh` time (run.ts) and
  * dumps the tail when a scenario fails. A scenario that is ABOUT the
  * absence of a particular complaint has to read it directly: a mount
- * that fails on a race is caught by chrome's own `.catch` and written
+ * that fails on a race is caught by the visor's own `.catch` and written
  * into the panel region, but the warnings around it only exist here. */
 export function consoleLog(page: Page): string[] {
   return (page as unknown as { __log?: string[] }).__log ?? [];
@@ -474,7 +474,7 @@ export function consoleLog(page: Page): string[] {
 
 /** The panel region's text — where `openStorage`'s mount `.catch` writes
  * `panel failed to mount: …`. The region normally holds nothing but the
- * surface's iframe, so any text in it at all is chrome reporting a
+ * surface's iframe, so any text in it at all is the visor reporting a
  * failure. */
 export function regionText(page: Page): Promise<string> {
   return page.evaluate(() =>
@@ -489,7 +489,7 @@ export function regionText(page: Page): Promise<string> {
 // prefers it to DOM archaeology wherever the two agree — and prefers the
 // DOM wherever the claim is about what a user can SEE.
 
-/** One row of chrome's trust table, as chrome holds it. */
+/** One row of the visor's trust table, as the visor holds it. */
 export interface Surface {
   name: string;
   nickname: string;
@@ -517,7 +517,7 @@ export function marks(page: Page): Promise<Record<string, unknown>> {
   return page.evaluate(() => (globalThis as any).__demo.naming.marks());
 }
 
-/** The persisted chrome identity record (`loadIdentity()`). */
+/** The persisted visor identity record (`loadIdentity()`). */
 export function identity(
   page: Page,
 ): Promise<{ name?: string; device?: string; icon?: string }> {

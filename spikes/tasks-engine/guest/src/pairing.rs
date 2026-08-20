@@ -189,7 +189,7 @@ enum Ev {
     /// A length-framed wire frame, undecoded.
     Frame(Vec<u8>),
     /// The local user confirmed (the adder's confirm carries the device
-    /// name it chose — chrome's voice, never the joiner's).
+    /// name it chose — the visor's voice, never the joiner's).
     Confirm(String),
     /// `pair-abort`, or a superseding `pair-join-start`.
     Abort,

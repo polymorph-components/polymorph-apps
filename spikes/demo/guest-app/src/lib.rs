@@ -485,7 +485,7 @@ impl Guest for Component {
     }
 
     /// What this app calls itself. SELF-DECLARED, therefore worth
-    /// nothing as identity: chrome renders it foreign-quoted and clamped,
+    /// nothing as identity: the visor renders it foreign-quoted and clamped,
     /// keys its trust record on the artifact name it fetched, and lets
     /// the user assign the name they will actually recognise. Same
     /// discipline as the storage panels' `nickname` — the app is one more

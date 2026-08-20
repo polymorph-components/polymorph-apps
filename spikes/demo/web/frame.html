@@ -3,7 +3,7 @@
      One document per app surface: the guest's DOM is applied HERE, in a
      realm the shell cannot be reached from and which cannot reach the
      shell — the iframe is created WITHOUT `allow-same-origin`, so this
-     document runs on an opaque origin. Chrome's strip colour, its CSS
+     document runs on an opaque origin. The visor's strip colour, its CSS
      custom properties, its classes and its storage are structurally
      out of reach rather than merely un-allowlisted.
 
@@ -23,8 +23,8 @@
   <link rel="stylesheet" href="./todomvc-app.css">
   <style>
     /* OPAQUE background, on purpose. If the surface rectangle composited
-       with chrome's pixels (transparency, blend modes, backdrop-filter),
-       an app could read chrome's personal colour back out by sampling
+       with the visor's pixels (transparency, blend modes, backdrop-filter),
+       an app could read the visor's personal colour back out by sampling
        what shows through. An opaque backdrop leaves blend-based sampling
        nothing to read. Same reason the frame carries no transparency of
        its own on the shell side (border: none, no mix-blend-mode). */
@@ -34,7 +34,7 @@
            color: #111; }
     /* The applier's container is <body> itself (ROOT_ID). */
     .todoapp { margin: 0; }
-    /* TodoMVC's <h1> is absolutely positioned ABOVE its box; in chrome's
+    /* TodoMVC's <h1> is absolutely positioned ABOVE its box; in the visor's
        document it overhung the pane, here it would be clipped at the
        frame's top edge. Reserve exactly its height, and only when a
        todoapp is present (panels get no dead space). */
@@ -45,7 +45,7 @@
   
     /* Coarse theme only (see frame.ts): generic surface colours for
        components rendered inside a dark shell. Nothing here encodes
-       chrome's identity colour. */
+       the visor's identity colour. */
     html[data-theme="dark"] body { background: #0f1424; color: #ddd; }
     html[data-theme="dark"] input { background: #16213e; color: #eee;
                                     border: 1px solid #2a2a44; padding: .25em .4em; }

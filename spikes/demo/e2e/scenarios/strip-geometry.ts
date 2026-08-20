@@ -2,7 +2,7 @@
 //
 // The two-line strip is an ANCHOR: it has to stay legible, tappable and
 // on-screen no matter what words are in it — and the words are not all
-// chrome's. A component's self-declared nickname and the user's own
+// the visor's. A component's self-declared nickname and the user's own
 // petname are both variable-length, and a pathological one must ellipsize
 // rather than push the identity cluster (the half a rectangle cannot
 // reproduce) off the edge of the bar.
@@ -16,7 +16,7 @@ import { act, assert, hook, KEYS, waitForSheet } from "../util.ts";
 import type { Page } from "npm:playwright@1.57.0";
 
 /** A name long enough to be hostile at any width, but within the 40-char
- * clamp chrome applies when RENDERING — so this tests the layout, not
+ * clamp the visor applies when RENDERING — so this tests the layout, not
  * the clamp (`petnameSpan`/`nicknameQuote` slice at 40). */
 const LONG_PETNAME = "the quarterly planning board for everyone";
 
@@ -35,11 +35,11 @@ interface Metrics {
 
 function measure(page: Page): Promise<Metrics> {
   return page.evaluate(() => {
-    const strip = document.getElementById("chrome-strip")!;
+    const strip = document.getElementById("visor-strip")!;
     const inner = strip.querySelector(".bar-inner") as HTMLElement;
-    const context = document.getElementById("chrome-context")!;
-    const identity = document.getElementById("chrome-identity")!;
-    const btn = document.getElementById("chrome-settings")!;
+    const context = document.getElementById("visor-context")!;
+    const identity = document.getElementById("visor-identity")!;
+    const btn = document.getElementById("visor-settings")!;
     // The CONTENT box, not the border box: `.bar-inner` carries
     // horizontal padding, and the CSS caps (`max-width: 45%`) resolve
     // against the content width. Measuring the border box makes every
@@ -66,14 +66,14 @@ function measure(page: Page): Promise<Metrics> {
       context: { w: cr.width, h: cr.height },
       identity: { w: idr.width, h: idr.height },
       // The visual separation between the two clusters: what stops the
-      // component's words from appearing to be part of chrome's.
+      // component's words from appearing to be part of the visor's.
       gap: idr.left - cr.right,
       settingsBtn: { w: br.width, h: br.height },
       // Zero tolerance: a horizontal scrollbar on the DOCUMENT means the
       // anchor can be scrolled out of view.
       docOverflow: document.documentElement.scrollWidth -
         document.documentElement.clientWidth,
-      idLines: Array.from(document.querySelectorAll("#chrome-identity .id-lines .who")).map(
+      idLines: Array.from(document.querySelectorAll("#visor-identity .id-lines .who")).map(
         (e) => ({ scrollW: (e as HTMLElement).scrollWidth, clientW: (e as HTMLElement).clientWidth }),
       ),
     };
@@ -126,7 +126,7 @@ const scenario: Scenario = {
       );
 
       // A real tap target. 44×44 is the floor a thumb needs, and this
-      // button is the way into chrome's own settings.
+      // button is the way into the visor's own settings.
       assert(
         m.settingsBtn.w >= 44 && m.settingsBtn.h >= 44,
         `${label}: the settings button is ${m.settingsBtn.w.toFixed(1)}×${
@@ -154,7 +154,7 @@ const scenario: Scenario = {
       );
 
       // And they must be visibly SEPARATE: adjacency is how a component's
-      // words would read as part of chrome's sentence.
+      // words would read as part of the visor's sentence.
       const gapFrac = m.gap / m.barInner;
       assert(
         gapFrac >= 0.10 - EPS,
@@ -171,7 +171,7 @@ const scenario: Scenario = {
 
     await act("at 1280 the strip holds its shape with pathological names", async () => {
       // Give every variable slot a hostile value first: the app's
-      // petname is the longest thing chrome itself will say.
+      // petname is the longest thing the visor itself will say.
       await hook(page, "naming.openCluster");
       await waitForSheet(page, "naming", true);
       await hook(page, "naming.type", LONG_PETNAME);
@@ -204,7 +204,7 @@ const scenario: Scenario = {
       // The petname really is on the line being measured — otherwise
       // the geometry above would be trivially satisfied.
       const bottom = await narrow.evaluate(() =>
-        document.querySelector("#chrome-context .ctx-bottom")?.textContent ?? ""
+        document.querySelector("#visor-context .ctx-bottom")?.textContent ?? ""
       );
       assert(
         bottom.includes("quarterly planning"),
@@ -227,7 +227,7 @@ const scenario: Scenario = {
       );
       // Still visible, and still inside the strip.
       const visible = await narrow.evaluate(() => {
-        const el = document.querySelector("#chrome-identity .id-lines .who") as HTMLElement | null;
+        const el = document.querySelector("#visor-identity .id-lines .who") as HTMLElement | null;
         if (!el) return false;
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== "none";
@@ -242,7 +242,7 @@ const scenario: Scenario = {
       await hook(narrow, "settings.openSheet");
       await waitForSheet(narrow, "settings", true);
       const ok = await narrow.evaluate(() => {
-        const r = document.getElementById("chrome-strip")!.getBoundingClientRect();
+        const r = document.getElementById("visor-strip")!.getBoundingClientRect();
         return {
           onScreen: r.bottom <= globalThis.innerHeight + 1 && r.top >= -1,
           overflow: document.documentElement.scrollWidth -

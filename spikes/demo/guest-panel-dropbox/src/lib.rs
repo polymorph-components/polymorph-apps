@@ -1,20 +1,20 @@
 //! Dropbox storage-provider config panel (#19 x #22): a sandboxed APP,
-//! never chrome. Unlike its S3 sibling this panel carries one granted
-//! capability: a `fetch` import chrome scopes to `api.dropboxapi.com`.
+//! never the visor. Unlike its S3 sibling this panel carries one granted
+//! capability: a `fetch` import the visor scopes to `api.dropboxapi.com`.
 //! That import itself IS the per-destination network grant (the #21
 //! egress-badge story) — this panel cannot reach any other host.
 //!
 //! It holds NO credential and NO provider-console identifier. App key
-//! and app secret moved to chrome's credential drawer with everything
+//! and app secret moved to the visor's credential drawer with everything
 //! else the user pastes out of a provider console: a teachable rule with
 //! exceptions is not a teachable rule. What is left here is exactly the
 //! provider-specific NON-secret configuration — the root folder — plus
-//! a connection test that borrows chrome's injected bearer at the
-//! granted boundary. Sign-in is chrome's control now, rendered in the
+//! a connection test that borrows the visor's injected bearer at the
+//! granted boundary. Sign-in is the visor's control now, rendered in the
 //! drawer next to the app-key field, so this panel no longer imports
 //! the OAuth broker at all (an unused capability is a wrong grant).
 //!
-//! Protocol (todomvc.wit:174-177): chrome calls `seed(config-json)` then
+//! Protocol (todomvc.wit:174-177): the visor calls `seed(config-json)` then
 //! `run()`; pumps `on-event`; polls `outcome()` after each event.
 //! `outcome` is none while the session is live, some("") for cancelled,
 //! some(json) for completed.
@@ -44,14 +44,14 @@ use serde::{Deserialize, Serialize};
 const TOK_ROOT: u32 = 3;
 const TOK_TEST: u32 = 5;
 // One field only. Access token, refresh token, app key and app secret
-// are all CHROME's fields (#22, `credential-needs` below); the root
+// are all THE VISOR's fields (#22, `credential-needs` below); the root
 // folder is the only provider-specific NON-secret configuration this
 // panel owns.
-// Save/Cancel are CHROME's affordances, outside this region (#22), and
+// Save/Cancel are THE VISOR's affordances, outside this region (#22), and
 // so is "Connect Dropbox (sign-in)" — the ceremony needs the app key,
-// which lives in chrome's sheet. "Test connection" stays: it is a
+// which lives in the visor's sheet. "Test connection" stays: it is a
 // provider-specific action over this panel's own granted fetch, and it
-// carries no credential (chrome injects one at the boundary).
+// carries no credential (the visor injects one at the boundary).
 
 const DEFAULT_ROOT: &str = "pm-demo";
 
@@ -117,7 +117,7 @@ fn el(tag: &str, class: &str) -> Element {
 
 /// Labeled text-input row. The root folder is the ONLY input this panel
 /// draws: every credential and every provider-console identifier is
-/// entered in chrome's sheet, outside this region (#22).
+/// entered in the visor's sheet, outside this region (#22).
 fn field(root: &Element, label_text: &str, placeholder: &str, token: u32) -> Element {
     let row = el("div", "field");
     let label = el("label", "");
@@ -144,7 +144,7 @@ fn build(app: &mut App) {
 
     let creds = el("div", "hint");
     creds.set_text_content(
-        "all credentials and identifiers are entered in the chrome sheet — this panel never sees them",
+        "all credentials and identifiers are entered in the visor sheet — this panel never sees them",
     );
     panel.append_child(&creds);
 
@@ -178,11 +178,11 @@ fn set_status(app: &App, text: &str) {
 }
 
 /// "Test connection": POST to the Dropbox account-info endpoint using the
-/// `fetch` import chrome scopes to api.dropboxapi.com — that scoping IS
+/// `fetch` import the visor scopes to api.dropboxapi.com — that scoping IS
 /// the per-destination network grant (todomvc.wit:193-197), not a policy
 /// this guest enforces itself.
 ///
-/// No authorization header is sent — this panel holds no token. Chrome
+/// No authorization header is sent — this panel holds no token. The visor
 /// injects the bearer credential at the granted boundary (the scoped
 /// fetch shim in host/demo.ts), which is precisely why the credential
 /// can stay out of component-drawn pixels.
@@ -206,7 +206,7 @@ async fn test_connection() {
             format!("connected ✓ {who}")
         }
         Ok(resp) if resp.status == 401 => {
-            "test failed: no token held by chrome yet — Connect or paste one in the chrome sheet"
+            "test failed: no token held by the visor yet — Connect or paste one in the visor sheet"
                 .to_string()
         }
         Ok(resp) => {
@@ -219,12 +219,12 @@ async fn test_connection() {
     APP.with(|a| set_status(&a.borrow(), &text));
 }
 
-/// Chrome asks for the configuration when the user presses ITS Save.
+/// The visor asks for the configuration when the user presses ITS Save.
 /// `None` = not valid yet, with the reason rendered in this region.
 ///
 /// There is nothing left here to refuse over: the app key and app secret
-/// this used to validate are chrome's fields now, and REQUIREDNESS OF A
-/// CREDENTIAL IS CHROME'S RULE, judged by kind in chrome's own pixels
+/// this used to validate are the visor's fields now, and REQUIREDNESS OF A
+/// CREDENTIAL IS THE VISOR'S RULE, judged by kind in the visor's own pixels
 /// (see `credential-needs`). The root folder simply defaults.
 fn commit_config(app: &mut App) -> Option<String> {
     let root = if app.root.trim().is_empty() {
@@ -271,7 +271,7 @@ impl Guest for Component {
         handle_event(ev).await;
     }
 
-    /// Chrome drives completion now; the panel never sets an outcome.
+    /// The visor drives completion now; the panel never sets an outcome.
     async fn outcome() -> Option<String> {
         None
     }
@@ -280,7 +280,7 @@ impl Guest for Component {
         APP.with(|a| commit_config(&mut a.borrow_mut()))
     }
 
-    /// The credential vocabulary (#22): kinds only, never labels. Chrome
+    /// The credential vocabulary (#22): kinds only, never labels. The visor
     /// renders these fields in its own pixels, outside this region, and
     /// the values never cross back into this component.
     fn credential_needs() -> Vec<CredentialKind> {
@@ -293,15 +293,15 @@ impl Guest for Component {
     }
 
     /// This panel's configuration always points at one place: the Dropbox
-    /// API origin (#22). Chrome binds the credentials it holds to it and
+    /// API origin (#22). The visor binds the credentials it holds to it and
     /// re-derives the same constant from the committed config, so this
-    /// panel has no way to steer chrome's tokens elsewhere.
+    /// panel has no way to steer the visor's tokens elsewhere.
     fn destination() -> String {
         DESTINATION.to_string()
     }
 
     /// What this panel calls itself. SELF-DECLARED, therefore worth
-    /// nothing as identity: chrome renders it foreign-quoted and clamped,
+    /// nothing as identity: the visor renders it foreign-quoted and clamped,
     /// keys its trust record on the artifact name it fetched, and lets
     /// the user assign the name they will actually recognise.
     fn nickname() -> String {

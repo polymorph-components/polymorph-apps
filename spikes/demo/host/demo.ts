@@ -45,12 +45,12 @@ import {
 const params = new URLSearchParams(location.search);
 const RELAY = params.get("relay") ?? "https://use1-1.relay.n0.iroh.link";
 
-// --- the OAuth redirect landing (chrome-owned; #22 × #7) ------------------------
+// --- the OAuth redirect landing (visor-owned; #22 × #7) ------------------------
 //
 // The provider redirects the popup back to THIS page with ?code=&state=.
 // That window's only job is to relay the code to the opener and go away:
 // it must not boot a second demo (three more engines, a second wire).
-// Navigation and redirect handling are chrome capabilities — the panel
+// Navigation and redirect handling are visor capabilities — the panel
 // never sees this at all.
 const relayedCode = params.get("code");
 const isAuthPopup = !!relayedCode && !!window.opener;
@@ -71,7 +71,7 @@ if (isAuthPopup) {
 // WHAT IS NO LONGER IN HERE (#11): the S3 secret key. A stored config
 // carries ADDRESSING plus public identifiers only; the signing
 // credential lives in the keystore as a non-extractable handle, and the
-// Dropbox tokens live in chrome's per-session credential state and the
+// Dropbox tokens live in the visor's per-session credential state and the
 // egress grant. A blob read out of localStorage can therefore no longer
 // sign anything or be replayed as a bearer for S3.
 type StorageConfig =
@@ -87,7 +87,7 @@ type StorageConfig =
 
 const STORAGE_KEY = "pm-demo-storage";
 
-// --- chrome appearance: the personal, undisclosed anchor -----------------------
+// --- visor appearance: the personal, undisclosed anchor -----------------------
 //
 // The strip's colour is the user's own: RANDOMISED on first run, pickable
 // from a constrained palette, and never handed to app code. It is a
@@ -102,65 +102,76 @@ const STORAGE_KEY = "pm-demo-storage";
 // never be customised into an unreadable or a look-alike state.
 //
 // Why apps cannot learn it: nothing in the surface API carries a colour;
-// the app rectangle is opaque so chrome pixels and app pixels never
+// the app rectangle is opaque so visor pixels and app pixels never
 // composite (blend/backdrop-filter pixel-stealing has nothing to
 // sample); and the framework's curated DOM must additionally withhold
 // blend modes, backdrop filters, CSSOM read-back and system-colour
 // keywords — see the #5 ruling table. The demo enforces the structural
 // half: this value is never passed to a guest, and the component tint
 // below is derived from component bytes instead.
-const CHROME_HUES = [265, 210, 175, 140, 95, 60, 35, 10, 330, 300];
-const CHROME_KEY = "pm-demo-chrome-hue";
+const VISOR_HUES = [265, 210, 175, 140, 95, 60, 35, 10, 330, 300];
+const VISOR_KEY = "pm-demo-visor-hue";
+// CONTRACT: rename-only migration (chrome -> visor, GitHub issue #22); the
+// legacy key is read once below and then removed, never re-created.
+const LEGACY_CHROME_KEY = "pm-demo-chrome-hue";
 
-function chromeHue(): { hue: number; fresh: boolean } {
+function visorHue(): { hue: number; fresh: boolean } {
   try {
-    const raw = localStorage.getItem(CHROME_KEY);
+    // One-time migration: carry an existing user's hue to the new key
+    // without a re-roll (see the no-quiet-reset note below), then drop
+    // the old key so this runs at most once per device.
+    if (localStorage.getItem(VISOR_KEY) === null) {
+      const legacy = localStorage.getItem(LEGACY_CHROME_KEY);
+      if (legacy !== null) localStorage.setItem(VISOR_KEY, legacy);
+    }
+    localStorage.removeItem(LEGACY_CHROME_KEY);
+    const raw = localStorage.getItem(VISOR_KEY);
     if (raw !== null) {
       const hue = Number(raw);
-      if (CHROME_HUES.includes(hue)) return { hue, fresh: false };
+      if (VISOR_HUES.includes(hue)) return { hue, fresh: false };
     }
   } catch { /* storage unavailable: fall through to a fresh pick */ }
   // First run (or eviction). A silently-reset anchor would train users
-  // that "chrome colour changes sometimes", which inverts the training —
+  // that "visor colour changes sometimes", which inverts the training —
   // so a reset is ANNOUNCED, never quiet. In the framework this value
   // belongs with durable device state (#11's identity bundle).
-  const hue = CHROME_HUES[Math.floor(Math.random() * CHROME_HUES.length)];
+  const hue = VISOR_HUES[Math.floor(Math.random() * VISOR_HUES.length)];
   try {
-    localStorage.setItem(CHROME_KEY, String(hue));
+    localStorage.setItem(VISOR_KEY, String(hue));
   } catch { /* nothing durable to write to */ }
   return { hue, fresh: true };
 }
 
 /** The hue currently COMMITTED as the user's anchor colour — as opposed
- * to a live preview the settings sheet is painting. `applyChromeHue`
+ * to a live preview the settings sheet is painting. `applyVisorHue`
  * paints; this is set only where the choice is persisted, so a Cancel
  * has something truthful to revert to even in a browser where storage
- * is unavailable (and `chromeHue` would otherwise re-roll). */
-let committedHue = CHROME_HUES[0];
+ * is unavailable (and `visorHue` would otherwise re-roll). */
+let committedHue = VISOR_HUES[0];
 
-function applyChromeHue(hue: number) {
+function applyVisorHue(hue: number) {
   // Scoped to the strip ELEMENT and to the credential drawer (the only
-  // other surface chrome paints in the user's own colour), never to
+  // other surface visor paints in the user's own colour), never to
   // :root. A custom property on the document root is ambient authority:
   // it inherits into every app region, so a component that ever gained a
-  // `style` attribute (or a chrome class resolving var(--chrome-bg))
-  // could paint chrome's exact colour without ever reading it. Keeping
+  // `style` attribute (or a visor class resolving var(--visor-bg))
+  // could paint the visor's exact colour without ever reading it. Keeping
   // the value out of scope makes the secrecy structural instead of a
   // property of the allowlist.
-  for (const id of ["chrome-strip", "chrome-drawer"]) {
+  for (const id of ["visor-strip", "visor-drawer"]) {
     const el = document.getElementById(id);
     if (!el) continue;
-    el.style.setProperty("--chrome-bg", `oklch(38% .07 ${hue})`);
-    el.style.setProperty("--chrome-fg", "#f4f6fc");
+    el.style.setProperty("--visor-bg", `oklch(38% .07 ${hue})`);
+    el.style.setProperty("--visor-fg", "#f4f6fc");
   }
 }
 
-// --- the identity record: the user's own words, in chrome's voice -------------
+// --- the identity record: the user's own words, in the visor's voice -------------
 //
 // The user's name for themselves, their word for THIS DEVICE, and the
-// glyph they chose for chrome's own button. All three are user-typed or
+// glyph they chose for the visor's own button. All three are user-typed or
 // user-picked, and all three obey exactly the scoping discipline the
-// anchor colour obeys: they are rendered ONLY in chrome pixels (the
+// anchor colour obeys: they are rendered ONLY in visor pixels (the
 // strip and the sheets that hang off it), never written to a :root
 // custom property, never passed to a panel, an engine, or across the
 // frame seam. Nothing in the surface API can carry them, and the
@@ -172,34 +183,34 @@ function applyChromeHue(hue: number) {
 // colour is secondary, and these are words an app can only guess at.
 //
 // NO FABRICATION. An unset field renders NOTHING — never "user", never
-// "this device". A default chrome invented would be a word chrome says
+// "this device". A default visor invented would be a word the visor says
 // in its own voice that the user never wrote, which is the same
 // authority-lending mistake the petname/nickname split exists to
 // prevent.
 const IDENTITY_KEY = "pm-demo-identity";
 
-/** The button face is CHROME'S VOCABULARY, not free text. The record
+/** The button face is THE VISOR'S VOCABULARY, not free text. The record
  * lives in localStorage, so it is hand-editable; if the face were an
  * arbitrary string, a record edited to say "Verified" or "polymorph"
  * would put attacker- (or accident-) chosen WORDS into the anchor, in
- * chrome's own voice, at the one position that is supposed to be
+ * the visor's own voice, at the one position that is supposed to be
  * unspoofable. A fixed glyph set has no such reading: anything outside
  * it falls back to the default shield. */
-const CHROME_ICONS = ["⛨", "✶", "✦", "◆", "▲", "☘", "⚑", "✿", "☾", "⚙"];
-const DEFAULT_ICON = CHROME_ICONS[0];
+const VISOR_ICONS = ["⛨", "✶", "✦", "◆", "▲", "☘", "⚑", "✿", "☾", "⚙"];
+const DEFAULT_ICON = VISOR_ICONS[0];
 
 /** Cap for the user's own words on the strip. CSS ellipsis handles the
  * visual overflow; this stops a hand-edited record from being long
  * enough to matter in the first place. */
 const IDENTITY_MAX = 24;
 
-interface ChromeIdentity {
+interface VisorIdentity {
   name?: string;
   device?: string;
   icon?: string;
 }
 
-function loadIdentity(): ChromeIdentity {
+function loadIdentity(): VisorIdentity {
   try {
     const raw = JSON.parse(localStorage.getItem(IDENTITY_KEY) ?? "{}");
     if (!raw || typeof raw !== "object") return {};
@@ -211,34 +222,34 @@ function loadIdentity(): ChromeIdentity {
       device: word(rec.device),
       // Out-of-vocabulary icons are dropped here rather than rendered;
       // `identityIcon` supplies the default.
-      icon: typeof rec.icon === "string" && CHROME_ICONS.includes(rec.icon) ? rec.icon : undefined,
+      icon: typeof rec.icon === "string" && VISOR_ICONS.includes(rec.icon) ? rec.icon : undefined,
     };
   } catch {
     return {};
   }
 }
 
-function saveIdentity(rec: ChromeIdentity): void {
+function saveIdentity(rec: VisorIdentity): void {
   // Empty fields are stored as ABSENT, not as "": unset must round-trip
   // as unset, so the strip keeps rendering nothing for them.
-  const out: ChromeIdentity = {};
+  const out: VisorIdentity = {};
   if (rec.name && rec.name.trim() !== "") out.name = rec.name.trim().slice(0, IDENTITY_MAX);
   if (rec.device && rec.device.trim() !== "") out.device = rec.device.trim().slice(0, IDENTITY_MAX);
-  if (rec.icon && CHROME_ICONS.includes(rec.icon)) out.icon = rec.icon;
+  if (rec.icon && VISOR_ICONS.includes(rec.icon)) out.icon = rec.icon;
   try {
     localStorage.setItem(IDENTITY_KEY, JSON.stringify(out));
   } catch { /* nothing durable to write to */ }
 }
 
-/** The glyph chrome's own button wears. Unknown/absent → the default
- * shield (see CHROME_ICONS). */
-function identityIcon(rec: ChromeIdentity): string {
-  return rec.icon && CHROME_ICONS.includes(rec.icon) ? rec.icon : DEFAULT_ICON;
+/** The glyph the visor's own button wears. Unknown/absent → the default
+ * shield (see VISOR_ICONS). */
+function identityIcon(rec: VisorIdentity): string {
+  return rec.icon && VISOR_ICONS.includes(rec.icon) ? rec.icon : DEFAULT_ICON;
 }
 
-// Surface marks: the recognition colour chrome shows for a component is// ASSIGNED at first sight and stored in a trust record — never derived.
+// Surface marks: the recognition colour the visor shows for a component is// ASSIGNED at first sight and stored in a trust record — never derived.
 //
-// Two derivations died here, both to the same attack: making CHROME'S
+// Two derivations died here, both to the same attack: making THE VISOR'S
 // OWN STRIP vouch the wrong colour. Deriving from component bytes let an
 // impersonator grind its artifact until the strip assigned it the
 // target's colour (and reshuffled every legitimate update). Deriving
@@ -258,20 +269,20 @@ function identityIcon(rec: ChromeIdentity): string {
 // The record key must be unforgeable PROVENANCE, never self-declared
 // identity — a name that can look up someone else's record is the same
 // attack through the table. Here the key is the artifact name AS
-// FETCHED BY CHROME from its own origin (chrome-verified provenance in
+// FETCHED BY THE VISOR from its own origin (visor-verified provenance in
 // this demo); when signed releases and publisher identity land (#3,
 // #10), it becomes the publisher's verifying key. Durability follows
-// the chrome-hue story: these live with device state (#11), and a lost
+// the visor-hue story: these live with device state (#11), and a lost
 // table means reassignment — visible, so it must be announced, never
 // silent.
 // THREE NAMES, STRICTLY SEPARATED (the petname triangle):
-//   KEY       — the artifact name chrome fetched itself. Unforgeable
+//   KEY       — the artifact name the visor fetched itself. Unforgeable
 //               provenance; the only thing that may address a record.
 //   NICKNAME  — what the component calls itself (`nickname()`).
 //               Self-declared, so it is rendered as foreign-quoted text
-//               and is never a key, never chrome's own voice.
-//   PETNAME   — what the USER calls it, typed in chrome's pixels and
-//               stored in the record. Chrome speaks this one in its own
+//               and is never a key, never the visor's own voice.
+//   PETNAME   — what the USER calls it, typed in the visor's pixels and
+//               stored in the record. The visor speaks this one in its own
 //               voice, because the user wrote it.
 // The demotion is the point: once a petname exists, the component's
 // self-description drops to a footnote ("calls itself …") and the name
@@ -282,7 +293,7 @@ interface SurfaceMark {
   hue: number;
   firstSeen: number;
   /** THE PETNAME: the user's own word for this component, typed in
-   * chrome's own pixels and stored beside the mark. Optional — records
+   * the visor's own pixels and stored beside the mark. Optional — records
    * written before petnames existed stay valid and simply have none, so
    * there is no migration and an unnamed component keeps working exactly
    * as it did. It is NEVER a key (the key is provenance, above) and it
@@ -311,8 +322,8 @@ function surfaceMark(provenance: string): { mark: SurfaceMark; isNew: boolean } 
   const existing = table[provenance];
   if (existing) return { mark: existing, isNew: false };
   const used = new Set(Object.values(table).map((m) => m.hue));
-  const free = CHROME_HUES.filter((h) => !used.has(h));
-  const pool = free.length > 0 ? free : CHROME_HUES;
+  const free = VISOR_HUES.filter((h) => !used.has(h));
+  const pool = free.length > 0 ? free : VISOR_HUES;
   const hue = pool[Math.floor(Math.random() * pool.length)];
   const mark = { hue, firstSeen: Date.now() };
   table[provenance] = mark;
@@ -329,7 +340,7 @@ function freeHues(provenance: string): number[] {
     Object.entries(table).filter(([k]) => k !== provenance).map(([, m]) => m.hue),
   );
   const mine = table[provenance]?.hue;
-  return CHROME_HUES.filter((h) => !used.has(h) || h === mine);
+  return VISOR_HUES.filter((h) => !used.has(h) || h === mine);
 }
 
 /** Is this word already the user's name for a DIFFERENT component?
@@ -337,7 +348,7 @@ function freeHues(provenance: string): number[] {
  * petname — the user would have no way to tell which one is speaking.
  * Compared trimmed and case-insensitively; returns the colliding record
  * (its petname as the user wrote it, and its unforgeable provenance key)
- * so chrome can say, in its own words, what the clash is. */
+ * so the visor can say, in its own words, what the clash is. */
 function petnameCollision(
   provenance: string,
   petname: string,
@@ -468,7 +479,7 @@ const BUILD =
     ?.content ?? "";
 const stamp = (path: string) => (BUILD && BUILD !== "__BUILD__" ? `${path}?v=${BUILD}` : path);
 
-/** The artifact name chrome fetches the app by — and therefore the KEY
+/** The artifact name the visor fetches the app by — and therefore the KEY
  * of the app's row in the surface-mark table. Provenance, never a
  * self-declared name (see surfaceMark). */
 const APP_ARTIFACT = "app";
@@ -487,7 +498,7 @@ async function fetchArtifacts(name: string): Promise<EngineArtifacts> {
   return { envelope, bytes: new Uint8Array(bytes) };
 }
 
-// --- chrome capabilities the panels do NOT have -------------------------------
+// --- visor capabilities the panels do NOT have -------------------------------
 
 /** `throw new ComponentException(payload)` is the err side of a
  * `result<_, string>` (embedder-api §"Error model"; same brand the
@@ -510,33 +521,33 @@ function randomHex(n: number): string {
 
 const AUTH_TIMEOUT_MS = 5 * 60_000;
 
-/** Chrome's credential store for the live dialog session. Installed by
+/** The visor's credential store for the live dialog session. Installed by
  * the dialog wiring in `boot`; module-level so the broker and the scoped
- * fetch shim (both chrome capabilities defined out here) can deposit and
+ * fetch shim (both visor capabilities defined out here) can deposit and
  * read WITHOUT the values ever passing through a panel. Per-session: the
  * dialog's teardown clears them. */
 let depositCredential: (kind: string, value: string) => void = () => {};
 let heldCredential: (kind: string) => string = () => "";
-/** The destination chrome's held credentials are BOUND to: a normalized
+/** The destination the visor's held credentials are BOUND to: a normalized
  * origin, or null while there is none. Module-level for the same reason
- * the store above is — the scoped fetch shim is a chrome capability
+ * the store above is — the scoped fetch shim is a visor capability
  * defined out here, and injection is conditioned on this binding (#22).
  * The dialog wiring maintains it; teardown clears it. */
 let boundDestination: string | null = null;
 
 /**
- * The PKCE ceremony, run HERE, in chrome: a sandboxed panel can neither
+ * The PKCE ceremony, run HERE, in the visor: a sandboxed panel can neither
  * open a popup nor follow a redirect, and must not see the ceremony at
- * all. The TOKENS stay in chrome, deposited straight into chrome's own
- * credential fields (#22) — the powerbox shape: chrome shows what is
+ * all. The TOKENS stay in the visor, deposited straight into the visor's own
+ * credential fields (#22) — the powerbox shape: the visor shows what is
  * authorized and holds the resulting capability; no panel touches it.
  *
  * NO PANEL CAN TRIGGER THIS ANY MORE. It is invoked from the Connect
- * control chrome renders among the drawer's own fields, and `clientId`
+ * control the visor renders among the drawer's own fields, and `clientId`
  * comes from the drawer's own App key input — never across the
  * boundary. `oauth-broker` survives in the WIT as the recorded shape for
  * future surfaces (its `authorize` now takes no parameter, for exactly
- * this reason: the client identifier is chrome's), but the Dropbox
+ * this reason: the client identifier is the visor's), but the Dropbox
  * panel's import is GONE — an unused capability is a wrong grant (#21).
  */
 async function authorize(clientId: string): Promise<void> {
@@ -603,14 +614,14 @@ async function authorize(clientId: string): Promise<void> {
   if (!res.ok) witErr(`token exchange: HTTP ${res.status}: ${await res.text()}`);
   const json = await res.json() as { access_token?: string; refresh_token?: string };
   if (!json.access_token) witErr("token exchange: no access_token in the response");
-  // Straight into CHROME's fields. Nothing is returned to the panel.
+  // Straight into THE VISOR's fields. Nothing is returned to the panel.
   depositCredential("bearer-token", json.access_token);
   depositCredential("refresh-token", json.refresh_token ?? "");
 }
 
 /** The one origin the Dropbox panel's grant — network AND credential —
- * points at. Chrome's own constant: the panel reports the same string,
- * but chrome never takes the panel's word for it (#22). */
+ * points at. The visor's own constant: the panel reports the same string,
+ * but the visor never takes the panel's word for it (#22). */
 const DROPBOX_DESTINATION = "https://api.dropboxapi.com";
 
 /**
@@ -644,12 +655,12 @@ const dropboxFetchImports = {
       // holds no token and cannot set one: any panel-supplied
       // `authorization` header is DROPPED (it could only ever be a
       // guess, or an attempt to exfiltrate something by echoing it to
-      // the wire), and chrome attaches the bearer credential it holds —
+      // the wire), and the visor attaches the bearer credential it holds —
       // outside the sandbox, on the way out. With no token held, no
       // header is added and the provider's 401 is honest.
       //
       // The injection is also BOUND: the token goes out only toward the
-      // destination chrome displayed in its credential fields. The host
+      // destination the visor displayed in its credential fields. The host
       // allowlist above is the network grant; this is the credential
       // grant, and both must pass — the allowlist says where the request
       // may go, the binding says where the SECRET may go.
@@ -727,7 +738,7 @@ function emptyGrant(): EgressGrant {
   };
 }
 
-/** Chrome's own reading of where a request is going. Structural
+/** The visor's own reading of where a request is going. Structural
  * (scheme+host+port via the platform's URL parser), never a string
  * prefix test — prefix matching on URLs is how origin confinement is
  * usually gotten wrong. */
@@ -801,7 +812,7 @@ function formEncode(value: string): string {
  *   (the SigV4-vs-bearer asymmetry recorded on #22), so this seam owns
  *   it: any component-supplied `authorization` is DROPPED — it could
  *   only be a guess or an attempt to echo something to the wire — and
- *   chrome attaches the token it holds, on the way out.
+ *   the visor attaches the token it holds, on the way out.
  */
 function makeOwnerFetch(grant: EgressGrant): StoreFetch {
   return async (method, url, headers, body) => {
@@ -834,7 +845,7 @@ function makeOwnerFetch(grant: EgressGrant): StoreFetch {
     // diff): form-encoded, `client_id` in the body.
     //
     // CONTRACT: the dispatch described this as "Basic app auth". The
-    // deleted guest code — and chrome's own PKCE authorization-code
+    // deleted guest code — and the visor's own PKCE authorization-code
     // exchange above — use the public-client shape instead, with no
     // Authorization header at all. The conservative reading is to
     // reproduce the code path that is known to have worked; a PKCE
@@ -907,7 +918,7 @@ function makeSharedFetch(grant: EgressGrant): StoreFetch {
       witErr(`store-shared-fetch: origin not granted: ${target}`);
     }
     // Any guest-supplied authorization is dropped first: what goes out is
-    // the app identity chrome holds, or nothing at all.
+    // the app identity the visor holds, or nothing at all.
     const outbound = headers.filter(([k]) => k.toLowerCase() !== "authorization");
     const appKey = grant.appKey ?? "";
     const appSecret = grant.appSecret ?? "";
@@ -983,7 +994,7 @@ const DROPBOX_PUBLIC_ORIGINS = [
 /** The app tier reaches exactly one endpoint: the shared-link read. */
 const DROPBOX_SHARED_ORIGINS = ["https://content.dropboxapi.com"];
 
-/** Set when a grant's bearer is refreshed behind the seam, so chrome's
+/** Set when a grant's bearer is refreshed behind the seam, so the visor's
  * own copy (and its localStorage mirror) follow. Installed in `boot`. */
 let onBearerRefreshed: (token: string) => void = () => {};
 
@@ -1008,7 +1019,7 @@ interface PanelExports {
   run(): Promise<void>;
   onEvent(ev: UiEvent): Promise<void>;
   outcome(): Promise<string | undefined>;
-  /** Chrome-driven: produce the config, or none if not yet valid. */
+  /** Visor-driven: produce the config, or none if not yet valid. */
   commit(): Promise<string | undefined>;
   /** The panel's DECLARED credential needs, from the fixed WIT
    * vocabulary (`credentials.credential-kind`). Enum values cross the
@@ -1016,17 +1027,17 @@ interface PanelExports {
    * convention as `event-kind` ("dblclick"/"keydown") in the surface. */
   credentialNeeds(): Promise<string[]>;
   /** Where the panel's configuration currently points: a URL origin, or
-   * "" for none. Chrome re-reads this after every pumped event, binds
+   * "" for none. The visor re-reads this after every pumped event, binds
    * its held credentials to it, and revalidates at commit time — the
-   * panel REPORTS a destination, chrome DECIDES what it means. */
+   * panel REPORTS a destination, the visor DECIDES what it means. */
   destination(): Promise<string>;
   /** What the panel CALLS ITSELF. Self-declared and unverified: read
    * once at mount, clamped, and rendered only as foreign-quoted text.
-   * It is never a table key and never chrome's own voice. */
+   * It is never a table key and never the visor's own voice. */
   nickname(): Promise<string>;
 }
 
-/** Chrome's own normalization of a panel-reported destination: parse
+/** The visor's own normalization of a panel-reported destination: parse
  * with the platform's URL machinery and keep the ORIGIN only
  * (scheme + host + port; URL lowercases the scheme and host and gives
  * punycode for unicode hostnames — which is exactly the confusable
@@ -1048,9 +1059,9 @@ function normalizeOrigin(raw: string): string | null {
   return origin;
 }
 
-/** Chrome's own cleartext judgement (#22 rule 7): http to anything but
- * the loopback names means the credentials chrome holds would travel in
- * the clear. Chrome says this in chrome's words, from the NORMALIZED
+/** The visor's own cleartext judgement (#22 rule 7): http to anything but
+ * the loopback names means the credentials the visor holds would travel in
+ * the clear. The visor says this in the visor's words, from the NORMALIZED
  * origin — never from the panel's string. */
 function isCleartextDestination(origin: string): boolean {
   let url: URL;
@@ -1063,16 +1074,16 @@ function isCleartextDestination(origin: string): boolean {
   return url.hostname !== "127.0.0.1" && url.hostname !== "localhost";
 }
 
-// --- chrome-owned credential fields (#22) --------------------------------------
+// --- visor-owned credential fields (#22) --------------------------------------
 //
 // The phishing surface this closes: a panel that draws its own secret
 // inputs is asking for credentials in ITS pixels while sitting inside
-// chrome's dialog, borrowing chrome's authority. So a panel may only
-// DECLARE a kind from a fixed vocabulary; chrome renders the field with
-// CHROME'S OWN WORDS. Chrome never renders a panel-supplied label — that
+// the visor's dialog, borrowing the visor's authority. So a panel may only
+// DECLARE a kind from a fixed vocabulary; the visor renders the field with
+// THE VISOR'S OWN WORDS. The visor never renders a panel-supplied label — that
 // is the whole point: otherwise a panel declares "your Dropbox password"
-// and chrome's pixels say it. Unknown kinds are refused outright, and
-// the word "password" is never a label chrome writes.
+// and the visor's pixels say it. Unknown kinds are refused outright, and
+// the word "password" is never a label the visor writes.
 interface CredentialSpec {
   label: string;
   type: "text" | "password";
@@ -1152,7 +1163,7 @@ async function mountApp(pane: Pane, appArtifacts: EngineArtifacts) {
   const container = document.getElementById(`${pane.name}-app`)!;
   let dispatch: (ev: UiEvent) => void = () => {};
   // A REAL sandboxed frame per app surface (#16), not the `direct`
-  // backend: the app's nodes never enter chrome's document, so chrome's
+  // backend: the app's nodes never enter the visor's document, so the visor's
   // personal strip colour is unreachable by construction rather than by
   // allowlist. See frame-backend.ts.
   const frameBackend = createFrameBackend(
@@ -1209,43 +1220,43 @@ function err(e: unknown): string {
   return typeof p === "string" ? p : String(e);
 }
 
-/** What chrome knows about one component surface. `name` is the
- * unforgeable provenance key chrome fetched the artifact by; `nickname`
+/** What the visor knows about one component surface. `name` is the
+ * unforgeable provenance key the visor fetched the artifact by; `nickname`
  * is what the component says about itself; `petname` is what the user
  * decided to call it. Only the last of the three is ever spoken in
- * chrome's own voice. */
+ * the visor's own voice. */
 interface SurfaceIdentity {
   name: string;
   nickname: string;
   hue: number;
   isNew: boolean;
   petname?: string;
-  /** When chrome first assigned this record its mark, from the stored
+  /** When the visor first assigned this record its mark, from the stored
    * trust record. Shown on the App settings sheet as a locale date — a
    * "you have seen this before, since <date>" the user can check. */
   firstSeen?: number;
-  /** One line of chrome-known metadata about this surface, for the App
-   * settings sheet. `label` is CHROME'S word (never a component's);
+  /** One line of visor-known metadata about this surface, for the App
+   * settings sheet. `label` is THE VISOR'S word (never a component's);
    * `value` may be component-influenced (a panel's declared
    * destination), so the sheet renders it foreign-quoted. `foreign`
    * says which. */
   meta?: { label: string; value: string; foreign: boolean };
 }
 
-/** Chrome's context slot: what secondary surface, if any, is on screen.
+/** The visor's context slot: what secondary surface, if any, is on screen.
  * Called with null for "no secondary surface" — which is no longer
  * "nothing": the strip falls back to THE APP's own identity, the
- * artifact chrome fetched and drew into the three regions. `kind` says
+ * artifact the visor fetched and drew into the three regions. `kind` says
  * whose pixels the secondary surface is: a component's config panel,
- * chrome's own credential sheet, chrome's own naming/App-settings sheet,
- * or chrome's own settings sheet. The last has no component behind it at
+ * the visor's own credential sheet, the visor's own naming/App-settings sheet,
+ * or the visor's own settings sheet. The last has no component behind it at
  * all, which is why it is a bare `kind` rather than a surface. */
-type ChromeContext =
+type VisorContext =
   | (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" })
   | { kind: "settings" }
   | null;
 
-let setChromeContext: (surface: ChromeContext) => void = () => {};
+let setVisorContext: (surface: VisorContext) => void = () => {};
 
 /** THE APP'S OWN ROW IN THE TRUST TABLE. Registered once at boot, after
  * the app artifact is instantiated for the regions: ONE artifact drawn
@@ -1254,7 +1265,7 @@ let setChromeContext: (surface: ChromeContext) => void = () => {};
  * the record still exists — only the self-declared name falls back). */
 let appSurface: SurfaceIdentity | null = null;
 
-/** Say something in CHROME'S OWN VOICE on the strip's bottom line, for
+/** Say something in THE VISOR'S OWN VOICE on the strip's bottom line, for
  * `ms`, and then put the line back by RE-RENDERING the live context.
  *
  * The re-render is the whole design of this helper. The obvious version
@@ -1262,34 +1273,34 @@ let appSurface: SurfaceIdentity | null = null;
  * here, because the thing the line is about can change while the
  * announcement is showing: a sheet opens or closes, a petname is
  * assigned, the context moves to another surface. Restoring a saved
- * string would then put a stale sentence back on the anchor, in chrome's
+ * string would then put a stale sentence back on the anchor, in the visor's
  * voice, which is the one place a wrong word costs something. Installed
- * by `initChrome`. */
+ * by `initVisor`. */
 let announce: (text: string, ms?: number) => void = () => {};
 
 
-/** Chrome's naming ceremony, installed by `boot`. Module-level because
- * the strip's "name it" control is rendered by `initChrome`, which runs
+/** The visor's naming ceremony, installed by `boot`. Module-level because
+ * the strip's "name it" control is rendered by `initVisor`, which runs
  * before the drawer machinery exists. */
 let requestNaming: (surface: SurfaceIdentity) => void = () => {};
 
-/** Chrome's settings sheet, installed by `boot` for the same reason:
- * the strip's settings button is rendered by `initChrome`, well before
+/** The visor's settings sheet, installed by `boot` for the same reason:
+ * the strip's settings button is rendered by `initVisor`, well before
  * the drawer exists. */
 let requestSettings: () => void = () => {};
 
 /** Repaint the strip's identity cluster from the stored record.
- * Installed by `initChrome`; called after the settings sheet commits. */
-let renderChromeIdentity: () => void = () => {};
+ * Installed by `initVisor`; called after the settings sheet commits. */
+let renderVisorIdentity: () => void = () => {};
 
 /** Repaint the strip's CONTEXT cluster from whatever context is current.
- * Installed by `initChrome`; called when something the current context
+ * Installed by `initVisor`; called when something the current context
  * is drawn from changes underneath it (the app surface being registered
  * at boot, for instance) without the context itself moving. */
-let renderChromeContext: () => void = () => {};
+let renderVisorContext: () => void = () => {};
 
-/** The user's word for a component, in CHROME'S voice: not quoted, not
- * monospaced, because the user wrote it and chrome is entitled to say
+/** The user's word for a component, in THE VISOR'S voice: not quoted, not
+ * monospaced, because the user wrote it and the visor is entitled to say
  * it. Clamped anyway — the naming sheet caps input at 40, but a record
  * hand-edited in devtools should not be able to stretch the strip. */
 function petnameSpan(petname: string): HTMLElement {
@@ -1300,7 +1311,7 @@ function petnameSpan(petname: string): HTMLElement {
 }
 
 /** The component's own account of itself, always foreign: quoted,
- * monospaced, clamped, never joined into a chrome sentence. */
+ * monospaced, clamped, never joined into a visor sentence. */
 function nicknameQuote(nickname: string): HTMLElement {
   const q = document.createElement("q");
   q.className = "foreign";
@@ -1308,20 +1319,20 @@ function nicknameQuote(nickname: string): HTMLElement {
   return q;
 }
 
-function initChrome() {
-  const { hue, fresh } = chromeHue();
+function initVisor() {
+  const { hue, fresh } = visorHue();
   committedHue = hue;
-  applyChromeHue(hue);
-  const context = document.getElementById("chrome-context")!;
+  applyVisorHue(hue);
+  const context = document.getElementById("visor-context")!;
   const ctxTop = context.querySelector(".ctx-top") as HTMLElement;
   const ctxBottom = context.querySelector(".ctx-bottom") as HTMLElement;
-  const identityBox = document.getElementById("chrome-identity")!;
+  const identityBox = document.getElementById("visor-identity")!;
 
   // THE IDENTITY CLUSTER, rebuilt from the record on every commit. Every
-  // word here is the user's own, said in chrome's voice (plain, full
-  // opacity) — and every word here stays inside chrome's pixels: nothing
+  // word here is the user's own, said in the visor's voice (plain, full
+  // opacity) — and every word here stays inside the visor's pixels: nothing
   // below is written to a custom property, handed to a panel, or put on
-  // the frame seam. Same discipline as `applyChromeHue`, for the same
+  // the frame seam. Same discipline as `applyVisorHue`, for the same
   // reason: an ambient value is a disclosed value.
   //
   // TWO LINES NOW: the user's name above their word for this device,
@@ -1330,7 +1341,7 @@ function initChrome() {
   // narrowness, and dropping them was dropping half of what an
   // impersonating rectangle cannot reproduce, at the width where the
   // strip is most crowded.
-  renderChromeIdentity = () => {
+  renderVisorIdentity = () => {
     const rec = loadIdentity();
     identityBox.replaceChildren();
     const lines = document.createElement("span");
@@ -1354,21 +1365,21 @@ function initChrome() {
     }
     identityBox.append(lines);
     const btn = document.createElement("button");
-    btn.id = "chrome-settings";
+    btn.id = "visor-settings";
     btn.type = "button";
-    // The face is a glyph from chrome's fixed vocabulary — never a
-    // string out of the record (see CHROME_ICONS).
+    // The face is a glyph from the visor's fixed vocabulary — never a
+    // string out of the record (see VISOR_ICONS).
     btn.textContent = identityIcon(rec);
-    btn.title = "your chrome: name, device, colour";
-    btn.setAttribute("aria-label", "your chrome: name, device, colour");
+    btn.title = "your visor: name, device, colour";
+    btn.setAttribute("aria-label", "your visor: name, device, colour");
     btn.onclick = () => requestSettings();
     identityBox.append(btn);
   };
-  renderChromeIdentity();
+  renderVisorIdentity();
 
   /** The context currently on the strip, kept so an expiring
    * announcement can re-render it rather than restore a saved string. */
-  let current: ChromeContext = null;
+  let current: VisorContext = null;
   /** Bumped by every render and every announcement: a revert timer whose
    * token is stale has been overtaken and must do nothing. */
   let announceToken = 0;
@@ -1377,15 +1388,15 @@ function initChrome() {
    * preempts it (a sheet opening is more urgent than any timed note),
    * but a mere repaint of the same context must not: the app surface
    * being registered a second after boot would otherwise silently eat
-   * the "new chrome colour" announcement. */
+   * the "new visor colour" announcement. */
   let announcing = false;
 
-  /** The surface the TOP line is about. Chrome's own settings sheet has
+  /** The surface the TOP line is about. The visor's own settings sheet has
    * no component behind it, so the top line keeps naming the app: the
    * component identity is a property of what is INSTALLED, not of which
-   * chrome sheet happens to be open — that is what "static after
+   * visor sheet happens to be open — that is what "static after
    * install" means here. */
-  const topSurface = (ctx: ChromeContext): SurfaceIdentity | null => {
+  const topSurface = (ctx: VisorContext): SurfaceIdentity | null => {
     if (ctx === null) return appSurface;
     if (ctx.kind === "settings") return appSurface;
     return ctx;
@@ -1405,7 +1416,7 @@ function initChrome() {
 
     // --- the TOP line: the COMPONENT's identity, and only that -------
     // Component-said words only: its assigned mark and what it calls
-    // itself, quoted/monospaced/clamped as ever. Nothing chrome does to
+    // itself, quoted/monospaced/clamped as ever. Nothing the visor does to
     // its own sheets rewrites this line.
     if (surface) {
       const chip = document.createElement("span");
@@ -1414,9 +1425,9 @@ function initChrome() {
       ctxTop.append(chip, nicknameQuote(surface.nickname));
     }
 
-    // --- the BOTTOM line: CHROME'S voice ----------------------------
+    // --- the BOTTOM line: THE VISOR'S voice ----------------------------
     // What is NOT here any more: the sentence "— provider configuration
-    // panel · drawn by the component, not by chrome". It was a standing
+    // panel · drawn by the component, not by the visor". It was a standing
     // description competing for a line that now has to hold the
     // petname, the first-sight marker and the open sheet's name in one
     // ellipsizing row; and the claim it made is made better by the
@@ -1424,9 +1435,9 @@ function initChrome() {
     const kind = ctx === null ? "app" : (ctx.kind ?? "panel");
     const sheet = kind === "credentials" || kind === "naming" || kind === "settings";
     if (sheet && !holdBottom) {
-      // While a chrome sheet is open the strip NAMES it: the anchor and
+      // While a visor sheet is open the strip NAMES it: the anchor and
       // the surface hanging off it say the same thing, so "which pixels
-      // am I typing into" has a chrome-side answer. This is the part of
+      // am I typing into" has a visor-side answer. This is the part of
       // the deleted standing-rule line that was worth keeping.
       const lead = document.createElement("span");
       lead.className = "said";
@@ -1434,19 +1445,19 @@ function initChrome() {
         ? "storage credentials"
         : kind === "naming"
         ? "naming"
-        : "chrome settings";
+        : "visor settings";
       ctxBottom.append(lead);
     }
     if (surface && !holdBottom) {
-      // THE DEMOTION. With a petname, the name chrome SAYS is the user's
-      // own, in chrome's voice, on chrome's line — and the component's
+      // THE DEMOTION. With a petname, the name the visor SAYS is the user's
+      // own, in the visor's voice, on the visor's line — and the component's
       // self-description stays upstairs where it belongs, as a quote.
-      // Without one, chrome offers to fix that.
+      // Without one, the visor offers to fix that.
       const petname = (surface.petname ?? "").trim();
       if (petname !== "") {
         const named = petnameSpan(petname);
         if (!sheet) {
-          // The click target is chrome pixels in the strip — a place no
+          // The click target is visor pixels in the strip — a place no
           // component can draw — so the ceremony cannot be baited from
           // inside an app rectangle. (The whole cluster is a tap target
           // too; this inner one stops the event so one gesture is one
@@ -1482,10 +1493,10 @@ function initChrome() {
         ctxBottom.append(fresh);
       }
       if (petname === "" && !sheet) {
-        // Chrome's own control, in chrome's own pixels: the offer to stop
+        // The visor's own control, in the visor's own pixels: the offer to stop
         // relying on what the component says about itself.
         const nameIt = document.createElement("button");
-        nameIt.id = "chrome-name-it";
+        nameIt.id = "visor-name-it";
         nameIt.type = "button";
         nameIt.textContent = "name it";
         nameIt.title = "give this component your own name";
@@ -1497,7 +1508,7 @@ function initChrome() {
       }
     }
 
-    // THE CLUSTER IS ONE TAP TARGET, opening chrome's App settings sheet
+    // THE CLUSTER IS ONE TAP TARGET, opening the visor's App settings sheet
     // for the surface the top line names. Offered only when there is a
     // surface and no credential/naming sheet already owns the drawer —
     // a control that would be a no-op must not announce itself as a
@@ -1542,13 +1553,13 @@ function initChrome() {
     }, ms);
   };
 
-  setChromeContext = (surface) => {
+  setVisorContext = (surface) => {
     current = surface;
     // A context MOVE preempts any live announcement (see `announcing`).
     renderContext();
   };
-  renderChromeContext = () => renderContext({ keepAnnouncement: true });
-  setChromeContext(null);
+  renderVisorContext = () => renderContext({ keepAnnouncement: true });
+  setVisorContext(null);
 
 
   // The colour picker used to live here, as a strip button plus an
@@ -1556,7 +1567,7 @@ function initChrome() {
   // constrained palette, same fixed lightness/chroma, same storage key):
   // the strip is the anchor, and an anchor with its own editing controls
   // dangling off it is a busier target than one control that opens
-  // chrome's own surface.
+  // the visor's own surface.
   return { fresh };
 }
 
@@ -1568,11 +1579,11 @@ async function boot() {
   };
 
   // An anchor that resets silently trains the user that it changes; a
-  // reset is therefore announced — on chrome's own line, which reverts
+  // reset is therefore announced — on the visor's own line, which reverts
   // by re-render when the announcement expires.
-  const { fresh } = initChrome();
+  const { fresh } = initVisor();
   if (fresh) {
-    announce("new chrome colour set for this device — remember it", 15000);
+    announce("new visor colour set for this device — remember it", 15000);
   }
 
   say("fetching artifacts…");
@@ -1676,20 +1687,20 @@ async function boot() {
   //
   // ONE ARTIFACT, ONE RECORD. The same `app` artifact is instantiated
   // into three regions (alice, bob, tablet); the regions are places
-  // chrome drew it, not identities. So chrome registers exactly one
+  // the visor drew it, not identities. So the visor registers exactly one
   // surface mark, keyed — like every other record — by the artifact name
-  // CHROME FETCHED IT BY (unforgeable provenance in this demo; see
+  // THE VISOR FETCHED IT BY (unforgeable provenance in this demo; see
   // surfaceMark). The region names move to the App settings sheet as
   // metadata, where they describe the record rather than standing in for
   // it.
   //
-  // Genuine first boot therefore shows NEW plus chrome's offer to name
+  // Genuine first boot therefore shows NEW plus the visor's offer to name
   // it, on the strip's bottom line, for the app itself — the TOFU moment
   // the panels already had.
   const { mark: appMark, isNew: appIsNew } = surfaceMark(APP_ARTIFACT);
   // WHAT THE APP CALLS ITSELF: read ONCE, from ONE instance, exactly as
   // the panels' nickname is read — the app's exports are reachable from
-  // chrome (the frame isolates the app's DOM, not its export surface;
+  // the visor (the frame isolates the app's DOM, not its export surface;
   // see mountApp), so no new seam is needed. Same failure discipline: a
   // trap, an empty answer or whitespace falls back to the provenance
   // key, and the value is clamped at 40 on the way in so no downstream
@@ -1711,13 +1722,13 @@ async function boot() {
     isNew: appIsNew,
     petname: appMark.petname,
     firstSeen: appMark.firstSeen,
-    // Chrome's own words for chrome's own fact: where it drew this
+    // The visor's own words for the visor's own fact: where it drew this
     // artifact. Not component-influenced, so not foreign-quoted.
     meta: { label: "drawn in", value: panes.map((p) => p.name).join(", "), foreign: false },
   };
   // A repaint, not a context move: whatever is on the strip stays, and a
   // live announcement (the fresh-anchor one, at boot) keeps its line.
-  renderChromeContext();
+  renderVisorContext();
 
   // All background engine work rides ONE chain: never concurrent with
   // itself (a wedged overlap of interval-driven driver calls froze the
@@ -1768,7 +1779,7 @@ async function boot() {
 
   let bucketReady = false;
   let currentProvider: "s3" | "dropbox" = loadStorage()?.provider ?? "s3";
-  // Dropbox link tier: Bob's standing pickup capability. Chrome carries
+  // Dropbox link tier: Bob's standing pickup capability. The visor carries
   // it here in lieu of the E2E channel the framework would use.
   let bobPickup: string | undefined;
   const syncBtn = document.getElementById("bucket-sync") as HTMLButtonElement;
@@ -1871,7 +1882,7 @@ async function boot() {
           }
         } else {
           const root = cfg.root + sessionSuffix();
-          // Chrome-held, grant-fed, config-free: the bearer and its
+          // Visor-held, grant-fed, config-free: the bearer and its
           // refresh (and the app identifiers the refresh needs) go into
           // the GRANT the owner seam closes over. The engine's config
           // gets addressing and nothing else.
@@ -1936,9 +1947,9 @@ async function boot() {
     });
   };
 
-  // A bearer refreshed BEHIND the seam is chrome's news, not the
+  // A bearer refreshed BEHIND the seam is the visor's news, not the
   // component's: the grant already holds the new token (the seam wrote
-  // it), and chrome's durable mirror follows so a reload does not start
+  // it), and the visor's durable mirror follows so a reload does not start
   // from the expired one. The engine is never told; that is the point of
   // the handle naming the relationship rather than the bytes.
   onBearerRefreshed = (token: string) => {
@@ -1993,33 +2004,33 @@ async function boot() {
     bobPull();
   };
 
-  // --- the storage dialog: chrome frame, sandboxed provider panel ----------
+  // --- the storage dialog: visor frame, sandboxed provider panel ----------
   //
   // #22's provisional ruling: a provider's config panel is an APP — its
-  // own region, its own grants, launched FROM chrome, never rendered AS
-  // chrome. Chrome owns the dialog, the tabs and the OAuth ceremony; the
+  // own region, its own grants, launched FROM the visor, never rendered AS
+  // the visor. The visor owns the dialog, the tabs and the OAuth ceremony; the
   // panel owns the fields and hands back an opaque config blob.
-  // Credentials never touch app code or chrome-rendered provider code.
+  // Credentials never touch app code or visor-rendered provider code.
 
   const dialog = document.getElementById("storage-dialog") as HTMLDialogElement;
   const region = document.getElementById("panel-region") as HTMLElement;
   const saveBtn = document.getElementById("storage-save") as HTMLButtonElement;
 
-  // --- chrome's own credential entry: the anchored drawer (#22) -----------
+  // --- the visor's own credential entry: the anchored drawer (#22) -----------
   //
   // The phishing surface this closes: a panel that draws its own secret
   // inputs is asking for credentials in ITS pixels while sitting inside
-  // chrome's dialog, borrowing chrome's authority. So a panel may only
-  // DECLARE a kind from a fixed vocabulary; chrome renders the field with
-  // CHROME'S OWN WORDS (CREDENTIAL_VOCABULARY above). Chrome never
+  // the visor's dialog, borrowing the visor's authority. So a panel may only
+  // DECLARE a kind from a fixed vocabulary; the visor renders the field with
+  // THE VISOR'S OWN WORDS (CREDENTIAL_VOCABULARY above). The visor never
   // renders a panel-supplied label — that is the whole point: otherwise a
-  // panel declares "your Dropbox password" and chrome's pixels say it.
+  // panel declares "your Dropbox password" and the visor's pixels say it.
   // Unknown kinds are refused outright, and the word "password" is never
-  // a label chrome writes.
+  // a label the visor writes.
   //
-  // What the drawer changes is WHERE those chrome-owned fields live. In
+  // What the drawer changes is WHERE those visor-owned fields live. In
   // the dialog they sat mid-page between the sandboxed region and the
-  // action row: chrome's pixels by construction, but not RECOGNISABLY so
+  // action row: the visor's pixels by construction, but not RECOGNISABLY so
   // — an app can draw that same rectangle, pixel for pixel, inside its
   // own region. They now live on a sheet that unfolds ABOVE the pinned
   // strip, painted in the user's own anchor colour, with the panel
@@ -2033,14 +2044,14 @@ async function boot() {
   // offset — the strip is pinned to the viewport's top edge, so there is
   // no position an app can occupy there. And the sheet ARRIVES by pushing
   // the real strip down: an app can paint a sheet, but it cannot move
-  // chrome's bar, so the reveal motion is itself unforgeable. Position is
+  // the visor's bar, so the reveal motion is itself unforgeable. Position is
   // the anchor, the motion is its proof, and the colour is secondary.
-  const drawer = document.getElementById("chrome-drawer") as HTMLElement;
-  const drawerInner = document.getElementById("chrome-drawer-inner") as HTMLElement;
+  const drawer = document.getElementById("visor-drawer") as HTMLElement;
+  const drawerInner = document.getElementById("visor-drawer-inner") as HTMLElement;
   /** The bar the sheet opens above — measured for the sheet's height
    * budget, so the anchor can never be pushed off-screen. */
-  const strip = document.getElementById("chrome-strip") as HTMLElement | null;
-  const dim = document.getElementById("chrome-dim") as HTMLElement;
+  const strip = document.getElementById("visor-strip") as HTMLElement | null;
+  const dim = document.getElementById("visor-dim") as HTMLElement;
   /** The dialog's own refusal line: the commit-time destination checks
    * fail while the dialog is still open and no sheet exists yet. */
   const dialogReason = document.getElementById("storage-reason") as HTMLElement;
@@ -2048,18 +2059,18 @@ async function boot() {
     dialogReason.textContent = text;
   };
 
-  /** Chrome's per-session credential state, keyed by WIT kind. The
-   * inputs are the UI; this map is the value chrome hands onward (and
+  /** The visor's per-session credential state, keyed by WIT kind. The
+   * inputs are the UI; this map is the value the visor hands onward (and
    * what the fetch shim injects from). It outlives the panel: the OAuth
    * broker deposits into it DURING the panel session, and the drawer
    * opens after that panel is gone. */
   const credValues = new Map<string, string>();
   const credInputs = new Map<string, HTMLInputElement>();
   let credKinds: string[] = [];
-  /** True when chrome ALREADY holds an escrowed signing key for the
+  /** True when the visor ALREADY holds an escrowed signing key for the
    * destination this sheet is bound to. It changes two things and
    * nothing else: the secret-key field renders empty with a placeholder
-   * saying so, and "empty" passes chrome's requiredness rule (empty =
+   * saying so, and "empty" passes the visor's requiredness rule (empty =
    * keep the held key; non-empty = replace it). It is deliberately NOT a
    * relaxation of the destination binding — the lookup is keyed by the
    * SAME bound origin the triple revalidation just agreed on, so a panel
@@ -2091,8 +2102,8 @@ async function boot() {
     boundDestination = null;
   };
 
-  /** The binding line, in chrome's own words. The origin it names is
-   * chrome's normalization of what the panel reported — quoted and
+  /** The binding line, in the visor's own words. The origin it names is
+   * the visor's normalization of what the panel reported — quoted and
    * foreign-styled because it is panel-INFLUENCED data, even after
    * normalization. No panel-supplied prose ever appears here. */
   function renderBinding() {
@@ -2100,7 +2111,7 @@ async function boot() {
     credBinding.replaceChildren();
     credWarning.textContent = "";
     if (boundDestination === null) {
-      // Rule 3: no destination, no fields. Chrome says why, and the
+      // Rule 3: no destination, no fields. The visor says why, and the
       // inputs cannot be typed into — there is nowhere to release to.
       // (The commit-time revalidation refuses to open the drawer at all
       // without a destination, so this is a defensive branch.)
@@ -2123,7 +2134,7 @@ async function boot() {
   }
 
   /** Re-read the panel's destination and re-bind. A CHANGE is treated as
-   * a new secret-handling decision: the values chrome holds were entered
+   * a new secret-handling decision: the values the visor holds were entered
    * (or deposited by the OAuth broker) for the old destination, so they
    * are dropped rather than silently re-aimed (#22 rule 2). Returns the
    * new binding. */
@@ -2135,7 +2146,7 @@ async function boot() {
     }
     const had = boundDestination;
     boundDestination = next;
-    // Clear held values AND any visible inputs: chrome must not keep
+    // Clear held values AND any visible inputs: the visor must not keep
     // showing (or holding) a secret that is no longer bound to anything.
     credValues.clear();
     for (const input of credInputs.values()) input.value = "";
@@ -2148,8 +2159,8 @@ async function boot() {
 
   clearCredentials();
 
-  /** Render the declared kinds INTO THE DRAWER — chrome's labels only.
-   * An unrecognised kind is REFUSED rather than guessed at: chrome will
+  /** Render the declared kinds INTO THE DRAWER — the visor's labels only.
+   * An unrecognised kind is REFUSED rather than guessed at: the visor will
    * not lend its pixels to a request it has no words for, and Confirm
    * stays disabled so the refusal cannot be clicked past (Save is
    * likewise disabled back in the dialog, at mount time). Returns whether
@@ -2157,7 +2168,7 @@ async function boot() {
   const renderCredentials = (kinds: string[], prefill: Record<string, string>): boolean => {
     credKinds = kinds;
     credInputs.clear();
-    // Chrome ends up holding EXACTLY the kinds this sheet shows: anything
+    // The visor ends up holding EXACTLY the kinds this sheet shows: anything
     // left over from the panel session (an OAuth deposit for a kind no
     // longer asked for) is dropped rather than quietly merged at Confirm.
     // Deposits that are still relevant arrive through `prefill`.
@@ -2174,15 +2185,15 @@ async function boot() {
       const row = document.createElement("div");
       row.className = "cred-field";
       const label = document.createElement("label");
-      // CHROME'S OWN WORDS. Never a panel-supplied string.
+      // THE VISOR'S OWN WORDS. Never a panel-supplied string.
       label.textContent = spec.label;
       const input = document.createElement("input");
       input.type = spec.type;
       input.autocomplete = "off";
       if (kind === "secret-key" && heldSigningKey) {
-        // Chrome's own words for a credential it holds but cannot show:
+        // The visor's own words for a credential it holds but cannot show:
         // the key is a non-extractable handle, so "leave blank to keep
-        // it" is literally the only offer chrome can make.
+        // it" is literally the only offer the visor can make.
         input.placeholder = "held as a non-extractable signing key — leave blank to keep it";
       }
       const seeded = prefill[kind] ?? "";
@@ -2208,14 +2219,14 @@ async function boot() {
     return refused;
   };
 
-  /** Requiredness is CHROME's rule, by kind — not the panel's. */
+  /** Requiredness is THE VISOR's rule, by kind — not the panel's. */
   const missingCredential = (): string | null => {
     for (const kind of credKinds) {
       const spec = CREDENTIAL_VOCABULARY[kind];
       if (!spec || !spec.required) continue;
       // A held key satisfies requiredness: the credential IS present,
-      // chrome simply cannot render it. Requiredness stays chrome's rule
-      // — this is chrome answering its own question with what it holds,
+      // the visor simply cannot render it. Requiredness stays the visor's rule
+      // — this is the visor answering its own question with what it holds,
       // not the panel being allowed to skip a field.
       if (kind === "secret-key" && heldSigningKey) continue;
       if ((credValues.get(kind) ?? "").trim() === "") return spec.label;
@@ -2223,9 +2234,9 @@ async function boot() {
     return null;
   };
 
-  /** Chrome merges its held values into the panel's secret-free config.
+  /** The visor merges its held values into the panel's secret-free config.
    * The panel produced provider + public identifiers; the credentials
-   * are added here, on chrome's side of the boundary. */
+   * are added here, on the visor's side of the boundary. */
   const withCredentials = (cfg: StorageConfig): StorageConfig => {
     if (cfg.provider === "s3") {
       // The secret key is NOT merged in: it is escrowed into the keystore
@@ -2236,7 +2247,7 @@ async function boot() {
     return {
       ...cfg,
       // The panel's blob carries `root` and nothing else; app key and app
-      // secret are chrome's fields now, merged in here like every other
+      // secret are the visor's fields now, merged in here like every other
       // held value.
       appKey: heldCredential("app-key"),
       appSecret: heldCredential("app-secret"),
@@ -2245,7 +2256,7 @@ async function boot() {
     };
   };
 
-  /** What chrome hands the PANEL: the stored config with every secret
+  /** What the visor hands the PANEL: the stored config with every secret
    * field stripped. A panel that never receives a credential cannot leak
    * one, and seeding is the one path that would otherwise hand it back. */
   const redactForPanel = (cfg: StorageConfig): Record<string, unknown> => {
@@ -2261,19 +2272,19 @@ async function boot() {
     return copy;
   };
 
-  /** The destination chrome derives from a CONFIG — the committed blob's
-   * own account of where it points, computed by chrome, not reported by
+  /** The destination the visor derives from a CONFIG — the committed blob's
+   * own account of where it points, computed by the visor, not reported by
    * the panel. s3: the origin of its endpoint; dropbox: the fixed
    * provider origin (the same one its network grant is scoped to). */
   const configDestination = (cfg: StorageConfig): string | null =>
     cfg.provider === "s3" ? normalizeOrigin(cfg.endpoint) : DROPBOX_DESTINATION;
 
-  /** Chrome's fields, prefilled from the stored config for this provider
+  /** The visor's fields, prefilled from the stored config for this provider
    * — but ONLY when the stored config was for the SAME destination the
    * panel now points at (#22 rule 5). This is the password manager's
    * refusal to type a saved secret into a look-alike site: a panel that
    * seeds itself toward another origin gets empty fields and a note the
-   * user can read, rather than chrome quietly handing over what it kept
+   * user can read, rather than the visor quietly handing over what it kept
    * from last time. */
   const credPrefill = (
     cfg: StorageConfig | null,
@@ -2288,7 +2299,7 @@ async function boot() {
     return {
       prefill: cfg.provider === "s3"
         // No secret to prefill any more — there is no readable copy of
-        // it anywhere. A HELD key shows as an empty field with chrome's
+        // it anywhere. A HELD key shows as an empty field with the visor's
         // "already held" placeholder instead (see `heldKeyForSession`).
         ? { "access-key": cfg.access }
         : {
@@ -2306,22 +2317,22 @@ async function boot() {
   //
   // Phase 1 is the storage dialog: tabs, the sandboxed panel region and
   // Save/Cancel — and NO credential field anywhere in it. Phase 2 is this
-  // drawer. Between them chrome tears the panel down, so by the time a
+  // drawer. Between them the visor tears the panel down, so by the time a
   // secret is on screen there is no component surface alive on the page
   // at all: not in the dialog (closed), not in a pane (paused), nowhere.
   // That invariant is the reason for the ordering below, and it must be
   // preserved by anything that touches this flow.
 
-  /** The arming delay, ported from the todomvc chrome spike
-   * (spikes/todomvc/host/chrome.ts:18): controls and inputs stay disabled
+  /** The arming delay, ported from the todomvc visor spike
+   * (spikes/todomvc/host/visor.ts:18): controls and inputs stay disabled
    * until it elapses, which defeats a baited mis-tap — an app training
-   * rapid taps at a position where a chrome control is about to appear.
+   * rapid taps at a position where a visor control is about to appear.
    * The TIMER is the enforcement; the slide is only its visible form, so
    * prefers-reduced-motion drops the animation and never the delay. */
   const ARM_MS = 700;
 
-  /** What chrome holds between the two phases: the panel's secret-free
-   * config, the destination chrome bound it to, and the surface mark of
+  /** What the visor holds between the two phases: the panel's secret-free
+   * config, the destination the visor bound it to, and the surface mark of
    * the panel that produced it (for the provider line). Non-null exactly
    * while the drawer owns the interaction. */
   let drawerSession:
@@ -2341,7 +2352,7 @@ async function boot() {
    * defences: no arming delay, no runner suspension, no page dim.
    *
    * Why that is not a downgrade. Arming defends SECRET ENTRY against a
-   * baited mis-tap — an app training rapid taps where a chrome control is
+   * baited mis-tap — an app training rapid taps where a visor control is
    * about to appear — and suspension keeps component code from observing
    * or racing a secret. Naming is neither: nothing secret is typed, the
    * ceremony is initiated from strip pixels an app cannot draw or reach,
@@ -2406,16 +2417,16 @@ async function boot() {
    *   otherwise             — nothing is claimed, so the app regions
    *
    * The panel comes first and is the entry that was missing: a component
-   * surface is the only tenant here that is not chrome's own, which
+   * surface is the only tenant here that is not the visor's own, which
    * makes mislabelling it the one error with a victim. Adding a tenant
    * is one line here rather than an audit of every close path — the same
    * reason `drawerOccupied` exists. */
-  const restoreChromeContext = () => {
-    if (activePanel) setChromeContext(activePanel.surface);
-    else if (drawerSession) setChromeContext({ ...drawerSession.surface, kind: "credentials" });
-    else if (namingSession) setChromeContext({ ...namingSession.surface, kind: "naming" });
-    else if (settingsSession) setChromeContext({ kind: "settings" });
-    else setChromeContext(null);
+  const restoreVisorContext = () => {
+    if (activePanel) setVisorContext(activePanel.surface);
+    else if (drawerSession) setVisorContext({ ...drawerSession.surface, kind: "credentials" });
+    else if (namingSession) setVisorContext({ ...namingSession.surface, kind: "naming" });
+    else if (settingsSession) setVisorContext({ kind: "settings" });
+    else setVisorContext(null);
   };
 
   /** Persist and connect: identical to the pre-drawer commit tail, just
@@ -2443,11 +2454,11 @@ async function boot() {
     dim.hidden = true;
     // Input delivery resumes for every pane; the panel is already gone.
     for (const p of panes) p.runner?.resume();
-    // Ownership-aware, never a bare `setChromeContext(null)`: this close
+    // Ownership-aware, never a bare `setVisorContext(null)`: this close
     // may be running late, and the strip may already belong to somebody
-    // else (see restoreChromeContext).
-    restoreChromeContext();
-    // Held secrets die with the sheet: chrome keeps nothing after the
+    // else (see restoreVisorContext).
+    restoreVisorContext();
+    // Held secrets die with the sheet: the visor keeps nothing after the
     // interaction it collected them for is over.
     clearCredentials();
     credFields = credBinding = credWarning = credReason = null;
@@ -2471,10 +2482,10 @@ async function boot() {
     if (namingAnchor) globalThis.removeEventListener("resize", namingAnchor);
     namingAnchor = null;
     drawerInner.style.height = "0px";
-    // Ownership-aware (see restoreChromeContext): a close that lands
+    // Ownership-aware (see restoreVisorContext): a close that lands
     // after a panel surface has mounted must leave the panel's name on
     // the top line, not put the app's back.
-    if (context) restoreChromeContext();
+    if (context) restoreVisorContext();
     setTimeout(() => {
       // Same occupancy test as every other close: a credential sheet may
       // have evicted this one and be live in the drawer now.
@@ -2499,12 +2510,12 @@ async function boot() {
     settingsSession = null;
     if (settingsAnchor) globalThis.removeEventListener("resize", settingsAnchor);
     settingsAnchor = null;
-    if (!commit) applyChromeHue(session.hueAtOpen);
+    if (!commit) applyVisorHue(session.hueAtOpen);
     drawerInner.style.height = "0px";
-    // Ownership-aware (see restoreChromeContext): a close that lands
+    // Ownership-aware (see restoreVisorContext): a close that lands
     // after a panel surface has mounted must leave the panel's name on
     // the top line, not put the app's back.
-    if (context) restoreChromeContext();
+    if (context) restoreVisorContext();
     setTimeout(() => {
       if (!drawerOccupied()) {
         drawerInner.replaceChildren();
@@ -2513,9 +2524,9 @@ async function boot() {
     }, ARM_MS);
   };
 
-  /** Build chrome's App settings sheet — the naming ceremony GROWN into
-   * the one place chrome says everything it knows about a component.
-   * EVERY pixel here is chrome's. The only component-influenced strings
+  /** Build the visor's App settings sheet — the naming ceremony GROWN into
+   * the one place the visor says everything it knows about a component.
+   * EVERY pixel here is the visor's. The only component-influenced strings
    * are the nickname, the provenance key and (for a panel) its declared
    * destination — all quoted, clamped and foreign-styled.
    *
@@ -2535,7 +2546,7 @@ async function boot() {
     h.textContent = "App settings";
 
     // THE IDENTITY BLOCK — the two voices that are not the user's: what
-    // the component says about itself, and what chrome fetched it as.
+    // the component says about itself, and what the visor fetched it as.
     const says = document.createElement("div");
     says.className = "cred-line";
     const chip = document.createElement("span");
@@ -2550,14 +2561,14 @@ async function boot() {
     from.className = "cred-line";
     const fromLead = document.createElement("span");
     fromLead.className = "said";
-    fromLead.textContent = "chrome fetched it as";
+    fromLead.textContent = "the visor fetched it as";
     const key = document.createElement("q");
     key.className = "foreign";
     key.textContent = surface.name.slice(0, 60);
     from.append(fromLead, key);
 
     // FIRST SIGHT, from the trust record itself: the date the mark was
-    // assigned. This is chrome's own memory of the component, and the
+    // assigned. This is the visor's own memory of the component, and the
     // only thing on the sheet that answers "have I really seen this
     // before?" with something other than a colour.
     const seen = document.createElement("div");
@@ -2571,16 +2582,16 @@ async function boot() {
       seen.append(seenLead, when);
     }
 
-    // THE METADATA BLOCK — chrome-known facts about this surface, when
+    // THE METADATA BLOCK — visor-known facts about this surface, when
     // there are any: a panel's declared destination, or the regions
-    // chrome drew the app into. A component-influenced value is
+    // the visor drew the app into. A component-influenced value is
     // foreign-quoted like every other thing a component said.
     const meta = document.createElement("div");
     meta.className = "cred-line";
     if (surface.meta) {
       const metaLead = document.createElement("span");
       metaLead.className = "said";
-      // CHROME'S word, always — `label` is never component-supplied.
+      // THE VISOR'S word, always — `label` is never component-supplied.
       metaLead.textContent = surface.meta.label;
       if (surface.meta.foreign) {
         const q = document.createElement("q");
@@ -2604,9 +2615,9 @@ async function boot() {
     input.autocomplete = "off";
     input.maxLength = 40;
     // NEVER PREFILLED FROM THE NICKNAME. A prefilled self-declared name
-    // would let attacker-chosen words walk into chrome's voice by
+    // would let attacker-chosen words walk into the visor's voice by
     // accept-the-default — the user would "assign" a petname they never
-    // wrote, and chrome would then speak it unquoted, which is exactly
+    // wrote, and the visor would then speak it unquoted, which is exactly
     // the authority the whole three-name split exists to withhold. An
     // EXISTING petname is prefilled, because that one the user typed.
     input.value = surface.petname ?? "";
@@ -2614,7 +2625,7 @@ async function boot() {
     const hint = document.createElement("div");
     hint.className = "hint";
     hint.textContent =
-      "chrome will use this name in its own voice; what the component calls itself stays quoted";
+      "the visor will use this name in its own voice; what the component calls itself stays quoted";
     field.append(label, input, hint);
 
     // Mark hue: the current one preselected, plus every hue no other
@@ -2646,7 +2657,7 @@ async function boot() {
     const note = document.createElement("div");
     note.className = "cred-note";
     note.textContent =
-      "this sheet is chrome's, opened from the bar below it — a component cannot draw here, and the name you choose is never given back to it";
+      "this sheet is the visor's, opened from the bar below it — a component cannot draw here, and the name you choose is never given back to it";
 
     const row = document.createElement("div");
     row.className = "cred-row";
@@ -2695,14 +2706,14 @@ async function boot() {
     const session = { surface, hue: surface.hue };
     namingSession = session;
     drawer.hidden = false;
-    setChromeContext({ ...surface, kind: "naming" });
+    setVisorContext({ ...surface, kind: "naming" });
 
     const built = buildNameSheet(surface, surface.hue);
     drawerInner.replaceChildren(built.root);
 
     const finish = (status: string) => {
       closeNamingDrawer();
-      // Chrome's own line in chrome's own bar — not a pane's status
+      // The visor's own line in the visor's own bar — not a pane's status
       // line: this is a statement about the shell's trust table, not
       // about anybody's replica. It expires by RE-RENDERING the strip
       // (see `announce`), which matters exactly here: the thing the
@@ -2723,7 +2734,7 @@ async function boot() {
       }
       const clash = petnameCollision(surface.name, petname);
       if (clash) {
-        // Chrome's own words, naming the colliding record by BOTH its
+        // The visor's own words, naming the colliding record by BOTH its
         // petname and its unforgeable provenance key — the user needs to
         // know which component already answers to this word.
         built.reason.textContent =
@@ -2758,7 +2769,7 @@ async function boot() {
       // click (Save leaves it up only briefly, but the object is also
       // what a re-open would be built from).
       session.surface = { ...session.surface, petname, hue: built.hue(), isNew: false };
-      finish(`saved — chrome will call this component ${petname} from now on`);
+      finish(`saved — the visor will call this component ${petname} from now on`);
 
     };
     built.cancelBtn.onclick = () => {
@@ -2771,7 +2782,7 @@ async function boot() {
         forgetSurface(surface.name);
         // Forgetting must be honest on the strip too: the cached petname
         // goes with the record, so the anchor stops speaking a name
-        // chrome no longer holds. (`isNew` stays as it is — this session
+        // the visor no longer holds. (`isNew` stays as it is — this session
         // has seen the component; the NEXT mount is the one that is
         // genuinely new again, and the sheet says so.)
         if (appSurface && appSurface.name === surface.name) {
@@ -2787,7 +2798,7 @@ async function boot() {
     const fit = () => {
       const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
       drawer.style.setProperty(
-        "--chrome-sheet-max",
+        "--visor-sheet-max",
         `${Math.max(0, globalThis.innerHeight - stripH)}px`,
       );
     };
@@ -2811,10 +2822,10 @@ async function boot() {
     built.input.focus();
   };
 
-  /** Chrome's settings sheet. EVERY string on it is chrome's own or the
+  /** The visor's settings sheet. EVERY string on it is the visor's own or the
    * user's own — there is no component in this interaction at all, which
    * makes it the only sheet with no foreign-quoted text anywhere. */
-  const buildSettingsSheet = (rec: ChromeIdentity, hueAtOpen: number) => {
+  const buildSettingsSheet = (rec: VisorIdentity, hueAtOpen: number) => {
     const root = document.createElement("div");
     // `.armed` from the start: there is no arming delay here (see
     // settingsSession), so the button row must never be drawn dimmed for
@@ -2825,17 +2836,17 @@ async function boot() {
     root.style.marginRight = "auto";
 
     const h = document.createElement("h2");
-    h.textContent = "Your chrome";
+    h.textContent = "Your visor";
 
     const lead = document.createElement("div");
     lead.className = "cred-line said";
     lead.textContent =
-      "these are yours: chrome says them in its own voice, and no component is ever told them";
+      "these are yours: the visor says them in its own voice, and no component is ever told them";
 
     // Both text fields are PREFILLED with the current value. That is the
     // same exception the naming sheet makes for an existing petname: the
     // prefill is the user's OWN prior word, not a self-declared name
-    // walking into chrome's voice by accept-the-default.
+    // walking into the visor's voice by accept-the-default.
     const mkField = (labelText: string, hint: string, value: string, id: string) => {
       const field = document.createElement("div");
       field.className = "cred-field";
@@ -2857,28 +2868,28 @@ async function boot() {
 
     const nameField = mkField(
       "Your name",
-      "shown at the right of this bar — leave it empty and chrome shows nothing there",
+      "shown at the right of this bar — leave it empty and the visor shows nothing there",
       rec.name ?? "",
-      "chrome-settings-name",
+      "visor-settings-name",
     );
     const deviceField = mkField(
       "This device",
       "your word for the machine you are on — e.g. laptop, study PC",
       rec.device ?? "",
-      "chrome-settings-device",
+      "visor-settings-device",
     );
 
-    // The icon row: chrome's fixed vocabulary, nothing else (see
-    // CHROME_ICONS — a free-text face could spoof words in chrome's
+    // The icon row: the visor's fixed vocabulary, nothing else (see
+    // VISOR_ICONS — a free-text face could spoof words in the visor's
     // voice at the one position that cannot be spoofed).
     const iconLabel = document.createElement("div");
     iconLabel.className = "cred-line said";
-    iconLabel.textContent = "chrome's mark on this bar";
+    iconLabel.textContent = "the visor's mark on this bar";
     const iconRow = document.createElement("div");
     iconRow.className = "settings-icons";
     let pickedIcon = identityIcon(rec);
     const iconButtons: HTMLButtonElement[] = [];
-    for (const glyph of CHROME_ICONS) {
+    for (const glyph of VISOR_ICONS) {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = glyph;
@@ -2903,7 +2914,7 @@ async function boot() {
     hueRow.className = "settings-hues";
     let pickedHue = hueAtOpen;
     const hueButtons: HTMLButtonElement[] = [];
-    for (const hue of CHROME_HUES) {
+    for (const hue of VISOR_HUES) {
       const b = document.createElement("button");
       b.type = "button";
       b.style.background = `oklch(38% .07 ${hue})`;
@@ -2920,7 +2931,7 @@ async function boot() {
         // evicted record), and telling someone about the change they are
         // in the middle of making would devalue the announcement that
         // matters. Save commits it; Cancel puts it back.
-        applyChromeHue(hue);
+        applyVisorHue(hue);
       };
       hueButtons.push(b);
       hueRow.append(b);
@@ -2929,7 +2940,7 @@ async function boot() {
     const note = document.createElement("div");
     note.className = "cred-note";
     note.textContent =
-      "this sheet is chrome's, opened from the bar below it — a component cannot draw here, and none of this is ever given to one";
+      "this sheet is the visor's, opened from the bar below it — a component cannot draw here, and none of this is ever given to one";
 
     const row = document.createElement("div");
     row.className = "cred-row";
@@ -2966,7 +2977,7 @@ async function boot() {
 
   const openSettingsDrawer = () => {
     // Same precedence as naming: a sheet that is collecting (or about to
-    // accept) secrets is never displaced by chrome's own settings.
+    // accept) secrets is never displaced by the visor's own settings.
     if (drawerSession) return;
     if (namingSession) closeNamingDrawer({ context: false });
     if (settingsSession) closeSettingsDrawer({ context: false });
@@ -2978,7 +2989,7 @@ async function boot() {
     const session = { hueAtOpen };
     settingsSession = session;
     drawer.hidden = false;
-    setChromeContext({ kind: "settings" });
+    setVisorContext({ kind: "settings" });
 
     const built = buildSettingsSheet(loadIdentity(), hueAtOpen);
     drawerInner.replaceChildren(built.root);
@@ -2992,14 +3003,14 @@ async function boot() {
       });
       const hue = built.hue();
       committedHue = hue;
-      applyChromeHue(hue);
+      applyVisorHue(hue);
       try {
-        localStorage.setItem(CHROME_KEY, String(hue));
+        localStorage.setItem(VISOR_KEY, String(hue));
       } catch { /* not durable here */ }
       // The strip is repainted from the RECORD, not from the inputs, so
       // what the bar shows is exactly what was persisted (clamping and
       // the unset-is-absent rule included).
-      renderChromeIdentity();
+      renderVisorIdentity();
       closeSettingsDrawer({ commit: true });
     };
     built.cancelBtn.onclick = () => {
@@ -3014,7 +3025,7 @@ async function boot() {
     const fit = () => {
       const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
       drawer.style.setProperty(
-        "--chrome-sheet-max",
+        "--visor-sheet-max",
         `${Math.max(0, globalThis.innerHeight - stripH)}px`,
       );
     };
@@ -3038,7 +3049,7 @@ async function boot() {
     built.nameInput.focus();
   };
 
-  /** Build chrome's sheet. Every word here is chrome's; the only foreign
+  /** Build the visor's sheet. Every word here is the visor's; the only foreign
    * strings are the component's name and the destination origin, both
    * quoted, clamped and foreign-styled. */
   const buildSheet = (session: NonNullable<typeof drawerSession>, needs: string[]) => {    const root = document.createElement("div");
@@ -3057,7 +3068,7 @@ async function boot() {
 
     // The requesting provider, by its surface mark: same chip colour the
     // strip showed while its panel was up. WHO is named the same way the
-    // strip names it — the user's petname in chrome's voice when there is
+    // strip names it — the user's petname in the visor's voice when there is
     // one, with the component's self-description demoted to a foreign
     // footnote; otherwise only what the component calls itself, quoted.
     const who = document.createElement("div");
@@ -3086,11 +3097,11 @@ async function boot() {
     credReason = document.createElement("div");
     credReason.className = "cred-reason";
 
-    // CHROME'S OWN SIGN-IN CONTROL. It appears only when this session
+    // THE VISOR'S OWN SIGN-IN CONTROL. It appears only when this session
     // actually needs both halves of the ceremony's inputs and outputs —
     // an app key to authorize against, and a bearer token to deposit.
     // It lives here rather than in the panel for the same reason the
-    // fields do: it acts on the app key, and the app key is chrome's.
+    // fields do: it acts on the app key, and the app key is the visor's.
     // The panel cannot render it, cannot trigger it, and cannot observe
     // it; it only ever sees a later `fetch` that already works.
     let connectBtn: HTMLButtonElement | null = null;
@@ -3127,7 +3138,7 @@ async function boot() {
     needs: string[],
     prefill: Record<string, string>,
     mismatch: boolean,
-    /** Chrome already holds an escrowed signing key for this session's
+    /** The visor already holds an escrowed signing key for this session's
      * bound destination (looked up by the caller, under the same
      * binding the commit-time revalidation agreed on). */
     held: boolean,
@@ -3149,7 +3160,7 @@ async function boot() {
     drawer.hidden = false;
     // The strip names the sheet hanging off it, in the same colour it has
     // always had (the anchor never changes colour per surface).
-    setChromeContext({ ...session.surface, kind: "credentials" });
+    setVisorContext({ ...session.surface, kind: "credentials" });
 
     const { root, confirmBtn, cancelBtn, connectBtn } = buildSheet(session, needs);
     drawerInner.replaceChildren(root);
@@ -3161,14 +3172,14 @@ async function boot() {
     confirmBtn.onclick = () => {
       const s = drawerSession;
       if (!s) return;
-      // Requiredness is chrome's rule, judged in chrome's pixels; the
+      // Requiredness is the visor's rule, judged in the visor's pixels; the
       // panel is not told which credential was missing (it is gone).
       const missing = missingCredential();
       if (missing !== null) {
         drawerNote(`${missing} is required`);
         return;
       }
-      // Chrome merges its held values into the panel's secret-free
+      // The visor merges its held values into the panel's secret-free
       // config — the same withCredentials path as before the drawer.
       // The S3 secret is NOT among them: it goes straight into the
       // keystore as a non-extractable handle and is never part of any
@@ -3200,7 +3211,7 @@ async function boot() {
       const btn = connectBtn;
       btn.onclick = async () => {
         // The app key comes from THIS SHEET's own field, never from a
-        // panel: chrome authorizes against what the user typed under the
+        // panel: the visor authorizes against what the user typed under the
         // bar, so nothing a component said can steer the ceremony.
         const clientId = (credValues.get("app-key") ?? "").trim();
         if (clientId === "") {
@@ -3217,7 +3228,7 @@ async function boot() {
           // popup was up; its held values are gone, so a late deposit
           // must not be reported as this session's success.
           if (drawerSession !== session) return;
-          drawerNote("signed in ✓ — the token fields above were filled by chrome");
+          drawerNote("signed in ✓ — the token fields above were filled by the visor");
         } catch (e) {
           if (drawerSession !== session) return;
           drawerNote(`sign-in failed: ${err(e)}`);
@@ -3238,7 +3249,7 @@ async function boot() {
     // the viewport would push the strip off the bottom of the screen —
     // losing the anchor at the exact moment a secret is on screen. The
     // sheet is therefore capped at viewport-minus-strip and scrolls
-    // internally past that (see .cred-sheet's --chrome-sheet-max).
+    // internally past that (see .cred-sheet's --visor-sheet-max).
     // Measured rather than hardcoded because the strip wraps to two rows
     // on a phone, and re-measured on resize/rotation.
     const fit = () => {
@@ -3246,7 +3257,7 @@ async function boot() {
       // would otherwise leave the bar hanging a subpixel off the bottom.
       const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
       const budget = Math.max(0, globalThis.innerHeight - stripH);
-      drawer.style.setProperty("--chrome-sheet-max", `${budget}px`);
+      drawer.style.setProperty("--visor-sheet-max", `${budget}px`);
     };
     const refit = () => {
       fit();
@@ -3266,7 +3277,7 @@ async function boot() {
     const controls: Array<HTMLButtonElement | HTMLInputElement> = [
       confirmBtn,
       cancelBtn,
-      // Chrome's sign-in control is armed by the SAME delay as the rest:
+      // The visor's sign-in control is armed by the SAME delay as the rest:
       // it opens a provider window, which is exactly the sort of thing a
       // baited mis-tap should not be able to reach.
       ...(connectBtn ? [connectBtn] : []),
@@ -3276,7 +3287,7 @@ async function boot() {
 
     // Animate 0 → the measured content height. One property drives the
     // whole assembly: the sheet's growth pushes the strip down and the
-    // page content with it, on one curve (spikes/todomvc/host/chrome.ts:82-90
+    // page content with it, on one curve (spikes/todomvc/host/visor.ts:82-90
     // — scrollHeight misses the flex-end top-overflow, so measure at auto).
     drawerInner.style.height = "auto";
     const target = drawerInner.offsetHeight;
@@ -3310,7 +3321,7 @@ async function boot() {
       provider: "s3" | "dropbox";
       panel: PanelExports;
       runner: Runner;
-      /** The surface mark chrome showed for this panel; the drawer
+      /** The surface mark the visor showed for this panel; the drawer
        * repeats it so "who asked" survives the panel's teardown. */
       surface: SurfaceIdentity;
     }
@@ -3358,16 +3369,16 @@ async function boot() {
     panelMounted = null;
     activePanel = null;
     // The strip goes back to whoever rightfully owns it now (see
-    // restoreChromeContext): NOT unconditionally to the app, because the
+    // restoreVisorContext): NOT unconditionally to the app, because the
     // dialog's close event/observer fires AFTER a handoff and would
     // otherwise blank a live sheet's line.
-    restoreChromeContext();
+    restoreVisorContext();
     region.style.removeProperty("--component-color");
     saveBtn.disabled = false;
     dialogNote("");
-    // Held credentials are PER-SESSION chrome state: when the panel goes,
+    // Held credentials are PER-SESSION visor state: when the panel goes,
     // so do the values — UNLESS this teardown is the handoff into the
-    // credential drawer, which is the one case where chrome must keep
+    // credential drawer, which is the one case where the visor must keep
     // holding them (the OAuth broker deposits during the panel session,
     // and the sheet that will show them opens a moment later). The drawer
     // clears them itself on Confirm or Cancel. Testing drawerSession
@@ -3403,16 +3414,16 @@ async function boot() {
     // Bind the surface's identity into the strip BEFORE it can draw: the
     // hue is derived from the component's own bytes (assigned, not
     // chosen), and the same value tints the region's edge so the
-    // untrusted rectangle and its chrome label visibly agree.
-    // The mark is looked up by PROVENANCE (chrome fetched this artifact
+    // untrusted rectangle and its visor label visibly agree.
+    // The mark is looked up by PROVENANCE (the visor fetched this artifact
     // itself, by this name, from its own origin) and assigned on first
     // sight — see surfaceMark.
     const { mark, isNew } = surfaceMark(name);
     const hue = mark.hue;
     // The component's colour is public (derived from its own bytes), but
-    // scope it to the region anyway: chrome's document root stays clean.
+    // scope it to the region anyway: the visor's document root stays clean.
     region.style.setProperty("--component-color", `oklch(62% .16 ${hue})`);
-    // Before instantiation chrome has nothing but provenance to show, so
+    // Before instantiation the visor has nothing but provenance to show, so
     // that is what it shows — the nickname is a claim only the running
     // component can make, and it lands a moment later.
     let identity: SurfaceIdentity = {
@@ -3423,12 +3434,12 @@ async function boot() {
       petname: mark.petname,
       firstSeen: mark.firstSeen,
     };
-    setChromeContext(identity);
+    setVisorContext(identity);
 
     // THE PREVIOUS SURFACE MUST BE ACTUALLY GONE before this one is
     // stood up. Teardown does not finish when `teardownPanel()` returns
     // — the old frame's window can still have messages in flight toward
-    // chrome (frame-backend.ts's `destroy`), and creating the next frame
+    // the visor (frame-backend.ts's `destroy`), and creating the next frame
     // inside that window is how a stale delivery ends up attributed to
     // the new surface. Awaiting the completion is what turns "reopen
     // immediately after ESC" from a race into an ordering.
@@ -3442,7 +3453,7 @@ async function boot() {
 
     // Same sandboxed-frame treatment as the app panes: the panel handles
     // provider credentials, so the argument for keeping it out of
-    // chrome's document is if anything stronger here.
+    // the visor's document is if anything stronger here.
     const frameBackend = createFrameBackend(region, (ev) => panelDispatch(ev), "dark");
     panelFrame = frameBackend;
     // A HANDSHAKE THAT NEVER COMPLETES BECAUSE WE WERE TORN DOWN IS
@@ -3466,7 +3477,7 @@ async function boot() {
     // The capability profiles, side by side (#21): the S3 panel is PURE —
     // surface only, no egress. The Dropbox panel additionally holds
     // exactly ONE host-scoped fetch. It used to hold the OAuth broker
-    // too; sign-in moved into chrome's drawer (where the app key is), so
+    // too; sign-in moved into the visor's drawer (where the app key is), so
     // the grant went with it rather than lingering unused.
     const imports = provider === "s3" ? { ...surface.imports } : {
       ...surface.imports,
@@ -3483,12 +3494,12 @@ async function boot() {
     const panel = instance.exports as unknown as PanelExports;
     const runner = createRunner(surface);
     // WHAT THE COMPONENT CALLS ITSELF: read ONCE, here, and never again —
-    // a name that could change under chrome's feet would be a name chrome
+    // a name that could change under the visor's feet would be a name the visor
     // could not have shown the user before they acted on it. Clamped to
     // 40 at the read, exactly as `destination` is clamped at render, so
     // no downstream renderer has to remember. A hostile or broken panel
     // that traps, hangs the read, or answers with whitespace does NOT
-    // take chrome down: chrome falls back to the provenance key it
+    // take the visor down: the visor falls back to the provenance key it
     // fetched the artifact by, rendered foreign-quoted like any other
     // machine string.
     let nickname = name;
@@ -3501,16 +3512,16 @@ async function boot() {
     }
     if (generation !== panelGeneration) return;
     identity = { ...identity, nickname };
-    setChromeContext(identity);
+    setVisorContext(identity);
     panelMounted = provider;
-    // Chrome keeps the handles it needs to COMMIT; the panel only ever
+    // The visor keeps the handles it needs to COMMIT; the panel only ever
     // gets events and answers questions.
     activePanel = { provider, panel, runner, surface: identity };
     panelDispatch = (ev) => {
       if (panelMounted !== provider) return;
       runner.call(() => panel.onEvent(ev))
         // The binding is LIVE (#22 rule 2): the panel's configuration can
-        // move under chrome's feet with any keystroke, so chrome re-reads
+        // move under the visor's feet with any keystroke, so the visor re-reads
         // the destination after every pumped event rather than trusting
         // the one it read at mount. A change drops the held values.
         .then(async () => {
@@ -3523,18 +3534,18 @@ async function boot() {
     };
     const stored = loadStorage();
     // The panel is seeded with a REDACTED copy: its own public fields
-    // only. Chrome's fields get the secrets (#22).
+    // only. The visor's fields get the secrets (#22).
     const seedJson = stored && stored.provider === provider
       ? JSON.stringify(redactForPanel(stored))
       : "";
     await runner.call(() => panel.seed(seedJson));
     await runner.call(() => panel.run());
     if (generation !== panelGeneration) return;
-    // The panel DECLARES its credential kinds. Chrome does NOT render a
-    // field here any more — entry happens later, in chrome's own drawer.
-    // What chrome checks at mount is only whether it has WORDS for what
+    // The panel DECLARES its credential kinds. The visor does NOT render a
+    // field here any more — entry happens later, in the visor's own drawer.
+    // What the visor checks at mount is only whether it has WORDS for what
     // was asked: an unrecognised kind is refused up front and Save is
-    // disabled, so the refusal cannot be clicked past into a sheet chrome
+    // disabled, so the refusal cannot be clicked past into a sheet the visor
     // could not honestly label.
     const needs = await runner.call(() => panel.credentialNeeds());
     if (generation !== panelGeneration) return;
@@ -3545,10 +3556,10 @@ async function boot() {
     const bound = rebind(rawDest ?? "", { note: false });
     // The panel's DECLARED destination, carried on the identity so the
     // App settings sheet can show it. Component-INFLUENCED even after
-    // chrome's normalization, hence foreign:true — the sheet quotes it.
+    // the visor's normalization, hence foreign:true — the sheet quotes it.
     if (bound !== null) {
       identity = { ...identity, meta: { label: "declared destination", value: bound, foreign: true } };
-      setChromeContext(identity);
+      setVisorContext(identity);
       if (activePanel) activePanel.surface = identity;
     }
 
@@ -3585,16 +3596,16 @@ async function boot() {
     if (!dialog.open && panelMounted !== null) teardownPanel();
   }).observe(dialog, { attributes: true, attributeFilter: ["open"] });
 
-  // Chrome's naming ceremony, reachable ONLY from the strip's own
-  // pixels (see setChromeContext).
+  // The visor's naming ceremony, reachable ONLY from the strip's own
+  // pixels (see setVisorContext).
   requestNaming = (surface) => {
     // The credential session wins: while secrets are on screen (or
     // arming) the drawer is not available for anything else.
     if (drawerSession) return;
-    // A modal <dialog> paints in the TOP LAYER — above the pinned chrome
+    // A modal <dialog> paints in the TOP LAYER — above the pinned visor
     // zone, and therefore above the sheet the strip would reveal. So the
     // ceremony takes the page back first: the panel is retired and the
-    // dialog closed (the same retirement path ESC takes) BEFORE chrome's
+    // dialog closed (the same retirement path ESC takes) BEFORE the visor's
     // own sheet appears. Naming outliving the panel session is correct
     // anyway — the name is a statement about the component, not about
     // this visit to its configuration.
@@ -3605,14 +3616,14 @@ async function boot() {
     openNamingDrawer(surface);
   };
 
-  // Chrome's settings sheet, reachable ONLY from the strip's own button
-  // (rendered by renderChromeIdentity — chrome pixels, unreachable from
+  // The visor's settings sheet, reachable ONLY from the strip's own button
+  // (rendered by renderVisorIdentity — visor pixels, unreachable from
   // any app rectangle).
   requestSettings = () => {
     // Same precedence as naming, enforced twice: here, so a click on the
     // strip while secrets are up is a no-op, and again in the opener.
     if (drawerSession) return;
-    // A modal <dialog> paints in the TOP LAYER, above the chrome zone and
+    // A modal <dialog> paints in the TOP LAYER, above the visor zone and
     // so above the sheet the strip would reveal — the same reason the
     // naming ceremony takes the page back first.
     if (dialog.open) {
@@ -3644,14 +3655,14 @@ async function boot() {
       });
     };
   }
-  // Chrome's Save: the commit belongs to the shell, so it is chrome that
-  // asks the panel for a configuration and chrome that decides the
+  // The visor's Save: the commit belongs to the shell, so it is the visor that
+  // asks the panel for a configuration and the visor that decides the
   // dialog is done. A panel refusing (none) leaves the dialog open with
   // its own explanation showing inside its region.
   //
   // PHASE 1 OF TWO. On success this does not connect: it takes the
   // secret-free config, retires the panel, closes the dialog, and hands
-  // the interaction to chrome's credential drawer. Nothing is persisted
+  // the interaction to the visor's credential drawer. Nothing is persisted
   // and no credential is released until the sheet's Confirm.
   (document.getElementById("storage-save") as HTMLButtonElement).onclick = (ev) => {
     ev.preventDefault();
@@ -3662,9 +3673,9 @@ async function boot() {
         if (out === undefined || out === "") return;
         // COMMIT-TIME REVALIDATION (#22 rule 4). Everything above was
         // read before the user clicked; between the render and the click
-        // the panel could have re-pointed itself. So chrome re-reads the
+        // the panel could have re-pointed itself. So the visor re-reads the
         // destination NOW and holds it to three tests, in order — each
-        // refusal in chrome's own words, dialog left open, NO drawer
+        // refusal in the visor's own words, dialog left open, NO drawer
         // opened and so no credential even askable for.
         const raw = await active.runner.call(() => active.panel.destination());
         if (activePanel !== active) return;
@@ -3674,7 +3685,7 @@ async function boot() {
           return;
         }
         if (now !== boundDestination) {
-          // The binding chrome has been tracking is what the following
+          // The binding the visor has been tracking is what the following
           // sheet would name; a panel that moved since then gets the
           // held values dropped, not carried.
           rebind(raw ?? "");
@@ -3700,23 +3711,23 @@ async function boot() {
           );
           return;
         }
-        // Chrome asks ONE more time what the panel needs: the drawer's
+        // The visor asks ONE more time what the panel needs: the drawer's
         // fields are drawn from this answer, and it must be the answer
         // the committed configuration was produced with.
         const needs = (await active.runner.call(() => active.panel.credentialNeeds())) ?? [];
         if (activePanel !== active) return;
         const stored = loadStorage();
-        // Prefill is decided BEFORE teardown, while chrome still knows
+        // Prefill is decided BEFORE teardown, while the visor still knows
         // which provider produced this config (#22 rule 5, unchanged).
         const { prefill, mismatch } = credPrefill(stored, active.provider, now);
-        // Does chrome already hold a signing key for THIS destination?
+        // Does the visor already hold a signing key for THIS destination?
         // Keyed by the origin the revalidation above just agreed on, so
         // the destination binding governs this exactly as it governs
         // prefill: a panel pointing somewhere else finds nothing held.
         const held = active.provider === "s3" && (await getSigningKey(now)) !== null;
         if (activePanel !== active) return;
         // Anything the OAuth broker deposited during the panel session is
-        // chrome's own capture of a ceremony chrome ran; it survives into
+        // the visor's own capture of a ceremony the visor ran; it survives into
         // the sheet, where the user can see it before releasing it.
         for (const [kind, value] of credValues) {
           if (value !== "") prefill[kind] = value;
@@ -3812,11 +3823,11 @@ async function boot() {
     }),
     authorize,
     // The isolation claim, made checkable instead of asserted: every
-    // surface frame on the page must be UNREACHABLE from chrome's realm.
+    // surface frame on the page must be UNREACHABLE from the visor's realm.
     // A sandboxed frame without `allow-same-origin` has an opaque origin,
     // so `contentDocument` is null (or throws) — if this ever reports
     // `sameOriginReachable: true`, the sandbox attribute has regressed
-    // and chrome's pixels are once again in reach of component code.
+    // and the visor's pixels are once again in reach of component code.
     frameProbe: () => {
       const frames = Array.from(document.querySelectorAll("iframe"));
       let reachable = false;
@@ -3834,7 +3845,7 @@ async function boot() {
     // The panel's granted fetch, exposed so the DENIAL side of the
     // per-destination grant is demonstrable and not merely asserted.
     panelFetch: dropboxFetchImports["polymorph:fetchspike/fetch@0.1.0"],
-    // The live credential binding, for driving: what chrome believes the
+    // The live credential binding, for driving: what the visor believes the
     // held values may be released toward (null = nothing may).
     boundDestination: () => boundDestination,
     // The credential sheet, for driving. `confirm`/`cancel` CLICK the
@@ -3852,18 +3863,18 @@ async function boot() {
           | HTMLButtonElement
           | null)?.click(),
     },
-    // Chrome's App settings sheet (the naming ceremony, grown), for
-    // driving. `nameIt` clicks the strip's own control — chrome pixels,
+    // The visor's App settings sheet (the naming ceremony, grown), for
+    // driving. `nameIt` clicks the strip's own control — visor pixels,
     // the only place the ceremony can start; `openCluster` clicks the
     // whole left cluster, which is the other way in.
     naming: {
       open: () => namingSession !== null,
       nameIt: () =>
-        (document.getElementById("chrome-name-it") as HTMLButtonElement | null)?.click(),
+        (document.getElementById("visor-name-it") as HTMLButtonElement | null)?.click(),
       openCluster: () =>
-        (document.getElementById("chrome-context") as HTMLElement | null)?.click(),
+        (document.getElementById("visor-context") as HTMLElement | null)?.click(),
       /** Open the sheet for a named record directly — driving only, and
-       * deliberately provenance-keyed: it opens for the surface chrome
+       * deliberately provenance-keyed: it opens for the surface the visor
        * already holds under that key, never for one synthesised from an
        * argument. Unknown keys open nothing. */
       openFor: (provenance: string) => {
@@ -3892,16 +3903,16 @@ async function boot() {
           "",
       marks: () => loadMarks(),
     },
-    // Chrome's settings sheet, for driving — mirrors `naming`.
+    // The visor's settings sheet, for driving — mirrors `naming`.
     // `openSheet` CLICKS the strip's own button rather than calling the
-    // opener, so a driver exercises the same path a user does (chrome
+    // opener, so a driver exercises the same path a user does (visor
     // pixels, the only place this ceremony can start).
     settings: {
       open: () => settingsSession !== null,
       openSheet: () =>
-        (document.getElementById("chrome-settings") as HTMLButtonElement | null)?.click(),
+        (document.getElementById("visor-settings") as HTMLButtonElement | null)?.click(),
       type: (field: "name" | "device", value: string) => {
-        const id = field === "name" ? "chrome-settings-name" : "chrome-settings-device";
+        const id = field === "name" ? "visor-settings-name" : "visor-settings-device";
         const input = drawerInner.querySelector(`#${id}`) as HTMLInputElement | null;
         if (input) input.value = value;
       },
@@ -3923,7 +3934,7 @@ async function boot() {
           | null)?.click(),
       identity: () => loadIdentity(),
     },
-    /** The app's own row in the trust table, as chrome registered it at
+    /** The app's own row in the trust table, as the visor registered it at
      * boot: provenance key, self-declared nickname, assigned mark, the
      * user's petname if any. Driving/inspection only. */
     appSurface: () => appSurface,

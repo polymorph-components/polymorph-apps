@@ -49,7 +49,7 @@ app:
         build/app.component.wasm build/app.plan.json
 
 # Build the storage-provider config panels (#19 × #22: provider config
-# UI as sandboxed components, launched from chrome).
+# UI as sandboxed components, launched from the visor).
 panels:
     cd guest-panel-s3 && cargo build --release --target wasm32-unknown-unknown
     cd guest-panel-dropbox && cargo build --release --target wasm32-unknown-unknown
@@ -64,13 +64,13 @@ panels:
     deno run --allow-read --allow-write tools/translate.ts \
         build/panel-dropbox.component.wasm build/panel-dropbox.plan.json
 
-# Build + serve the device-pairing chrome demo (Track B, PAIRING.md):
+# Build + serve the device-pairing visor demo (Track B, PAIRING.md):
 # join+add flows against the mock driver, NO engine/wasm/relay/bucket
-# dependency — this is the fast, independent gate for the chrome side
+# dependency — this is the fast, independent gate for the visor side
 # while the real engine composite (Track A) lands separately.
 pairing-site:
     mkdir -p serve
-    deno check host/pairing-demo.ts host/pairing-chrome.ts host/pairing-mock.ts
+    deno check host/pairing-demo.ts host/pairing-visor.ts host/pairing-mock.ts
     deno bundle --platform browser --minify -o serve/pairing-demo.js host/pairing-demo.ts
     cp web/pairing-demo.html serve/
 
@@ -78,7 +78,7 @@ pairing-serve: pairing-site
     deno run --allow-net --allow-read jsr:@std/http/file-server serve --port 8601
 
 # Source-level invariant checks (#22 ruling table): the petname never
-# crosses the frame seam, chrome never renders the word "password", and
+# crosses the frame seam, the visor never renders the word "password", and
 # the anchor colour is never made ambient. Cheap tripwires on properties
 # whose loss is otherwise invisible until it is a security bug.
 check:
@@ -127,7 +127,7 @@ pages: translate app panels check
 # --- end-to-end scenarios in a real Chromium (spikes/demo/e2e) -------------
 #
 # Playwright driving a REAL headless Chromium, as a library from Deno —
-# no @playwright/test, no package.json, no second toolchain. Every chrome
+# no @playwright/test, no package.json, no second toolchain. Every visor
 # and storage flow here used to be hand-driven once per session in an
 # embedded webview that could not deliver `<dialog>` close events; this
 # is the same set of scenarios, repeatable, with a non-zero exit.

@@ -6,12 +6,12 @@
 //      migrates it: the secret becomes a non-extractable WebCrypto handle
 //      in IndexedDB and is SCRUBBED from localStorage. Afterwards there is
 //      no readable copy of it anywhere on the machine.
-//   2. Chrome can then USE it without ever seeing it again — the sheet
+//   2. The visor can then USE it without ever seeing it again — the sheet
 //      offers "leave blank to keep it", because a placeholder is
-//      literally the only thing chrome can render for a key it holds.
+//      literally the only thing the visor can render for a key it holds.
 //   3. The arming delay is real: a Confirm click before it elapses lands
 //      on a disabled button and does nothing (the defence against an app
-//      training rapid taps where a chrome control is about to appear).
+//      training rapid taps where a visor control is about to appear).
 //   4. The store actually works, revocation actually darkens it, and a
 //      reload re-arms from the persisted handle with no ceremony at all.
 //
@@ -39,7 +39,7 @@ import type { Page } from "npm:playwright@1.57.0";
 
 const BUCKET = "pm-demo";
 
-/** Wait until chrome has a working bucket: the controls it gates on
+/** Wait until the visor has a working bucket: the controls it gates on
  * `bucketReady` come alive. DOM state as the clock, not a sleep. */
 async function waitForBucketReady(page: Page, timeout = 120_000): Promise<void> {
   await page.waitForFunction(
@@ -181,7 +181,7 @@ const scenario: Scenario = {
     });
 
     await act("boot armed the bucket from the escrowed handle ALONE", async () => {
-      // No sheet, no typing: chrome found a handle for this destination
+      // No sheet, no typing: the visor found a handle for this destination
       // and used it. This is asserted BEFORE the Save/Confirm beats
       // below, because otherwise those would be measuring a bucket that
       // was already up — and it also parks the in-flight setup guard,
@@ -195,7 +195,7 @@ const scenario: Scenario = {
       );
     });
 
-    await act("chrome's Save leads to a sheet offering the HELD key, not a field", async () => {
+    await act("the visor's Save leads to a sheet offering the HELD key, not a field", async () => {
       await hook(page, "openStorage");
       await page.waitForFunction(
         () => (document.getElementById("storage-dialog") as HTMLDialogElement)?.open === true,
@@ -203,7 +203,7 @@ const scenario: Scenario = {
         { timeout: UI_TIMEOUT },
       );
       // The panel needs to have mounted and seeded itself from the
-      // (secret-free) stored config before chrome can ask it to commit.
+      // (secret-free) stored config before the visor can ask it to commit.
       await waitForPanelSurface(page);
       await page.click("#storage-save");
       await waitForSheet(page, "drawer", true, 30_000);
@@ -214,7 +214,7 @@ const scenario: Scenario = {
       );
       assertEquals(dialogOpen, false, "the storage dialog while the credential sheet is up");
       const placeholder = await page.evaluate(() =>
-        Array.from(document.querySelectorAll("#chrome-drawer-inner input")).map((i) =>
+        Array.from(document.querySelectorAll("#visor-drawer-inner input")).map((i) =>
           (i as HTMLInputElement).placeholder
         )
       );
@@ -226,7 +226,7 @@ const scenario: Scenario = {
         placeholder.some((p) => p.includes("leave blank to keep it")),
         `the sheet did not offer to keep the held key: ${JSON.stringify(placeholder)}`,
       );
-      // Chrome never spells the word for the thing it is asking for.
+      // The visor never spells the word for the thing it is asking for.
       const text = await sheetText(page);
       assert(
         !/password/i.test(text),
@@ -245,7 +245,7 @@ const scenario: Scenario = {
       );
       assertEquals(stillOpen, true, "the credential sheet after an early Confirm");
       const disabled = await page.evaluate(() =>
-        (document.querySelector("#chrome-drawer-inner .cred-row button:first-child") as
+        (document.querySelector("#visor-drawer-inner .cred-row button:first-child") as
           | HTMLButtonElement
           | null)?.disabled ?? null
       );
@@ -254,7 +254,7 @@ const scenario: Scenario = {
 
     await act("after arming, Confirm commits — and refuses to silently reconfigure", async () => {
       // Installed BEFORE the click. The durable write is the observable
-      // here, not the status line: chrome's "storage changed — reload the
+      // here, not the status line: the visor's "storage changed — reload the
       // page to reconfigure" is a NON-STICKY status, and the tablet is
       // still holding a sticky one from its cold pull, so that sentence
       // is legitimately suppressed (host/demo.ts:1132).
@@ -263,7 +263,7 @@ const scenario: Scenario = {
       // early-click above was the thing under test, this is not.
       await page.waitForFunction(
         () =>
-          (document.querySelector("#chrome-drawer-inner .cred-row button:first-child") as
+          (document.querySelector("#visor-drawer-inner .cred-row button:first-child") as
             | HTMLButtonElement
             | null)?.disabled === false,
         undefined,
@@ -275,7 +275,7 @@ const scenario: Scenario = {
       // already live, a commit PERSISTS and then stops — re-running a
       // 20-step setup underneath a working store would re-mint container
       // links and republish pickup objects beneath the first one, so
-      // chrome asks for a reload instead of doing it quietly. The
+      // the visor asks for a reload instead of doing it quietly. The
       // "Confirm connects" half of this claim is the boot-arming act
       // above; this is the same commit path arriving at an already-armed
       // store, which is the state a user is actually in here.
@@ -357,7 +357,7 @@ const scenario: Scenario = {
 
     await act("a reload re-arms from the persisted handle, with no ceremony", async () => {
       // The beat nobody re-checks by hand, because a success looks like
-      // nothing happening: no dialog, no sheet, no typing — chrome finds
+      // nothing happening: no dialog, no sheet, no typing — the visor finds
       // the handle, and the bucket comes back by itself.
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForBoot(page);

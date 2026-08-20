@@ -194,26 +194,26 @@ reads. Findings:
   seam.
 
 
-## Framework-chrome prototype (#22, provisional until user-tested)
+## Framework-visor prototype (#22, provisional until user-tested)
 
 The demo page carries a prototype of the shell's own UI, rendered strictly
-outside the app rectangle (`host/chrome.ts`): a persistent strip (petname,
+outside the app rectangle (`host/visor.ts`): a persistent strip (petname,
 guest/backend indicators, kill), and a simulated consent sheet that
 **pauses the app's event queue** while open — events fired at the app
 during a prompt are queued, not delivered, and land only after dismissal.
 Kill (behind its own confirm) stops delivery permanently and removes the
 app's DOM. Style is deliberately shared-looking: position and absolute
 interaction rules are the trust anchors, never CSS. Secret entry is out of
-scope for drawers by rule (chrome never asks for typed secrets here; that
+scope for drawers by rule (the visor never asks for typed secrets here; that
 belongs to a dedicated identity surface — see #22, which also records
 dropping the earlier personalization-secret experiment).
 
-**Interaction-emergence experiment**: chrome interactions are revealed by
+**Interaction-emergence experiment**: visor interactions are revealed by
 the strip sliding down, exposing the interaction surface *above* it — the
 prompt visibly grows out of the trusted pixel region (provenance), and the
 slide doubles as an enforced **arming delay** (700 ms): controls stay
 disabled until it elapses, defeating baited mis-taps (an app training
-rapid taps where a chrome control is about to appear). The timer is the
+rapid taps where a visor control is about to appear). The timer is the
 enforcement; the animation is its visible form — `prefers-reduced-motion`
 removes the motion, never the delay.
 

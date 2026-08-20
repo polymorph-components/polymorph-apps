@@ -3,12 +3,12 @@
 //! One automerge doc backs all four families — `profile`, `marks`,
 //! `contacts`, `devices` as top-level maps — so the WIT surface can hide
 //! the partitioning and the production split into per-family docs stays a
-//! later engine change with zero chrome impact. The doc is created by
+//! later engine change with zero visor impact. The doc is created by
 //! `user-create`, delegated to the USER GROUP only (never to a device),
 //! and sealed immediately: the founding device is the only member, and
 //! every later device joins the GROUP, which CGKA-propagates.
 //!
-//! Two pieces of semantics live here rather than in chrome:
+//! Two pieces of semantics live here rather than in the visor:
 //!
 //! - **Invariant repair.** Petname uniqueness (case-insensitive) and hue
 //!   uniqueness are cross-record invariants, so a merge can break them
@@ -70,7 +70,7 @@ fn doc_id() -> Result<Vec<u8>, String> {
 /// The #22 framework palette is a fixed, constrained set of OKLCH hues at
 /// one lightness and chroma, and `us-mark.hue` is an INDEX into it, not an
 /// angle (PAIRING.md §4). Ten entries at this rev — see the demo's
-/// `CHROME_HUES` (spikes/demo/host/demo.ts). Uniqueness is only
+/// `VISOR_HUES` (spikes/demo/host/demo.ts). Uniqueness is only
 /// promisable while unused indices exist, which is why an exhausted
 /// palette leaves a collision standing rather than inventing a colour
 /// outside the set the framework can render legibly.
@@ -282,7 +282,7 @@ fn repair(raw: &[MarkRaw]) -> Repaired {
         let needs_reconfirm = if petname_loser {
             repairs.insert((m.provenance.clone(), "petname".to_string()));
             // The loser keeps its petname bytes; what it loses is the
-            // user's assumption that the name is unambiguous. Chrome
+            // user's assumption that the name is unambiguous. The visor
             // re-introduces it, and `us-mark-confirm` clears the flag.
             m.confirmed_for.as_deref() != Some(m.petname.as_str())
         } else {
@@ -568,7 +568,7 @@ pub(crate) async fn create(profile: UsProfile) -> Result<Vec<u8>, String> {
     // gives `user-create` no name for the founding device. Recording it
     // with an empty name keeps `us-devices-list` complete (a missing
     // first device would be worse than an unnamed one) and leaves the
-    // naming to chrome. Flagged to the dispatcher.
+    // naming to the visor. Flagged to the dispatcher.
     device_entry(&crate::own_agent_id()?, "").await?;
     set_baseline()?;
     Ok(group)
@@ -839,7 +839,7 @@ pub(crate) async fn device_revoke(agent_id: Vec<u8>) -> Result<(), String> {
         .ok_or("no user group on this device")?;
     // The membership revocation is the real one: docs containing the
     // group drop CGKA leaves for individuals no longer reachable. The
-    // doc entry below is the annotation chrome renders.
+    // doc entry below is the annotation the visor renders.
     crate::revoke_from_group(&group, &agent_id).await?;
     let key = hex::encode(&agent_id);
     write(move |am| {

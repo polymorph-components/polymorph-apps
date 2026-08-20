@@ -1,10 +1,10 @@
-// Chrome-owned pairing + user-system UI (Track B; PAIRING.md §5, #22
+// Visor-owned pairing + user-system UI (Track B; PAIRING.md §5, #22
 // rulings). This is THE module that may render a pairing code or a SAS
 // — scripts/check-invariants.sh greps for that property, so a
 // refactor that moves this rendering elsewhere must move the grep
 // marker too (documented at the marker, below).
 //
-// Everything in this file is chrome pixels: no component frame imports
+// Everything in this file is visor pixels: no component frame imports
 // it, and it never crosses the frame seam (same discipline as the
 // petname/identity code in host/demo.ts — see check-invariants.sh (a)
 // and (e), which this file's new check (f) extends).
@@ -15,7 +15,7 @@
 //     something OTHER than the user's own action in THIS pane (a
 //     remote write) is always announced, never quietly applied.
 //   - three names, whose voice: the device name in the ADD ceremony is
-//     chrome's voice because the user typed it — never prefilled from
+//     the visor's voice because the user typed it — never prefilled from
 //     a string the joiner or the peer sent.
 //   - ceremony weight classes: the ADD ceremony is heavy (consequential
 //     grant: the new device becomes admin of everything) and reuses the
@@ -39,15 +39,15 @@ import type {
 //
 // `us-profile.hue` / `us-mark.hue` are PALETTE INDICES (u16, 0-9), not
 // raw angles — the engine only ever compares/stores indices, and the
-// angle is purely a chrome rendering choice. This mirrors host/demo.ts's
-// CHROME_HUES array exactly (host/demo.ts:112 — read-only reference,
+// angle is purely a visor rendering choice. This mirrors host/demo.ts's
+// VISOR_HUES array exactly (host/demo.ts:112 — read-only reference,
 // never imported: that file's array is the pre-partition, device-local
 // palette this migration is retiring, and the two must simply agree on
 // values, not share code).
 const PALETTE: readonly number[] = [265, 210, 175, 140, 95, 60, 35, 10, 330, 300];
 
 /** Index -> displayable OKLCH angle. Out-of-range indices (a palette
- * bigger than this chrome build knows about) fall back to the first
+ * bigger than this visor build knows about) fall back to the first
  * entry rather than producing an invalid colour. */
 export function paletteAngle(index: number): number {
   return PALETTE[index] ?? PALETTE[0];
@@ -204,7 +204,7 @@ export interface BootCache {
 
 /** Render-from-cache, per §5: localStorage is a BOOT CACHE now, not the
  * source of truth (the us-* partition is). Reconciliation happens once
- * the driver is up (see `reconcileFromDriver`); this only lets chrome
+ * the driver is up (see `reconcileFromDriver`); this only lets the visor
  * paint something before that completes instead of a blank frame. */
 export function loadBootCache(): BootCache {
   try {
@@ -232,7 +232,7 @@ function saveBootCache(cache: BootCache) {
 /** After driver init: pull the real profile + marks, compare against
  * the boot cache, ANNOUNCE any diff (a silently-changed hue/name is
  * exactly the "anchor that quietly changes" lesson from #22 the
- * chrome-hue code already carries), then refresh the cache to match. */
+ * visor-hue code already carries), then refresh the cache to match. */
 export async function reconcileFromDriver(
   driver: PairingDriver,
   status: (line: string, sticky?: boolean) => void,
@@ -266,7 +266,7 @@ export interface JoinPaneHandle {
 /** Mounts the join flow into `container`: entry button → QR + grouped
  * code → SAS screen → light confirm → adoption announcement. `onAdopt`
  * fires once with the synced profile so the host page can repaint the
- * pane's chrome hue — the "hue visibly changing to the synced one"
+ * pane's visor hue — the "hue visibly changing to the synced one"
  * beat lives in the CALLER because the caller owns the pane's actual
  * strip element; this module only reports the value. `profile.hue` is
  * a PALETTE INDEX (see `paletteAngle`) — the caller converts it to an
@@ -324,7 +324,7 @@ export function mountJoinPane(
     confirmBtn.textContent = "I initiated this — codes match";
     // LIGHT ceremony (PAIRING.md §5 + #22 weight classes): nothing
     // secret is typed here and the gesture starts from a button this
-    // pane's own chrome drew, so no arming delay — see the file-header
+    // pane's own visor drew, so no arming delay — see the file-header
     // note on ceremony weight classes.
     confirmBtn.onclick = async () => {
       if (confirmed) return;
@@ -480,7 +480,7 @@ export function mountAddPane(
    * consequential grant in this flow and pays the full ceremony —
    * statement of consequence, arming delay, and a device-name field
    * the user must type (never prefilled: neither from anything the
-   * joiner sent nor from any default chrome would otherwise invent —
+   * joiner sent nor from any default visor would otherwise invent —
    * same NO-FABRICATION rule host/demo.ts's identity record follows). */
   const renderConsequenceScreen = () => {
     phase = "consequence";

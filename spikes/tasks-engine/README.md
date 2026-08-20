@@ -192,7 +192,7 @@ BURNS the offer — a code that reached a second party has leaked) and a
 
 The user-system doc backs `profile`/`marks`/`contacts`/`devices` behind a
 WIT surface that hides the partitioning — including which document holds
-them, so the storage shape is free to change without chrome knowing (the
+them, so the storage shape is free to change without the visor knowing (the
 retired generation design leaned on this; see §4b). Petname (case-insensitive) and
 hue uniqueness are repaired deterministically after every remote apply —
 older `created-at` wins, ties broken by lexicographic provenance — and
@@ -206,7 +206,7 @@ they are made, so a device can never be announced its own work.
 
 The content spine seals a keyhive `Envelope` instead of raw chunk bytes,
 at one seal site and one open site. Everything above and below carries
-opaque bytes either way: WIT, chrome, subduction, sedimentree and the
+opaque bytes either way: WIT, the visor, subduction, sedimentree and the
 bucket path are untouched.
 
 **API actually used** (keyhive `efe6ccf3`, which is also upstream HEAD):

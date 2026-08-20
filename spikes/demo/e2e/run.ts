@@ -1,15 +1,15 @@
-// End-to-end scenarios for the demo chrome, in a REAL Chromium.
+// End-to-end scenarios for the demo visor, in a REAL Chromium.
 //
 //   just e2e            (builds the site first, then runs this)
 //   deno run -A e2e/run.ts [scenario-name ...]
 //
-// WHY THIS EXISTS. Every chrome and storage flow in this spike has so far
+// WHY THIS EXISTS. Every visor and storage flow in this spike has so far
 // been driven BY HAND in a browser, once per session, by whoever last
 // touched it. That is not a regression test: it is a memory. Worse, the
 // hand-driving surface was paseo's embedded webview, which is not a
 // reference environment — it eats `<dialog>` close events, forces
 // prefers-reduced-motion and cannot see into sandboxed frames, so
-// several claims about this chrome were literally unverifiable there
+// several claims about this visor were literally unverifiable there
 // (see scenarios/dialog-close-retirement.ts, which is exactly one of
 // them).
 //
@@ -71,7 +71,7 @@ const SCENARIOS: Scenario[] = [
   transportRefusal,
   tenantPrecedence,
   dialogCloseRetirement,
-  // Last: it provokes the chrome-timer races, so it is the scenario most
+  // Last: it provokes the visor-timer races, so it is the scenario most
   // likely to leave a page in an interesting state — and it gets a fresh
   // context either way.
   stripOwnership,

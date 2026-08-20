@@ -217,7 +217,7 @@ interface driver {
 
     pair-add-start:    async func(code: string) -> result<_, string>;
     pair-add-status:   async func() -> result<pair-add-state, string>;
-    /// device-name: the user's own word for the new device (chrome's
+    /// device-name: the user's own word for the new device (the visor's
     /// voice, #22) — recorded in the devices annotations by the ADDER.
     pair-add-confirm:  async func(device-name: string) -> result<_, string>;
 
@@ -274,7 +274,7 @@ interface driver {
     us-devices-list:  async func() -> result<list<us-device>, string>;
     us-device-revoke: async func(agent-id: list<u8>) -> result<_, string>;
 
-    /// Drain remotely-caused changes chrome must announce (#22).
+    /// Drain remotely-caused changes the visor must announce (#22).
     /// Local-echo suppression is engine-side: a device never receives
     /// events for its own writes.
     us-events: async func() -> result<list<us-event>, string>;

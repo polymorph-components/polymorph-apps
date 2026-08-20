@@ -1,9 +1,9 @@
 //! S3 storage-provider config panel (#19 x #22): a sandboxed APP, never
-//! chrome. Deliberately PURE — the `s3-panel` world imports only
+//! the visor. Deliberately PURE — the `s3-panel` world imports only
 //! dom/events/shell, no network capability at all (the #21
 //! capability-profile contrast against its dropbox sibling).
 //!
-//! Protocol (todomvc.wit:174-177): chrome calls `seed(config-json)` then
+//! Protocol (todomvc.wit:174-177): the visor calls `seed(config-json)` then
 //! `run()`; pumps `on-event`; polls `outcome()` after each event.
 //! `outcome` is none while the session is live, some("") for cancelled,
 //! some(json) for completed.
@@ -31,11 +31,11 @@ use serde::{Deserialize, Serialize};
 
 const TOK_ENDPOINT: u32 = 1;
 const TOK_BUCKET: u32 = 2;
-// No credential tokens: the access key and secret key are CHROME's
+// No credential tokens: the access key and secret key are THE VISOR's
 // fields now (#22, `credential-needs` below). Secrets must never be
 // typed into component-drawn pixels, so this panel has no input for
 // them and never learns their values.
-// No save/cancel tokens either: those affordances are CHROME's, rendered
+// No save/cancel tokens either: those affordances are THE VISOR's, rendered
 // outside this granted region (#22 — a panel that owns its own Save
 // button owns the user's sense of what saving means).
 
@@ -113,12 +113,12 @@ fn build(app: &mut App) {
 
     let endpoint = field(&panel, "Endpoint", "https://s3.example.com", TOK_ENDPOINT);
     let bucket = field(&panel, "Bucket", "my-bucket", TOK_BUCKET);
-    // The credential fields live in CHROME, below this region: the panel
-    // declares the KINDS it needs (see `credential_needs`) and chrome
+    // The credential fields live in THE VISOR, below this region: the panel
+    // declares the KINDS it needs (see `credential_needs`) and the visor
     // renders them with its own labels.
     let creds = el("div", "hint");
     creds.set_text_content(
-        "credentials are entered in the chrome fields below — this panel never sees them",
+        "credentials are entered in the visor fields below — this panel never sees them",
     );
     panel.append_child(&creds);
 
@@ -134,7 +134,7 @@ fn build(app: &mut App) {
     root.append_child(&panel);
 }
 
-/// Chrome asks for the configuration when the user presses ITS Save.
+/// The visor asks for the configuration when the user presses ITS Save.
 /// `None` means "not valid yet" — the panel says why in its own region.
 fn commit_config(app: &mut App) -> Option<String> {
     let endpoint = app.endpoint.trim_end_matches('/').to_string();
@@ -158,8 +158,8 @@ fn commit_config(app: &mut App) -> Option<String> {
 
 /// Best-effort "origin" of the endpoint field: trim, drop any path, and
 /// lowercase the scheme+authority. Plain string manipulation is enough
-/// here — chrome re-normalizes with `new URL()` and compares origins
-/// itself, so a sloppy answer costs the panel its binding, not chrome
+/// here — the visor re-normalizes with `new URL()` and compares origins
+/// itself, so a sloppy answer costs the panel its binding, not the visor
 /// its enforcement. "" when there is nothing to report.
 fn origin_of(endpoint: &str) -> String {
     let raw = endpoint.trim().trim_end_matches('/');
@@ -168,7 +168,7 @@ fn origin_of(endpoint: &str) -> String {
     }
     let (scheme, rest) = match raw.split_once("://") {
         Some((s, r)) => (s, r),
-        // No scheme: chrome cannot parse it either, so report nothing
+        // No scheme: the visor cannot parse it either, so report nothing
         // rather than inventing one.
         None => return String::new(),
     };
@@ -209,7 +209,7 @@ impl Guest for Component {
         APP.with(|a| handle_event(&mut a.borrow_mut(), ev));
     }
 
-    /// Chrome drives completion now; the panel never sets an outcome.
+    /// The visor drives completion now; the panel never sets an outcome.
     async fn outcome() -> Option<String> {
         None
     }
@@ -218,25 +218,25 @@ impl Guest for Component {
         APP.with(|a| commit_config(&mut a.borrow_mut()))
     }
 
-    /// The credential vocabulary (#22): kinds only, never labels. Chrome
+    /// The credential vocabulary (#22): kinds only, never labels. The visor
     /// renders these fields in its own pixels, outside this region, and
     /// the values never cross back into this component.
     fn credential_needs() -> Vec<CredentialKind> {
         vec![CredentialKind::AccessKey, CredentialKind::SecretKey]
     }
 
-    /// Where this panel's configuration currently points (#22). Chrome
+    /// Where this panel's configuration currently points (#22). The visor
     /// re-reads this after every event, shows it, and binds the
     /// credentials it holds to it. Best-effort origin normalization only:
-    /// chrome re-parses with its own URL machinery and is the one that
-    /// enforces — this string is an INPUT to chrome's normalization,
-    /// never a claim chrome trusts as written.
+    /// the visor re-parses with its own URL machinery and is the one that
+    /// enforces — this string is an INPUT to the visor's normalization,
+    /// never a claim the visor trusts as written.
     fn destination() -> String {
         APP.with(|a| origin_of(&a.borrow().endpoint))
     }
 
     /// What this panel calls itself. SELF-DECLARED, therefore worth
-    /// nothing as identity: chrome renders it foreign-quoted and clamped,
+    /// nothing as identity: the visor renders it foreign-quoted and clamped,
     /// keys its trust record on the artifact name it fetched, and lets
     /// the user assign the name they will actually recognise.
     fn nickname() -> String {

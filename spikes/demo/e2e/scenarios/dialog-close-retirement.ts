@@ -2,7 +2,7 @@
 // webview could never verify.)
 //
 // A modal `<dialog>` closes natively on ESC — the browser does it, no
-// script involved. Chrome therefore cannot treat "the dialog closed" as
+// script involved. The visor therefore cannot treat "the dialog closed" as
 // something only its own Cancel handler causes: it listens for the
 // `close` event and retires the mounted panel there, because a component
 // surface left running behind a closed dialog is a component that is
@@ -40,8 +40,8 @@ const isOpen = (page: Page) =>
     (document.getElementById("storage-dialog") as HTMLDialogElement).open
   );
 
-/** Is the s3 panel's surface still LIVE in chrome's hands? `openFor` is
- * provenance-keyed and opens nothing for a surface chrome no longer
+/** Is the s3 panel's surface still LIVE in the visor's hands? `openFor` is
+ * provenance-keyed and opens nothing for a surface the visor no longer
  * holds, so it doubles as a precise retirement probe — precise in a way
  * counting iframes is not. */
 const panelLive = (page: Page) =>
@@ -55,7 +55,7 @@ const scenario: Scenario = {
   why: "ESC closes the dialog, the panel is retired and the context returns to the app — unverifiable in a webview",
   minio: "up",
   // A configured store, so the panel mounts with a real destination —
-  // which is both the ordinary case and what makes chrome's binding
+  // which is both the ordinary case and what makes the visor's binding
   // (and so the "is the panel registered yet" wait) meaningful.
   page: (ctx: Ctx) => ({
     storage: {
@@ -82,21 +82,21 @@ const scenario: Scenario = {
         `no panel frame was mounted (${before.appFrames} → ${after.appFrames})`,
       );
       // The panel is an APP: its own region, its own grants, and — like
-      // every other component surface — unreachable from chrome's realm.
+      // every other component surface — unreachable from the visor's realm.
       assertEquals(after.sameOriginReachable, false, "the panel frame was same-origin reachable");
       assert(
         after.sandbox.every((s) => s !== null && !s.includes("allow-same-origin")),
         `a surface frame carried allow-same-origin: ${JSON.stringify(after.sandbox)}`,
       );
       // That the surface is LIVE is already established by the wait
-      // above: `boundDestination()` is non-null only once chrome has
+      // above: `boundDestination()` is non-null only once the visor has
       // mounted the panel and bound it to an origin. `panelLive` is used
       // below, after ESC, where the expected answer is `false` — and a
       // false answer opens nothing, so the probe stays side-effect free
       // exactly where it is used.
     });
 
-    await act("ESC — the browser's own close, not chrome's Cancel — closes the dialog", async () => {
+    await act("ESC — the browser's own close, not the visor's Cancel — closes the dialog", async () => {
       // A REAL key press through the browser: the native modal-dismiss
       // path, with no script of the demo's involved in causing it.
       await page.keyboard.press("Escape");
@@ -119,7 +119,7 @@ const scenario: Scenario = {
       ).catch(() => {
         throw new Error("the panel frame was still mounted after ESC");
       });
-      assertEquals(await panelLive(page), false, "chrome still held the panel's surface after ESC");
+      assertEquals(await panelLive(page), false, "the visor still held the panel's surface after ESC");
     });
 
     await act("the strip's context returns to the app surface", async () => {
@@ -128,18 +128,18 @@ const scenario: Scenario = {
       assertEquals(await sheetOpen(page, "drawer"), false, "a credential sheet after ESC");
       assertEquals(await sheetOpen(page, "naming"), false, "a naming sheet after ESC");
       assertEquals(await sheetOpen(page, "settings"), false, "a settings sheet after ESC");
-      // No stranded chrome furniture: the drawer and the dim are both
+      // No stranded visor furniture: the drawer and the dim are both
       // away, so the page is fully the user's again.
       await waitForDrawerHidden(page);
       await page.waitForFunction(
-        () => (document.getElementById("chrome-dim") as HTMLElement).hidden === true,
+        () => (document.getElementById("visor-dim") as HTMLElement).hidden === true,
         undefined,
         { timeout: UI_TIMEOUT },
       );
     });
 
     await act("and the dialog can be opened again afterwards", async () => {
-      // Retirement left chrome in a re-usable state rather than a
+      // Retirement left the visor in a re-usable state rather than a
       // half-torn-down one.
       await hook(page, "openStorage");
       await waitForPanelSurface(page);
@@ -164,7 +164,7 @@ const scenario: Scenario = {
       // later. Reopening in between means the stale close event lands
       // while the NEW mount is mid-handshake — and an unguarded teardown
       // there destroys the new frame backend before it is ready, which
-      // chrome reports as `panel failed to mount: frame backend
+      // the visor reports as `panel failed to mount: frame backend
       // destroyed before it was ready`.
       //
       // So: no `sleep`, no settle. Press ESC and reopen in the SAME
@@ -187,7 +187,7 @@ const scenario: Scenario = {
         });
         assertEquals(await isOpen(page), true, `the dialog on reopen ${i + 1}/10`);
         // The region holds the surface's iframe and NOTHING else: any
-        // text in it is chrome's mount `.catch` reporting a failure.
+        // text in it is the visor's mount `.catch` reporting a failure.
         assertEquals(await regionText(page), "", `the panel region on reopen ${i + 1}/10`);
       }
       // Nothing anywhere reported a frame that died before it was ready

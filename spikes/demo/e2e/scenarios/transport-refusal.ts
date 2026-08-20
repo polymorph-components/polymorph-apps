@@ -21,7 +21,7 @@ const BUCKET = "pm-demo";
 
 const scenario: Scenario = {
   name: "transport-refusal",
-  why: "an unreachable store fails with chrome's own words and never as a trap (#33)",
+  why: "an unreachable store fails with the visor's own words and never as a trap (#33)",
   // The store is DOWN for this whole scenario: that is the premise.
   minio: "down",
   page: (ctx: Ctx) => ({
@@ -47,7 +47,7 @@ const scenario: Scenario = {
       assertIncludes(banner, "ready", "the banner with an unreachable store");
     });
 
-    await act("the tablet reports the transport failure in chrome's own words", async () => {
+    await act("the tablet reports the transport failure in the visor's own words", async () => {
       // Sticky, so it stays put; the retries take a moment.
       const status = await waitForPaneStatus(
         page,

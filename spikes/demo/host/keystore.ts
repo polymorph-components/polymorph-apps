@@ -1,4 +1,4 @@
-// Chrome's escrowed signing credentials (#11's keystore slice, #7's
+// The visor's escrowed signing credentials (#11's keystore slice, #7's
 // signer seam).
 //
 // WHAT THIS BUYS. A raw SigV4 secret is a bearer string: whoever reads it

@@ -1,6 +1,6 @@
 // Playwright gate for Track B (PAIRING.md §6): drives the join+add
 // panes side by side against the mock driver (host/pairing-mock.ts,
-// host/pairing-chrome.ts), real headless Chromium.
+// host/pairing-visor.ts), real headless Chromium.
 //
 // Run (from spikes/demo): `just pairing-site` first, then serve
 // serve/ on some port and point PAIRING_DEMO_URL at it, e.g.:
@@ -86,9 +86,9 @@ test("join + add panes: SAS equality, arming delay, announcements, hue adoption"
 
   const joinBg = await page.$eval("#join-pane", (el) => getComputedStyle(el).backgroundColor || getComputedStyle(el).background);
   // Alice's profile carries hue INDEX 0 (PAIRING.md §4: hues are
-  // palette indices, not raw angles); host/pairing-chrome.ts's
+  // palette indices, not raw angles); host/pairing-visor.ts's
   // `paletteAngle` maps index 0 to 265° (mirroring host/demo.ts's
-  // CHROME_HUES[0]) — assert the MAPPED angle landed, not the raw index.
+  // VISOR_HUES[0]) — assert the MAPPED angle landed, not the raw index.
   expect(joinBg).toMatch(/265/);
 
   expect(consoleErrors).toEqual([]);

@@ -1,7 +1,7 @@
 // The naming ceremony, end to end: the TOFU moment completing.
 //
-// This is the scenario the whole chrome exists for. A component says
-// what it is; chrome says what the USER decided it is — and once the
+// This is the scenario the whole visor exists for. A component says
+// what it is; the visor says what the USER decided it is — and once the
 // user has decided, the "NEW" badge is retired, because "first time this
 // component draws here" and "you call this one tasks board" are
 // contradictory claims to make side by side (host/demo.ts:2695-2701).
@@ -34,15 +34,15 @@ const PETNAME = "tasks board";
 
 const scenario: Scenario = {
   name: "petname-ceremony",
-  why: "naming a component from the strip retires NEW, speaks in chrome's voice, persists, and refuses collisions",
+  why: "naming a component from the strip retires NEW, speaks in the visor's voice, persists, and refuses collisions",
   page: {},
 
   async run(page, ctx) {
     await act("the whole left cluster is a tap target that opens App settings", async () => {
       // The cluster — not just the small control inside it — is the
-      // gesture: chrome pixels in the strip, which no component can draw.
+      // gesture: visor pixels in the strip, which no component can draw.
       const tappable = await page.evaluate(() => {
-        const el = document.getElementById("chrome-context");
+        const el = document.getElementById("visor-context");
         return { role: el?.getAttribute("role"), tabindex: el?.getAttribute("tabindex") };
       });
       assertEquals(tappable.role, "button", "the cluster's role");
@@ -51,13 +51,13 @@ const scenario: Scenario = {
       await waitForSheet(page, "naming", true);
     });
 
-    await act("the sheet is chrome's App settings, in chrome's own words", async () => {
+    await act("the sheet is the visor's App settings, in the visor's own words", async () => {
       const text = await sheetText(page);
       assertIncludes(text, "App settings", "the sheet's heading");
       // The two voices that are not the user's, both named as such.
       assertIncludes(text, "calls itself", "the sheet");
-      assertIncludes(text, "chrome fetched it as", "the sheet");
-      // Chrome's own memory of the component — the one line that answers
+      assertIncludes(text, "visor fetched it as", "the sheet");
+      // The visor's own memory of the component — the one line that answers
       // "have I really seen this before?" with something but a colour.
       assertIncludes(text, "first seen", "the sheet");
       assertIncludes(text, "TodoMVC", "the sheet quotes the self-declared nickname");
@@ -87,15 +87,15 @@ const scenario: Scenario = {
       assertEquals(s?.petname ?? "", "", "the petname after a refused save");
     });
 
-    await act(`saving "${PETNAME}" announces it in chrome's voice`, async () => {
+    await act(`saving "${PETNAME}" announces it in the visor's voice`, async () => {
       await hook(page, "naming.type", PETNAME);
       await hook(page, "naming.save");
       await waitForSheet(page, "naming", false);
-      // The announcement is chrome speaking about its own trust table —
+      // The announcement is the visor speaking about its own trust table —
       // asserted BEFORE the revert, because it is a timed line.
       const said = await waitForBottom(
         page,
-        (t) => t.includes("chrome will call this component"),
+        (t) => t.includes("the visor will call this component"),
         "the naming announcement",
       );
       assertIncludes(said, PETNAME, "the announcement");
@@ -120,18 +120,18 @@ const scenario: Scenario = {
       const { top, bottom } = await stripText(page);
       assertIncludes(bottom, PETNAME, "the reverted bottom line");
       // The demotion: the component's own account of itself stays
-      // UPSTAIRS as a quote; chrome's line is the user's word.
+      // UPSTAIRS as a quote; the visor's line is the user's word.
       assertIncludes(top, "TodoMVC", "the top line still quotes the nickname");
       const dom = await page.evaluate(() => ({
-        fresh: document.querySelectorAll("#chrome-context .ctx-bottom .fresh").length,
-        nameIt: document.querySelectorAll("#chrome-name-it").length,
-        petname: document.querySelectorAll("#chrome-context .ctx-bottom .petname").length,
+        fresh: document.querySelectorAll("#visor-context .ctx-bottom .fresh").length,
+        nameIt: document.querySelectorAll("#visor-name-it").length,
+        petname: document.querySelectorAll("#visor-context .ctx-bottom .petname").length,
       }));
       // The regression this scenario exists to catch: a re-render that
       // reads a stale isNew would put NEW back beside the petname.
       assertEquals(dom.fresh, 0, ".fresh must be ABSENT once the component has been named");
       assertEquals(dom.nameIt, 0, "the 'name it' offer once there is a name");
-      assertEquals(dom.petname, 1, "the petname on chrome's line");
+      assertEquals(dom.petname, 1, "the petname on the visor's line");
       assert(
         !bottom.includes("NEW"),
         `the bottom line still said NEW: ${JSON.stringify(bottom)}`,
@@ -149,7 +149,7 @@ const scenario: Scenario = {
       assertIncludes(bottom, PETNAME, "the bottom line after a reload");
       assertEquals(
         await page.evaluate(() =>
-          document.querySelectorAll("#chrome-context .ctx-bottom .fresh").length
+          document.querySelectorAll("#visor-context .ctx-bottom .fresh").length
         ),
         0,
         ".fresh after a reload",
@@ -167,7 +167,7 @@ const scenario: Scenario = {
         { timeout: UI_TIMEOUT },
       );
       // Wait for the panel surface to be registered before naming it:
-      // `openFor` is provenance-keyed and opens NOTHING for a key chrome
+      // `openFor` is provenance-keyed and opens NOTHING for a key the visor
       // does not already hold (host/demo.ts, `naming.openFor`).
       await page.waitForFunction(
         // deno-lint-ignore no-explicit-any
@@ -187,7 +187,7 @@ const scenario: Scenario = {
       await hook(page, "naming.save");
       const reason = await namingReason(page);
       assertIncludes(reason, "you already call another component", "the collision refusal");
-      // Chrome names the colliding record by BOTH its petname and its
+      // The visor names the colliding record by BOTH its petname and its
       // unforgeable provenance key: the user needs to know which
       // component already answers to this word.
       assertIncludes(reason, "s3 config", "the collision refusal names the petname");

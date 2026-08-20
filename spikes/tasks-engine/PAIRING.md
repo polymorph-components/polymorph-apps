@@ -1,11 +1,11 @@
 # Device pairing + user-system partition — pinned contract
 
 Governing doc for the two parallel tracks (engine: `spikes/tasks-engine`;
-chrome: `spikes/demo`). Tracks build against THIS file; changes to it are
+visor: `spikes/demo`). Tracks build against THIS file; changes to it are
 design decisions and go through the dispatcher, not either track.
 
 References: #10 (enrollment ceremony), #36 (user-system partition),
-#22 (chrome rulings: announced-never-silent, naming voices, ceremony
+#22 (visor rulings: announced-never-silent, naming voices, ceremony
 weight classes), NOTES §Identity and devices, §Key lifecycle, the G3–G5
 records in §Provisional plan.
 
@@ -53,7 +53,7 @@ reject-on-unknown, per NOTES).
      transcript = 0x01 ‖ token ‖ join-endpoint-id ‖ add-endpoint-id ‖ nonce_j ‖ nonce_a
      sas        = (first 4 bytes of BLAKE3(transcript), read u32 big-endian)
                   mod 10^6, zero-padded to 6 digits
-4. both display SAS; both users confirm in chrome (weight classes: §5)
+4. both display SAS; both users confirm in the visor (weight classes: §5)
 5. join → add  : CONFIRM-JOIN {}
 6. add  → join : ENROLL  { user-group-id, group-card, partition-id }
      (sent only after BOTH the adder's local confirm and CONFIRM-JOIN;
@@ -101,7 +101,7 @@ reject-on-unknown, per NOTES).
   causal-key read-back.
 - After ENROLL the joiner pulls the user-system doc, decrypts the
   anchor chunk, causal-walks the ancestry, materializes, and adopts
-  profile state; chrome announces the adoption (hue + name arriving is
+  profile state; the visor announces the adoption (hue + name arriving is
   a remotely-caused change, #22: announced).
 
 Threat notes (carry into #1 later): shoulder-surfed/photographed code ⇒
@@ -150,7 +150,7 @@ Added to `interface driver`:
 
     pair-add-start:    async func(code: string) -> result<_, string>;
     pair-add-status:   async func() -> result<pair-add-state, string>;
-    /// device-name: the user's own word for the new device (chrome's
+    /// device-name: the user's own word for the new device (the visor's
     /// voice, #22) — recorded in the devices annotations by the ADDER.
     pair-add-confirm:  async func(device-name: string) -> result<_, string>;
 
@@ -207,7 +207,7 @@ Added to `interface driver`:
     us-devices-list:  async func() -> result<list<us-device>, string>;
     us-device-revoke: async func(agent-id: list<u8>) -> result<_, string>;
 
-    /// Drain remotely-caused changes chrome must announce (#22).
+    /// Drain remotely-caused changes the visor must announce (#22).
     /// Local-echo suppression is engine-side: a device never receives
     /// events for its own writes.
     us-events: async func() -> result<list<us-event>, string>;
@@ -218,7 +218,7 @@ Added to `interface driver`:
 - **One automerge doc** in v1 backing all four families (`profile`,
   `marks`, `contacts`, `devices` as top-level maps). The WIT surface
   hides the partitioning, so the production split (per-family docs, #36)
-  is a later engine change with zero chrome impact. Doc is delegated to
+  is a later engine change with zero visor impact. Doc is delegated to
   the user group only; created by `user-create`; sealed immediately
   (single founding member — no add-before-seal window needed; the
   pairing path adds devices to the GROUP, which CGKA-propagates).
@@ -230,7 +230,7 @@ Added to `interface driver`:
   lexicographic provenance):
   - petname collision: loser keeps its petname bytes but reports
     `needs-reconfirm = true` (derived, not stored, is acceptable —
-    chrome renders NEW-with-explanation at next mount; `us-mark-confirm`
+    the visor renders NEW-with-explanation at next mount; `us-mark-confirm`
     records the exact petname confirmed and clears until it changes);
   - hue collision: loser is auto-reassigned the smallest unused palette
     index; if the palette is exhausted, the collision stands (matches
@@ -242,7 +242,7 @@ Added to `interface driver`:
   observes a violation involving its OWN losing write; others render
   the computed outcome without writing).
 - **Founding device**: `user-create` records the founding device in the
-  devices map with `name: ""` — chrome treats empty as "this device"
+  devices map with `name: ""` — the visor treats empty as "this device"
   until a rename surface exists (#36 production item).
 - **Events**: per-instance drained queue; only remotely-caused changes;
   emitted after apply + repair.
@@ -251,7 +251,7 @@ Added to `interface driver`:
 
 The engine's content spine switches what it seals, at the single
 seal/open boundary (one seal site, one open site; nothing above or
-below changes — WIT, chrome, subduction, sedimentree, storage all
+below changes — WIT, the visor, subduction, sedimentree, storage all
 carry opaque bytes either way):
 
 - **Write path**: the plaintext handed to keyhive encryption becomes a
@@ -283,7 +283,9 @@ carry opaque bytes either way):
   review gates any polymorph data shipping under it. This spike
   implements; it does not ship.
 
-## 5. Chrome semantics (Track B; #22 rulings apply throughout)- **Marks/hue/name move to the partition**; localStorage demotes to a
+## 5. Visor semantics (Track B; #22 rulings apply throughout)
+
+- **Marks/hue/name move to the partition**; localStorage demotes to a
   boot cache (render from cache, reconcile after engine init, announce
   diffs). The keystore (CryptoKey handles) stays device-local — never
   synced, unchanged.
@@ -294,7 +296,7 @@ carry opaque bytes either way):
 - **Add flow** (trusted device): strip menu → "add a device" → code
   entry (paste/typed) → SAS screen → **heavy ceremony**: statement of
   consequence ("full access to everything in your account"), the #22
-  arming delay, and the device-name field (user's own word, chrome's
+  arming delay, and the device-name field (user's own word, the visor's
   voice, never prefilled from anything the joiner sent).
 - **Announcements** drain `us-events` into the strip's rule line /
   status surface with priority over ambient telemetry (#22: the
@@ -303,7 +305,7 @@ carry opaque bytes either way):
   pairing against alice-laptop; bob (separate user) keeps the contact
   card path.
 - New CI invariant (`scripts/check-invariants.sh`): the pairing code and
-  SAS render only in chrome-owned surfaces, never inside a component
+  SAS render only in visor-owned surfaces, never inside a component
   frame; grep-enforceable markers to be chosen by Track B.
 
 ## 6. Gates
@@ -333,7 +335,7 @@ regeneration-specific gates:
   succeeds where direct decrypt fails).
 - G1–G5 regression on the new format.
 
-Track B (chrome): demo builds; Playwright drive of both flows against
+Track B (visor): demo builds; Playwright drive of both flows against
 the mock driver (join + add panes side by side, SAS equality asserted
 across panes, arming delay enforced, announcements render);
 `scripts/check-invariants.sh` green including the new invariant.

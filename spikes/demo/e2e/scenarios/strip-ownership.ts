@@ -1,5 +1,5 @@
 // The strip's top line NEVER names a surface that does not own the
-// context — not even for one frame, and not because a chrome timer that
+// context — not even for one frame, and not because a visor timer that
 // was scheduled earlier finally got its turn.
 //
 // WHY THIS IS A SECURITY SCENARIO AND NOT A COSMETIC ONE. The strip is
@@ -10,7 +10,7 @@
 // brief, is not a flicker — it is the anchor making the exact false
 // statement it exists to prevent, at the exact moment it is consulted.
 //
-// The hazard is DEFERRED CONTEXT WRITES. Chrome's lightweight sheets
+// The hazard is DEFERRED CONTEXT WRITES. The visor's lightweight sheets
 // (naming, settings) close on an animation, and their close paths put
 // the strip's context back. Whatever is deferred in that restore is
 // racing whatever the user did next — and "open the storage dialog" is
@@ -27,7 +27,7 @@
 // the reproduction of a defect that was found: it passed against the
 // code before the ownership-aware restore went in as well as after. The
 // reason is worth writing down, because it is the thing that could stop
-// being true. Chrome's context writes are all SYNCHRONOUS — the only
+// being true. The visor's context writes are all SYNCHRONOUS — the only
 // genuinely deferred work in a sheet's close path is the occupancy-
 // checked `drawerInner.replaceChildren()`, and the one deferred write
 // that does touch the line (the announcement's expiry) reverts by
@@ -38,9 +38,9 @@
 //
 // That last clause is an accident of call ordering, not a structural
 // guarantee — it is exactly the kind of invariant that a later "open
-// the sheet without closing the dialog first" quietly repeals. Chrome
+// the sheet without closing the dialog first" quietly repeals. The visor
 // now holds it by construction instead (host/demo.ts's
-// `restoreChromeContext`: no caller says what the context should become,
+// `restoreVisorContext`: no caller says what the context should become,
 // they say only that they are done). This scenario is what notices if
 // either half of that regresses.
 
@@ -61,8 +61,8 @@ import {
 import type { Page } from "npm:playwright@1.57.0";
 
 /** What the app calls itself, and what the s3 panel calls itself
- * (guest-panel-s3/src/lib.rs:242). Chrome quotes both on the top line —
- * so the top line naming one of them is chrome's claim about who owns
+ * (guest-panel-s3/src/lib.rs:242). The visor quotes both on the top line —
+ * so the top line naming one of them is the visor's claim about who owns
  * the page right now. */
 const APP = "TodoMVC";
 const PANEL = "S3 object storage";
@@ -81,7 +81,7 @@ const WATCH_MS = 1_500;
 const scenario: Scenario = {
   name: "strip-ownership",
   why:
-    "no deferred chrome timer ever puts the app's name back on the strip while a panel surface owns it",
+    "no deferred visor timer ever puts the app's name back on the strip while a panel surface owns it",
   minio: "up",
   page: (ctx) => ({
     storage: {
@@ -182,7 +182,7 @@ const scenario: Scenario = {
       // comes back.
       await page.keyboard.press("Escape");
       await page.waitForFunction(
-        () => ((document.querySelector("#chrome-context .ctx-top")?.textContent) ?? "")
+        () => ((document.querySelector("#visor-context .ctx-top")?.textContent) ?? "")
           .includes("TodoMVC"),
         undefined,
         { timeout: 15_000 },

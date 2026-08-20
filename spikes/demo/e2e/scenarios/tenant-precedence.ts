@@ -1,7 +1,7 @@
 // Who may take the drawer from whom.
 //
-// Chrome has ONE drawer and three tenants for it: the credential sheet,
-// the App settings sheet (naming, grown) and chrome's own settings
+// The visor has ONE drawer and three tenants for it: the credential sheet,
+// the App settings sheet (naming, grown) and the visor's own settings
 // sheet. The precedence is not symmetric, and the asymmetry is the whole
 // security content:
 //
@@ -12,7 +12,7 @@
 //   - the two LIGHTWEIGHT tenants evict each other freely. Neither holds
 //     anything a user would lose by a stray tap on the strip.
 //   - the storage DIALOG is a modal in the top layer, so it cannot merely
-//     overlap a sheet — chrome closes the sheet rather than strand it
+//     overlap a sheet — the visor closes the sheet rather than strand it
 //     behind a modal it would paint over.
 //
 // Every one of these is a click a user can make in the wrong order, and
@@ -79,8 +79,8 @@ const scenario: Scenario = {
       // Exactly one tenant in the drawer, always: the eviction is a
       // REPLACEMENT, not a stack.
       const sheets = await page.evaluate(() => ({
-        name: document.querySelectorAll("#chrome-drawer-inner .name-sheet").length,
-        settings: document.querySelectorAll("#chrome-drawer-inner .settings-sheet").length,
+        name: document.querySelectorAll("#visor-drawer-inner .name-sheet").length,
+        settings: document.querySelectorAll("#visor-drawer-inner .settings-sheet").length,
       }));
       assertEquals(sheets.name, 0, "naming sheets left in the drawer");
       assertEquals(sheets.settings, 1, "settings sheets in the drawer");
@@ -95,7 +95,7 @@ const scenario: Scenario = {
       );
       assertEquals(
         await page.evaluate(() =>
-          document.querySelectorAll("#chrome-drawer-inner .settings-sheet").length
+          document.querySelectorAll("#visor-drawer-inner .settings-sheet").length
         ),
         0,
         "settings sheets left in the drawer",
@@ -108,7 +108,7 @@ const scenario: Scenario = {
       await hook(page, "settings.openSheet");
       await waitForSheet(page, "settings", true);
       const after = await stripText(page);
-      assertIncludes(after.bottom, "chrome settings", "the bottom line with the settings sheet up");
+      assertIncludes(after.bottom, "visor settings", "the bottom line with the settings sheet up");
       assert(
         !after.bottom.includes("naming"),
         `the strip still named the evicted sheet: ${JSON.stringify(after.bottom)}`,
@@ -144,7 +144,7 @@ const scenario: Scenario = {
 
     await act("the naming ceremony takes the page back BEFORE opening its sheet", async () => {
       // Requested from the strip while the modal is up: the dialog is in
-      // the top layer, so chrome retires the panel and closes the dialog
+      // the top layer, so the visor retires the panel and closes the dialog
       // first rather than opening a sheet underneath it.
       await hook(page, "openStorage");
       await waitForDialog(page, true);
@@ -180,7 +180,7 @@ const scenario: Scenario = {
       // The sheet in the drawer is still the credential one.
       assertEquals(
         await page.evaluate(() =>
-          document.querySelectorAll("#chrome-drawer-inner .name-sheet, #chrome-drawer-inner .settings-sheet")
+          document.querySelectorAll("#visor-drawer-inner .name-sheet, #visor-drawer-inner .settings-sheet")
             .length
         ),
         0,
@@ -195,7 +195,7 @@ const scenario: Scenario = {
       assert(credOpen, "the credential sheet was never opened");
       await page.waitForFunction(
         () =>
-          (document.querySelector("#chrome-drawer-inner .cred-row button:first-child") as
+          (document.querySelector("#visor-drawer-inner .cred-row button:first-child") as
             | HTMLButtonElement
             | null)?.disabled === false,
         undefined,
@@ -214,7 +214,7 @@ const scenario: Scenario = {
       await waitForDrawerHidden(page);
       // The surfaces are live again — the dim is gone with the sheet.
       await page.waitForFunction(
-        () => (document.getElementById("chrome-dim") as HTMLElement).hidden === true,
+        () => (document.getElementById("visor-dim") as HTMLElement).hidden === true,
         undefined,
         { timeout: UI_TIMEOUT },
       );

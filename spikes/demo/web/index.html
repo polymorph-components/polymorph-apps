@@ -8,36 +8,36 @@
        here: on the top page it was dead weight with one live landmine —
        its `body { max-width: 550px }` silently squeezed the whole desktop
        page into a 550px column after the surfaces moved into frames. The
-       shell document styles only chrome. -->
+       shell document styles only visor. -->
   <style>
     body { margin: 0; background: #f5f5f5; font: 14px 'Helvetica Neue', Helvetica, Arial, sans-serif; }
     :root { --content-max: 72rem; } /* rem, not em: em resolves per-bar font-size -> misaligned columns */
-    /* Wide-viewport centering: chrome bars keep full-bleed backgrounds,
+    /* Wide-viewport centering: visor bars keep full-bleed backgrounds,
        but their content sits in a centered column. Each bar's own
        flex/alignment rules move onto .bar-inner; the bar element itself
        keeps only the vertical padding and background. */
     .bar-inner { max-width: var(--content-max); margin: 0 auto; width: 100%;
                  box-sizing: border-box; }
 
-    /* THE CHROME STRIP (#22). The one region an app can never paint, so
+    /* THE VISOR STRIP (#22). The one region an app can never paint, so
        it is where identity lives. Its background is the user's own
        colour: randomised on first run, changeable, and never disclosed
        to app code — a SECONDARY anchor behind position, defending the
-       case where an app mimics chrome inside its own rectangle. It stays
+       case where an app mimics the visor inside its own rectangle. It stays
        CONSTANT while secondary surfaces come and go: an anchor that
        changes per component would stop being an anchor. */
     /* PINNED. An anchor that scrolls away is not an anchor: the strip
        must be on screen at the moment a secret is typed, which is only
        guaranteed if it cannot leave the viewport. Pinning now belongs to
-       #chrome-zone, the assembly that holds the sheet ABOVE the strip:
+       #visor-zone, the assembly that holds the sheet ABOVE the strip:
        both must ride the same sticky box, or the sheet could be scrolled
        away from the bar it hangs off. The zone's z-index puts the whole
        assembly above the dim layer and all page content — nothing an app
        draws can ever be painted over it. */
-    #chrome-zone { position: sticky; top: 0; z-index: 30; }
-    #chrome-strip { padding: .45em 0; font-size: 12px;
-                    background: var(--chrome-bg, oklch(38% .07 260));
-                    color: var(--chrome-fg, #f2f4fb);
+    #visor-zone { position: sticky; top: 0; z-index: 30; }
+    #visor-strip { padding: .45em 0; font-size: 12px;
+                    background: var(--visor-bg, oklch(38% .07 260));
+                    color: var(--visor-fg, #f2f4fb);
                     border-bottom: 1px solid rgba(0,0,0,.35); }
     /* TWO CLUSTERS, AND A GUARANTEED GAP BETWEEN THEM. The strip carries
        two stacked lines per side now, so it is roughly twice as tall as
@@ -50,77 +50,77 @@
        middle at every width, with no element in it to measure or to
        collide with. The old standing-rule line lived there and is GONE — see
        the note on .ctx-bottom below. */
-    #chrome-strip .bar-inner { display: flex; align-items: stretch;
+    #visor-strip .bar-inner { display: flex; align-items: stretch;
                                justify-content: space-between; gap: .8em;
                                padding: 0 .9em; box-sizing: border-box; }
     /* LEFT CLUSTER — two lines, and the split between them is the whole
        point of the restructure:
          .ctx-top    the COMPONENT's identity: its mark and what it calls
-                     itself. Static after install; nothing chrome does to
+                     itself. Static after install; nothing the visor does to
                      its own sheets rewrites it.
-         .ctx-bottom CHROME'S line: the user's petname (or the offer to
+         .ctx-bottom THE VISOR'S line: the user's petname (or the offer to
                      assign one), the first-sight marker, the name of
-                     whichever chrome sheet is open, and timed
+                     whichever visor sheet is open, and timed
                      announcements.
-       One voice per line: what the component said above, what chrome and
+       One voice per line: what the component said above, what the visor and
        the user say below. */
-    #chrome-context { display: flex; flex-direction: column;
+    #visor-context { display: flex; flex-direction: column;
                       justify-content: center; gap: .15em;
                       min-width: 0; max-width: 45%; }
-    #chrome-context .ctx-top, #chrome-context .ctx-bottom {
+    #visor-context .ctx-top, #visor-context .ctx-bottom {
       display: flex; align-items: center; gap: .5em; min-width: 0;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    /* The cluster is one tap target: it opens chrome's App settings
+    /* The cluster is one tap target: it opens the visor's App settings
        sheet for whatever surface the top line names. Strip pixels, so
        the gesture starts somewhere no component can draw or reach. */
-    #chrome-context[role="button"] { cursor: pointer; }
-    #chrome-context[role="button"]:focus-visible { outline: 2px solid rgba(255,255,255,.7);
+    #visor-context[role="button"] { cursor: pointer; }
+    #visor-context[role="button"]:focus-visible { outline: 2px solid rgba(255,255,255,.7);
                                                    outline-offset: 2px; border-radius: 3px; }
-    #chrome-context .chip { width: .8em; height: .8em; border-radius: 2px;
+    #visor-context .chip { width: .8em; height: .8em; border-radius: 2px;
                             border: 1px solid rgba(255,255,255,.5); flex: none; }
     /* App-supplied text is quoted, clamped and styled as foreign — never
-       part of chrome's own sentence (#22's untrusted-string rule). */
-    #chrome-context q.foreign { font-family: ui-monospace, monospace;
+       part of the visor's own sentence (#22's untrusted-string rule). */
+    #visor-context q.foreign { font-family: ui-monospace, monospace;
                                 max-width: 22em; overflow: hidden;
                                 text-overflow: ellipsis; white-space: nowrap; }
-    #chrome-context .said { opacity: .85; overflow: hidden;
+    #visor-context .said { opacity: .85; overflow: hidden;
                             text-overflow: ellipsis; }
 
-    /* THE PETNAME: the user's own word for a component, so chrome says it
-       in CHROME'S voice — no quotes, no monospace, full opacity, slightly
-       heavier than the surrounding chrome text. The contrast with
+    /* THE PETNAME: the user's own word for a component, so the visor says it
+       in THE VISOR'S voice — no quotes, no monospace, full opacity, slightly
+       heavier than the surrounding visor text. The contrast with
        q.foreign above is the whole message: quoted+monospace means "a
-       component said this", plain chrome text means "you said this". */
-    #chrome-context .petname { font-weight: 600; letter-spacing: .01em;
+       component said this", plain visor text means "you said this". */
+    #visor-context .petname { font-weight: 600; letter-spacing: .01em;
                                max-width: 14em; overflow: hidden;
                                text-overflow: ellipsis; white-space: nowrap;
                                /* The user's word is never the thing flex
                                   squeezes: the max-width above caps a
                                   pathological record, but within it the
                                   petname wins the space fight — the
-                                  descriptive chrome sentences shrink
+                                  descriptive visor sentences shrink
                                   first. */
                                flex: none; }
     /* "calls itself" is one phrase; breaking it mid-air reads as two
-       stray words. The LONG chrome sentence stays wrappable. */
-    #chrome-context .calls-itself, .cred-sheet .calls-itself { white-space: nowrap; }
-    /* Clickable petname / "name it": chrome pixels in the strip, which is
+       stray words. The LONG visor sentence stays wrappable. */
+    #visor-context .calls-itself, .cred-sheet .calls-itself { white-space: nowrap; }
+    /* Clickable petname / "name it": visor pixels in the strip, which is
        the one place a component can never draw or reach. */
-    #chrome-context .petname.clickable { cursor: pointer;
+    #visor-context .petname.clickable { cursor: pointer;
                                          text-decoration: underline dotted;
                                          text-underline-offset: .2em; }
-    #chrome-name-it { font: inherit; color: inherit; cursor: pointer;
+    #visor-name-it { font: inherit; color: inherit; cursor: pointer;
                       background: rgba(255,255,255,.12);
                       border: 1px solid rgba(255,255,255,.3);
                       border-radius: 3px; padding: .05em .5em; white-space: nowrap; }
-    #chrome-context .fresh { background: #b03030; color: #fff; font-weight: 600;
+    #visor-context .fresh { background: #b03030; color: #fff; font-weight: 600;
                              padding: .05em .5em; border-radius: 2px;
                              letter-spacing: .03em; white-space: nowrap; }
-    /* A timed announcement in chrome's own voice, on chrome's own line.
+    /* A timed announcement in the visor's own voice, on the visor's own line.
        It replaces the bottom line for a few seconds and then the line is
        RE-RENDERED from the live context — never restored from a saved
        string, because what belongs there may have changed underneath. */
-    #chrome-context .announce { font-weight: 600; overflow: hidden;
+    #visor-context .announce { font-weight: 600; overflow: hidden;
                                 text-overflow: ellipsis; }
 
     /* THE STANDING RULE LINE IS GONE. It used to sit in the
@@ -136,11 +136,11 @@
            .bar-inner). An element there is one more thing that can be
            crowded, wrapped or mistaken for a component's words.
        What survives of its job on the strip is session naming: while a
-       chrome sheet is open, .ctx-bottom says which one, so the anchor
+       visor sheet is open, .ctx-bottom says which one, so the anchor
        and the surface hanging off it agree. */
 
     /* THE IDENTITY CLUSTER (strip right). The user's own name and their
-       word for this device, spoken in CHROME'S voice — plain text, full
+       word for this device, spoken in THE VISOR'S voice — plain text, full
        opacity, slightly heavier — because the user typed them. Same
        contrast as the petname above: q.foreign means "a component said
        this", this means "you said this". Nothing here is ever handed to
@@ -152,28 +152,28 @@
        The anchor's authority is its POSITION and the user's colour, not
        a word — and a word is precisely the part an app CAN paint inside
        its own rectangle. What sits here instead is a control: the
-       user's chosen glyph, opening chrome's settings sheet.
+       user's chosen glyph, opening the visor's settings sheet.
 
        TWO LINES HERE TOO, mirroring the left cluster: the user's name
        above, their word for this device below, each ellipsizing inside
        the same 45% cap. The button spans BOTH lines as a square. */
-    #chrome-identity { display: flex; align-items: stretch; gap: .5em;
+    #visor-identity { display: flex; align-items: stretch; gap: .5em;
                        min-width: 0; max-width: 45%; flex: none; }
-    #chrome-identity .id-lines { display: flex; flex-direction: column;
+    #visor-identity .id-lines { display: flex; flex-direction: column;
                                  justify-content: center; gap: .15em;
                                  min-width: 0; text-align: right; }
-    #chrome-identity .who { font-weight: 600; letter-spacing: .01em;
+    #visor-identity .who { font-weight: 600; letter-spacing: .01em;
                             max-width: 16em; overflow: hidden;
                             text-overflow: ellipsis; white-space: nowrap; }
     /* The device word is the quieter half of the pair. */
-    #chrome-identity .who.device { font-weight: 500; opacity: .85; }
+    #visor-identity .who.device { font-weight: 500; opacity: .85; }
     /* THE DOUBLED BUTTON. It spans both text lines, which does two
-       things: it makes chrome's own control the most prominent object on
-       the bar (it is the only control here that opens chrome's own
+       things: it makes the visor's own control the most prominent object on
+       the bar (it is the only control here that opens the visor's own
        settings), and it gives the gesture a target that clears the 44px
        touch minimum at the strip's 12px type — hence the px floor beside
        the em sizing: at 12px, 2.4em is only ~29px. */
-    #chrome-settings { font: inherit; color: inherit; cursor: pointer;
+    #visor-settings { font: inherit; color: inherit; cursor: pointer;
                        background: rgba(255,255,255,.12);
                        border: 1px solid rgba(255,255,255,.3);
                        border-radius: 4px; padding: 0;
@@ -186,7 +186,7 @@
 
 
     /* --- the credential sheet (#22) --------------------------------------
-       Credential entry lives on a surface only chrome can produce: a
+       Credential entry lives on a surface only the visor can produce: a
        sheet that unfolds ABOVE the pinned strip, full width, in the
        user's own anchor colour, with the strip still fully visible
        BELOW it.
@@ -197,7 +197,7 @@
        the strip's bottom edge and paint a counterfeit sheet that looks
        attached to the real bar. The space ABOVE the strip has no such
        reachable position — at every scroll offset the strip is at the
-       viewport's top edge, so nothing but chrome's own pixels can ever
+       viewport's top edge, so nothing but the visor's own pixels can ever
        occupy the band above it. And the REVEAL ITSELF is unforgeable:
        the sheet appears by pushing the real bar down, and an app cannot
        move the real bar. A fake can draw a sheet; it cannot displace the
@@ -206,9 +206,9 @@
 
        The assembly is IN FLOW inside the sticky zone, not position:fixed:
        one animated height drives the strip's descent and the page
-       content's descent together, rigidly glued (the todomvc chrome
+       content's descent together, rigidly glued (the todomvc visor
        spike settled on this after fr-interpolation proved nonlinear and
-       engine-varied — spikes/todomvc/host/chrome.ts:82-90).
+       engine-varied — spikes/todomvc/host/visor.ts:82-90).
 
        Deliberately NOT a <dialog>: the top layer would fight the zone's
        stacking (a modal dialog paints above everything, including the
@@ -216,48 +216,48 @@
        embedding's dialog close events are unreliable — see README
        findings, and the state-change retirement the storage dialog needs
        because of it. */
-    #chrome-drawer { background: var(--chrome-bg, oklch(38% .07 260));
-                     color: var(--chrome-fg, #f2f4fb); }
-    #chrome-drawer[hidden] { display: none; }
+    #visor-drawer { background: var(--visor-bg, oklch(38% .07 260));
+                     color: var(--visor-fg, #f2f4fb); }
+    #visor-drawer[hidden] { display: none; }
     /* Only while the sheet is up does the assembly cast onto the page and
        does the strip grow a top edge: closed, the strip must look exactly
        as it always has at the top of the viewport. */
-    #chrome-zone:has(#chrome-drawer:not([hidden])) {
+    #visor-zone:has(#visor-drawer:not([hidden])) {
       box-shadow: 0 10px 26px rgba(0,0,0,.5);
     }
-    #chrome-zone:has(#chrome-drawer:not([hidden])) #chrome-strip {
+    #visor-zone:has(#visor-drawer:not([hidden])) #visor-strip {
       border-top: 1px solid rgba(255,255,255,.22);
     }
     /* Pixel-height animation set from JS at open (0 → measured target):
-       the same single-property curve the todomvc chrome spike settled on.
+       the same single-property curve the todomvc visor spike settled on.
        flex-end keeps the growing content glued to the sheet's BOTTOM edge
        — i.e. to the strip's top edge — so the sheet unfurls upward out of
        the bar rather than sliding down over the page. The ARMING DELAY is
        the setTimeout in demo.ts, never this transition — reduced motion
        drops the animation and keeps the delay. */
-    #chrome-drawer-inner { height: 0; overflow: hidden;
+    #visor-drawer-inner { height: 0; overflow: hidden;
                            display: flex; flex-direction: column;
                            justify-content: flex-end;
                            transition: height 700ms cubic-bezier(.2,.8,.2,1); }
     @media (prefers-reduced-motion: reduce) {
-      #chrome-drawer-inner { transition: none; }
+      #visor-drawer-inner { transition: none; }
     }
-    /* The dim layer sits BETWEEN the page and the chrome assembly: the
+    /* The dim layer sits BETWEEN the page and the visor assembly: the
        zone (30) above, every app surface below. */
-    #chrome-dim { position: fixed; inset: 0; z-index: 20;
+    #visor-dim { position: fixed; inset: 0; z-index: 20;
                   background: rgba(6,8,16,.62); }
-    #chrome-dim[hidden] { display: none; }
+    #visor-dim[hidden] { display: none; }
 
     /* A sheet taller than the space above the strip would push the strip
        off the bottom of the viewport — losing the anchor exactly when it
-       matters. It scrolls internally instead; --chrome-sheet-max is the
+       matters. It scrolls internally instead; --visor-sheet-max is the
        measured viewport-minus-strip budget, set from JS at open/resize.
        `width:100%` is load-bearing now that the container is a flex
        column: `margin:0 auto` is an AUTO cross-axis margin, which
        suppresses the default stretch and would size the sheet to its
        content instead of to the page's centered column. */
     .cred-sheet { box-sizing: border-box; width: 100%; max-width: 34em; margin: 0 auto;
-                  max-height: var(--chrome-sheet-max, 80dvh); overflow-y: auto;
+                  max-height: var(--visor-sheet-max, 80dvh); overflow-y: auto;
                   flex-shrink: 0;
                   padding: .8em 1.1em 1.1em; font-size: 13px; line-height: 1.45; }
     .cred-sheet h2 { margin: 0 0 .35em; font-size: 15px; font-weight: 600; }
@@ -267,7 +267,7 @@
     .cred-sheet .chip { width: .8em; height: .8em; border-radius: 2px; flex: none;
                         border: 1px solid rgba(255,255,255,.5); }
     /* Panel-influenced strings (component name, destination origin) are
-       quoted, monospaced and clamped — never part of chrome's sentence. */
+       quoted, monospaced and clamped — never part of the visor's sentence. */
     .cred-sheet q.foreign { font-family: ui-monospace, monospace;
                             max-width: 20em; overflow: hidden;
                             text-overflow: ellipsis; white-space: nowrap; }
@@ -283,7 +283,7 @@
     .cred-sheet .cred-field input { width: 100%; box-sizing: border-box;
                                     font: inherit; font-size: 13px;
                                     background: rgba(0,0,0,.32);
-                                    color: var(--chrome-fg, #f2f4fb);
+                                    color: var(--visor-fg, #f2f4fb);
                                     border: 1px solid rgba(255,255,255,.35);
                                     border-radius: 3px; padding: .4em .5em; }
     .cred-sheet .cred-row { display: flex; gap: .8em; margin-top: .9em; }
@@ -304,7 +304,7 @@
        dim — nothing secret is typed here and the ceremony starts from
        strip pixels no app can draw. It ships with `.armed` already set,
        so the button row is never dimmed for a delay that does not exist.
-       The user's own word is shown in chrome's voice; what the component
+       The user's own word is shown in the visor's voice; what the component
        calls itself stays in q.foreign, quoted and monospaced. */
     .name-sheet .petname { font-weight: 600; }
     .name-sheet .name-swatches { display: flex; gap: .35em; flex-wrap: wrap;
@@ -370,16 +370,16 @@
     #bob-pane.revoked { opacity: .75; }
     #bob-pane.revoked h2::after { content: " — revoked"; color: #b03030; }
 
-    /* The storage dialog: chrome frame vs. sandboxed panel. The boundary
+    /* The storage dialog: visor frame vs. sandboxed panel. The boundary
        is deliberately VISIBLE — #22's position-based trust says the user
        must be able to see WHERE untrusted provider content lives. */
     #storage-dialog { border: 1px solid #2a2a44; border-radius: 4px; padding: 0;
                       background: #16213e; color: #ddd; min-width: 30em; }
     #storage-dialog::backdrop { background: rgba(10,10,20,.55); }
-    .chrome-head { display: flex; flex-direction: column; gap: .25em;
+    .visor-head { display: flex; flex-direction: column; gap: .25em;
                    padding: .7em .9em; border-bottom: 1px solid #2a2a44; }
-    .chrome-head strong { font-size: 14px; }
-    .chrome-note { font-size: 11px; color: #8b93b0; }
+    .visor-head strong { font-size: 14px; }
+    .visor-note { font-size: 11px; color: #8b93b0; }
     .provider-tabs { display: flex; gap: .4em; padding: .6em .9em 0; }
     .provider-tabs button { padding: .3em .8em; font-size: 12px; cursor: pointer;
                             background: #1a1a2e; color: #bbb;
@@ -389,7 +389,7 @@
     /* The granted subtree itself: inset, differently lit, and labelled. */
     /* The granted subtree. Its top border carries the COMPONENT's
        assigned colour (derived from the component's own bytes, so the
-       component cannot choose it); chrome's personal colour is never
+       component cannot choose it); the visor's personal colour is never
        used here, so a component can never sample or imitate it. */
     #panel-region { position: relative; margin: 0 .9em .3em;
                     min-height: 9em; padding: 1.5em .9em .9em;
@@ -406,10 +406,10 @@
     #panel-region input { background: #16213e; color: #eee;
                           border: 1px solid #2a2a44; padding: .25em; }
     #panel-region button { padding: .25em .7em; }
-    .chrome-actions { display: flex; align-items: center; gap: .8em;
+    .visor-actions { display: flex; align-items: center; gap: .8em;
                       padding: .6em .9em .8em; border-top: 1px solid #2a2a44; }
-    .chrome-actions .spacer { flex: 1 1 auto; }
-    .chrome-actions .chrome-note { max-width: 26em; line-height: 1.35; }
+    .visor-actions .spacer { flex: 1 1 auto; }
+    .visor-actions .visor-note { max-width: 26em; line-height: 1.35; }
     #storage-dialog form { display: flex; justify-content: flex-end;
                            padding: .3em .9em .8em; margin: 0; }
 
@@ -425,9 +425,9 @@
          identity words used to be display:none here — which quietly
          removed half of what makes the anchor unspoofable at exactly the
          width where the strip is most crowded. They stay visible now. */
-      #chrome-context q.foreign { max-width: 100%; }
-      #chrome-context .petname { max-width: 100%; flex: 0 1 auto; min-width: 0; }
-      #chrome-identity .who { max-width: 100%; }
+      #visor-context q.foreign { max-width: 100%; }
+      #visor-context .petname { max-width: 100%; flex: 0 1 auto; min-width: 0; }
+      #visor-identity .who { max-width: 100%; }
 
       #controls { padding: .5em 0; font-size: 12px; }
       #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
@@ -440,14 +440,14 @@
       #storage-dialog { min-width: min(30em, calc(100vw - 2em));
                          max-width: calc(100vw - 2em); }
       .provider-tabs { flex-wrap: wrap; }
-      .chrome-actions { flex-wrap: wrap; }
-      .chrome-actions .chrome-note { max-width: 100%; }
+      .visor-actions { flex-wrap: wrap; }
+      .visor-actions .visor-note { max-width: 100%; }
 
       /* The sheet is already full width; at phone width it just loses its
          side padding and the button row stops sharing a line badly.
          Fields are stacked and box-sized, so nothing overflows at 390px.
          The strip must never be pushed off-screen by a tall sheet, so the
-         measured budget (--chrome-sheet-max) matters most here — a phone
+         measured budget (--visor-sheet-max) matters most here — a phone
          viewport is short and the vocabulary fields are stacked. */
       .cred-sheet { padding: .7em .8em 1em; font-size: 13px; }
       .cred-sheet q.foreign { max-width: 100%; }
@@ -463,42 +463,42 @@
   </style>
 </head>
 <body>
-  <!-- The chrome assembly: one pinned box holding the credential sheet
+  <!-- The visor assembly: one pinned box holding the credential sheet
        ABOVE the strip. Trusted shell pixels, always present, never a
        mount point for any component (#22). Opening the sheet pushes the
        strip (and the page below it) down; the strip stays visible under
        the sheet the whole time, so the sheet is bracketed by the viewport
        edge above and the user's own coloured bar below — a position no
        app can reach and a motion no app can imitate. -->
-  <div id="chrome-zone">
-    <!-- Chrome's own pixels: the sheet unfolds above the strip, and no
+  <div id="visor-zone">
+    <!-- The visor's own pixels: the sheet unfolds above the strip, and no
          component surface is alive while it is open (the panel is torn
          down first). -->
-    <div id="chrome-drawer" hidden><div id="chrome-drawer-inner"></div></div>
-    <div id="chrome-strip">
+    <div id="visor-drawer" hidden><div id="visor-drawer-inner"></div></div>
+    <div id="visor-strip">
       <div class="bar-inner">
         <!-- LEFT CLUSTER, two lines, filled by host/demo.ts: the
              component's own identity above (its mark and what it calls
-             itself), chrome's and the user's words below (petname or the
+             itself), the visor's and the user's words below (petname or the
              offer to assign one, the first-sight marker, the open
              sheet's name, timed announcements). The whole cluster is one
-             tap target opening chrome's App settings sheet.
+             tap target opening the visor's App settings sheet.
              The centre of the bar is deliberately EMPTY — see the CSS
              note on the deleted standing-rule line. -->
-        <span id="chrome-context">
+        <span id="visor-context">
           <span class="ctx-top"></span>
           <span class="ctx-bottom"></span>
         </span>
         <!-- Filled by host/demo.ts from the identity record: the user's
              own name and device word on two lines (rendered only when
              set — an unset field is ABSENT, never a fabricated default),
-             then chrome's settings button wearing the glyph the user
+             then the visor's settings button wearing the glyph the user
              picked, squared across both lines. -->
-        <span id="chrome-identity"></span>
+        <span id="visor-identity"></span>
       </div>
     </div>
   </div>
-  <div id="chrome-dim" hidden></div>
+  <div id="visor-dim" hidden></div>
   <div id="banner"><div class="bar-inner">booting…</div></div>
   <div id="controls">
     <div class="bar-inner">
@@ -512,31 +512,31 @@
       </span>
     </div>
   </div>
-  <!-- Chrome owns this frame; the provider's panel is a component with
+  <!-- The visor owns this frame; the provider's panel is a component with
        its own grants, mounted into #panel-region (#22). -->
   <dialog id="storage-dialog">
-    <div class="chrome-head">
+    <div class="visor-head">
       <strong>Storage</strong>
-      <span class="chrome-note">chrome owns this frame; the provider's config panel below is a sandboxed component with its own grants</span>
+      <span class="visor-note">the visor owns this frame; the provider's config panel below is a sandboxed component with its own grants</span>
     </div>
     <div class="provider-tabs">
       <button id="prov-s3">S3-compatible</button>
       <button id="prov-dropbox">Dropbox</button>
     </div>
     <div id="panel-region"></div>
-    <!-- Chrome's own affordances: OUTSIDE the granted region, so committing
+    <!-- The visor's own affordances: OUTSIDE the granted region, so committing
          is an act of the shell rather than of the component (#22). -->
-    <div class="chrome-actions">
-      <span class="chrome-note">Sign-in opens a browser window showing the provider's address.
+    <div class="visor-actions">
+      <span class="visor-note">Sign-in opens a browser window showing the provider's address.
         Secrets are never typed in this dialog — Save &amp; connect makes the coloured
-        bar at the top of the page slide down and open chrome's own sheet above it.</span>
+        bar at the top of the page slide down and open the visor's own sheet above it.</span>
       <span class="spacer"></span>
       <button id="storage-save"><b>Save &amp; connect</b></button>
       <button id="storage-cancel">Cancel</button>
     </div>
-    <!-- Chrome's refusal line for the commit-time destination checks: they
+    <!-- The visor's refusal line for the commit-time destination checks: they
          fail while this dialog is still open, before any sheet exists. -->
-    <div id="storage-reason" class="chrome-note"
+    <div id="storage-reason" class="visor-note"
          style="color:#f5c16c; padding:0 .9em .7em; line-height:1.35"></div>
   </dialog>
   <div id="panes">

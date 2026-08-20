@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Source-level invariant checks for the demo chrome (#22 ruling table).
+# Source-level invariant checks for the demo visor (#22 ruling table).
 #
 # These are the invariants that are cheap to STATE and expensive to
 # notice the loss of: each one is a property of the source text, so a
@@ -21,12 +21,12 @@ bad() {
 }
 
 # --- (a) the petname never crosses the frame seam ---------------------------
-# The user's own word for a component is chrome-side state. A component
+# The user's own word for a component is visor-side state. A component
 # that could read it could impersonate the user's trust in itself; a
 # component that could influence it could put attacker-chosen words into
-# chrome's own voice. So it must not appear anywhere on the seam.
+# the visor's own voice. So it must not appear anywhere on the seam.
 echo "[1/6] petname never crosses the frame seam"
-echo "      (chrome's word for a component is never readable or influenceable by it)"
+echo "      (the visor's word for a component is never readable or influenceable by it)"
 hits=$(grep -n "petname" host/frame-backend.ts host/frame.ts web/frame.html 2>/dev/null)
 if [ -n "$hits" ]; then
   bad "petname appears on the frame seam:"
@@ -35,19 +35,19 @@ else
   ok "no petname reference in host/frame-backend.ts, host/frame.ts, web/frame.html"
 fi
 
-# --- (b) chrome never writes the word "password" ---------------------------
-# A panel may DECLARE a credential kind; chrome renders the field with
-# chrome's own words. "password" is never one of them: the moment chrome's
-# pixels ask for a password on a panel's behalf, the panel has borrowed
-# chrome's authority. The ONLY admissible occurrence is the bare token
-# "password" as an input-masking type — never inside a sentence.
+# --- (b) the visor never writes the word "password" ---------------------------
+# A panel may DECLARE a credential kind; the visor renders the field with
+# the visor's own words. "password" is never one of them: the moment the
+# visor's pixels ask for a password on a panel's behalf, the panel has
+# borrowed the visor's authority. The ONLY admissible occurrence is the
+# bare token "password" as an input-masking type — never inside a sentence.
 # Comments are exempt: they explain the rule rather than render it.
-echo "[2/6] chrome never renders the word \"password\""
-echo "      (chrome's labels are chrome's own; a panel must never borrow them)"
+echo "[2/6] the visor never renders the word \"password\""
+echo "      (the visor's labels are the visor's own; a panel must never borrow them)"
 prose=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' host/demo.ts |
   grep -oiE '"[^"]*password[^"]*"' | grep -vx '"password"')
 if [ -n "$prose" ]; then
-  bad "a chrome-rendered string literal contains \"password\":"
+  bad "a visor-rendered string literal contains \"password\":"
   printf '%s\n' "$prose" | sed 's/^/       /'
 else
   ok "no string literal in host/demo.ts spells password inside prose"
@@ -64,33 +64,33 @@ else
 fi
 
 # --- (c) the anchor colour is never ambient --------------------------------
-# --chrome-bg carries the user's personal, undisclosed anchor colour. Set
+# --visor-bg carries the user's personal, undisclosed anchor colour. Set
 # on the document root it INHERITS into every app region, so a component
 # that ever gained a style attribute (or a class resolving the variable)
-# could paint chrome's exact colour without reading it. Scope keeps the
+# could paint the visor's exact colour without reading it. Scope keeps the
 # secrecy structural instead of a property of the allowlist.
 echo "[3/6] the anchor colour is never made ambient"
-echo "      (--chrome-bg is scoped to chrome's own elements; inheriting it would disclose it)"
-ambient=$(grep -nE '(documentElement|:root)[^\n]*--chrome-bg' host/*.ts 2>/dev/null)
+echo "      (--visor-bg is scoped to the visor's own elements; inheriting it would disclose it)"
+ambient=$(grep -nE '(documentElement|:root)[^\n]*--visor-bg' host/*.ts 2>/dev/null)
 if [ -n "$ambient" ]; then
-  bad "--chrome-bg applied to the document root in host/*.ts:"
+  bad "--visor-bg applied to the document root in host/*.ts:"
   printf '%s\n' "$ambient" | sed 's/^/       /'
 else
-  ok "no host/*.ts line sets --chrome-bg on documentElement/:root"
+  ok "no host/*.ts line sets --visor-bg on documentElement/:root"
 fi
 rootdecl=$(awk '
   /:root/ { inroot = 1 }
-  inroot && /--chrome-bg[[:space:]]*:/ { printf "%d: %s\n", NR, $0 }
+  inroot && /--visor-bg[[:space:]]*:/ { printf "%d: %s\n", NR, $0 }
   /}/ { inroot = 0 }
 ' web/index.html)
 if [ -n "$rootdecl" ]; then
-  bad "--chrome-bg declared inside a :root block in web/index.html:"
+  bad "--visor-bg declared inside a :root block in web/index.html:"
   printf '%s\n' "$rootdecl" | sed 's/^/       /'
 else
-  ok "web/index.html declares --chrome-bg in no :root block"
+  ok "web/index.html declares --visor-bg in no :root block"
 fi
 
-# --- (d) no key is ever exported from chrome ------------------------------
+# --- (d) no key is ever exported from the visor ------------------------------
 # An escrowed signing credential is stored as a NON-EXTRACTABLE WebCrypto
 # handle (host/keystore.ts): `crypto.subtle.exportKey` on it throws by
 # construction, so the guarantee is the platform's rather than ours. What
@@ -100,7 +100,7 @@ fi
 # Banning the verb outright from host code keeps the property one grep
 # wide instead of a review argument. Comments are exempt: they explain
 # the rule rather than perform it.
-echo "[4/6] chrome never exports a key"
+echo "[4/6] the visor never exports a key"
 echo "      (escrowed signing keys are non-extractable; nothing reads them back)"
 exported=$(grep -n "exportKey" host/*.ts 2>/dev/null |
   grep -vE "^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)")
@@ -113,55 +113,55 @@ fi
 
 # --- (e) the user's identity never crosses the frame seam -------------------
 # The user's own name, their word for this device and the glyph on
-# chrome's button are rendered ONLY in chrome pixels. They are a second
+# the visor's button are rendered ONLY in visor pixels. They are a second
 # thing an impersonating rectangle cannot reproduce — but only for as
 # long as a component cannot read them. A component that could would be
 # able to greet the user by name from inside its own rectangle, which is
 # precisely the impersonation the strip exists to make impossible; one
 # that could INFLUENCE them would be putting attacker-chosen words into
-# chrome's own voice on the anchor. So neither the storage key nor the
+# the visor's own voice on the anchor. So neither the storage key nor the
 # cluster's id may appear anywhere on the seam.
 echo "[5/6] the user's identity never crosses the frame seam"
-echo "      (name, device and icon are chrome pixels; no component may read or steer them)"
-idhits=$(grep -n "pm-demo-identity\|chrome-identity" \
+echo "      (name, device and icon are visor pixels; no component may read or steer them)"
+idhits=$(grep -n "pm-demo-identity\|visor-identity" \
   host/frame.ts host/frame-backend.ts web/frame.html 2>/dev/null)
 if [ -n "$idhits" ]; then
-  bad "the chrome identity record appears on the frame seam:"
+  bad "the visor identity record appears on the frame seam:"
   printf '%s\n' "$idhits" | sed 's/^/       /'
 else
   ok "no identity reference in host/frame.ts, host/frame-backend.ts, web/frame.html"
 fi
 
-# --- (f) pairing code and SAS render only in chrome-owned surfaces --------
+# --- (f) pairing code and SAS render only in visor-owned surfaces --------
 # PAIRING.md §5's new CI invariant: "the pairing code and SAS render
-# only in chrome-owned surfaces, never inside a component frame". The
+# only in visor-owned surfaces, never inside a component frame". The
 # grep-enforceable marker (chosen by Track B, per that section): both
 # are rendered EXCLUSIVELY through two named functions,
 # `renderPairingCode(` and `renderSas(`, defined once in
-# host/pairing-chrome.ts (see that file's own comment at the
+# host/pairing-visor.ts (see that file's own comment at the
 # definitions for the reasoning — pinning the RENDERING CALL SITE is a
 # stronger property than grepping the word "SAS", which would also fire
 # on comments). A component frame has no path to a host-side function
-# call at all, so if either name ever appeared outside pairing-chrome.ts
+# call at all, so if either name ever appeared outside pairing-visor.ts
 # the architecture itself would have grown a new seam-crossing path.
-echo "[6/6] pairing code and SAS render only in chrome-owned surfaces"
-echo "      (renderPairingCode()/renderSas() are defined and called only in host/pairing-chrome.ts)"
+echo "[6/6] pairing code and SAS render only in visor-owned surfaces"
+echo "      (renderPairingCode()/renderSas() are defined and called only in host/pairing-visor.ts)"
 outside=$(grep -rln "renderPairingCode(\|renderSas(" \
   host/frame.ts host/frame-backend.ts web/frame.html web/frame.js \
   guest-app guest-panel-s3 guest-panel-dropbox \
   2>/dev/null)
 if [ -n "$outside" ]; then
-  bad "renderPairingCode()/renderSas() referenced outside host/pairing-chrome.ts:"
+  bad "renderPairingCode()/renderSas() referenced outside host/pairing-visor.ts:"
   printf '%s\n' "$outside" | sed 's/^/       /'
 else
-  ok "no reference to renderPairingCode()/renderSas() outside host/pairing-chrome.ts"
+  ok "no reference to renderPairingCode()/renderSas() outside host/pairing-visor.ts"
 fi
-definers=$(grep -rl "^function renderPairingCode(\|^function renderSas(" host/*.ts 2>/dev/null | grep -v 'host/pairing-chrome.ts$')
+definers=$(grep -rl "^function renderPairingCode(\|^function renderSas(" host/*.ts 2>/dev/null | grep -v 'host/pairing-visor.ts$')
 if [ -n "$definers" ]; then
-  bad "renderPairingCode()/renderSas() defined somewhere other than host/pairing-chrome.ts:"
+  bad "renderPairingCode()/renderSas() defined somewhere other than host/pairing-visor.ts:"
   printf '%s\n' "$definers" | sed 's/^/       /'
 else
-  ok "renderPairingCode()/renderSas() are defined only in host/pairing-chrome.ts"
+  ok "renderPairingCode()/renderSas() are defined only in host/pairing-visor.ts"
 fi
 
 echo

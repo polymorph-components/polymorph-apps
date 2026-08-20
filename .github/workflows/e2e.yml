@@ -1,4 +1,4 @@
-# End-to-end scenarios for the demo chrome, in a real Chromium.
+# End-to-end scenarios for the demo visor, in a real Chromium.
 #
 # The companion to pages.yml: that workflow proves the demo still BUILDS,
 # this one proves it still BEHAVES. Every scenario here was previously a
