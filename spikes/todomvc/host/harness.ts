@@ -4,10 +4,17 @@
 // "semantically equivalent fast path" a checked property instead of a
 // slogan (#15 fast-path plan).
 
-import type { BackendKind } from "./backend.ts";
+import type { BackendKind } from "../../../visor/surface/backend.ts";
 import { startLab, startTodoApp, type TodoApp } from "./app.ts";
-import type { UiEvent } from "./events.ts";
+import type { UiEvent } from "../../../visor/surface/events.ts";
 
+// "frame" is deliberately excluded here even though BackendKind now
+// includes it: the harness reads the DOM DIRECTLY (serializeEl below) to
+// compare backends, and a sandboxed frame's document is on an OPAQUE
+// ORIGIN — unreachable from this realm by construction (visor/frame's
+// whole point). The frame path is covered instead by the demo spike's
+// e2e frameProbe, which only needs to confirm unreachability, not
+// compare DOM shape against the other three.
 const BACKENDS: BackendKind[] = ["queued", "direct", "channel"];
 
 // --- the behavior script -------------------------------------------------------

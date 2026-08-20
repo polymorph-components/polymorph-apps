@@ -2,9 +2,13 @@
 // workload (row create / sparse update / clear), one flush batch per
 // invocation. ?n= sets the row count (default 1000).
 
-import type { BackendKind } from "./backend.ts";
+import type { BackendKind } from "../../../visor/surface/backend.ts";
 import { startLab } from "./app.ts";
 
+// "frame" is excluded from the bench sweep for the same reason it is
+// excluded from the harness (host/harness.ts): a sandboxed frame's
+// document is opaque-origin and this file measures via same-realm
+// `startLab`/DOM timing, not a channel this bench cares to add.
 const BACKENDS: BackendKind[] = ["queued", "direct", "channel"];
 
 interface Sample {

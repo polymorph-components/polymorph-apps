@@ -52,7 +52,7 @@ guest (Rust → wasm component)            trusted host (JS)
 - **Batching**: one op batch per guest invocation (event in → ops out) —
   the "chunky protocol" posture from #15/#16.
 - **Validation twice**: both halves import the same tables
-  (`host/validate.ts`) and enforce independently — tag allowlist,
+  (`visor/surface/validate.ts`) and enforce independently — tag allowlist,
   per-(tag, attribute) checks, event-kind allowlist, and the one URL-typed
   attribute (`a[href]`) admitting fragment routes only. String HTML never
   crosses the boundary anywhere.
@@ -60,7 +60,7 @@ guest (Rust → wasm component)            trusted host (JS)
 ## Backends: the semantically-equivalent fast paths
 
 Per the fast-path plan recorded on [#15], the surface front-end owns all
-guest-facing validation and drives one of three **backends** implementing
+guest-facing validation and drives one of four **backends** implementing
 the same ordering spec (written in `wit/todomvc.wit` on the `lab` world):
 ops apply in call order; a flush boundary falls at the end of each export
 invocation and at each guest suspension point; ops emitted before a trap
@@ -68,11 +68,13 @@ are applied; within a boundary, application is atomic w.r.t. paint.
 
 | backend | what | role |
 |---|---|---|
+| `frame` | the queued protocol carried to a REAL sandboxed iframe on an opaque origin (`visor/frame/`) | **default** — the real worker/frame split (#16), no longer a placeholder |
 | `direct` | validate → mutate the Node held as the resource rep; no ops, no clone, no id map | same-realm production path — the shape of a future native WebIDL binding |
 | `queued` | serializable op batches + `structuredClone` + re-validating applier | debug/canary configuration; proves the seam every batch |
-| `channel` | the queued protocol over a real `MessageChannel` (postMessage clones; events round-trip) | faithful stand-in for the worker/frame split |
+| `channel` | the queued protocol over a real `MessageChannel` (postMessage clones; events round-trip) | faithful stand-in for the worker/frame split, one realm |
 
-The demo takes `?backend=` (default `direct`).
+The demo takes `?backend=` (default `frame`, as of the visor extraction's
+Phase C).
 
 **The equivalence harness** ([harness.html](https://polymorph-components.github.io/polymorph-apps/spike-todomvc/harness.html))
 makes "semantically equivalent" a checked property: the same guests run the
@@ -82,6 +84,15 @@ plus real DOM clicks) with full-DOM serialization compared stepwise
 from a violation guest (`lab/`) compared as trap vectors, including the
 flush-on-trap rule (a visible legal mutation before the violating call must
 land on every backend). Status: **PASS**, 3 backends.
+
+`frame` is deliberately EXCLUDED from the harness (and from `bench.ts`'s
+churn sweep): both compare backends by reading the DOM directly, and a
+sandboxed frame's document is on an opaque origin — unreachable from this
+realm by construction (the whole point of `visor/frame/`). The frame
+path's own correctness — that it really is unreachable, and that it
+renders the same app — is covered by the demo spike's e2e suite
+(`spikes/demo/e2e`'s `frameProbe` and boot scenarios), not by this
+same-realm harness.
 
 **The churn bench** ([bench.html](https://polymorph-components.github.io/polymorph-apps/spike-todomvc/bench.html),
 `?n=` rows; li+span per row ≈ 6 surface calls) — Chromium, aarch64 linux,
@@ -194,28 +205,44 @@ reads. Findings:
   seam.
 
 
-## Framework-visor prototype (#22, provisional until user-tested)
+## Framework visor: a consumer of the shared system-UI core (#22)
 
-The demo page carries a prototype of the shell's own UI, rendered strictly
-outside the app rectangle (`host/visor.ts`): a persistent strip (petname,
-guest/backend indicators, kill), and a simulated consent sheet that
-**pauses the app's event queue** while open — events fired at the app
-during a prompt are queued, not delivered, and land only after dismissal.
-Kill (behind its own confirm) stops delivery permanently and removes the
-app's DOM. Style is deliberately shared-looking: position and absolute
-interaction rules are the trust anchors, never CSS. Secret entry is out of
-scope for drawers by rule (the visor never asks for typed secrets here; that
+The visor's own UI — the strip, the identity cluster, the context
+cluster, and the drawer host with its tenancy, arming delay and height
+budget — is no longer reimplemented here: `host/visor.ts` is a
+from-scratch CONSUMER of `visor/ui/visor.ts`, the same shared core the
+`spikes/demo` spike uses (visor extraction Phase C). What stays in this
+spike's own `host/visor.ts` is this page's OWN storage keys
+(`pm-todomvc-visor-hue`, `pm-todomvc-identity` — no legacy migration key,
+unlike the demo's #22 rename), its one static app-surface record (one
+artifact, one row in the trust table, petname fixed to `"TodoMVC"`, hue
+derived deterministically from the artifact name), and two drawer
+tenants carried over verbatim from the pre-C3 spike: a simulated consent
+sheet ("Simulated consent prompt", foreign-quoted app name, armed
+Allow/Deny) that **pauses the app's event queue** while open, and "kill"
+("Suspend this app?", behind its own confirm) that stops delivery
+permanently, tears down the frame surface when there is one (awaiting
+its completion — see `app.ts`'s `TodoApp.teardown`), and replaces the
+app's DOM with a suspended note. The two strip buttons ("consent demo",
+"kill") mount into the shared core's optional `#visor-actions` slot
+(`Visor.actions`), which is absent — and therefore inert — for the demo
+spike's own markup.
+
+Style is deliberately shared-looking: position and absolute interaction
+rules are the trust anchors, never CSS. Secret entry is out of scope for
+drawers by rule (the visor never asks for typed secrets here; that
 belongs to a dedicated identity surface — see #22, which also records
 dropping the earlier personalization-secret experiment).
 
 **Interaction-emergence experiment**: visor interactions are revealed by
 the strip sliding down, exposing the interaction surface *above* it — the
 prompt visibly grows out of the trusted pixel region (provenance), and the
-slide doubles as an enforced **arming delay** (700 ms): controls stay
-disabled until it elapses, defeating baited mis-taps (an app training
-rapid taps where a visor control is about to appear). The timer is the
-enforcement; the animation is its visible form — `prefers-reduced-motion`
-removes the motion, never the delay.
+slide doubles as an enforced **arming delay** (700 ms, `visor/ui/
+visor.ts`'s `ARM_MS`): controls stay disabled until it elapses, defeating
+baited mis-taps (an app training rapid taps where a visor control is
+about to appear). The timer is the enforcement; the animation is its
+visible form — `prefers-reduced-motion` removes the motion, never the
+delay.
 
 ## What the artifact itself shows
 

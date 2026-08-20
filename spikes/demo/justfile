@@ -87,13 +87,13 @@ check:
 # Assemble the servable demo directory.
 site: translate app panels check
     mkdir -p serve
-    deno check host/demo.ts host/frame.ts host/frame-backend.ts
+    deno check host/demo.ts ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/demo.js host/demo.ts
     # The sandboxed surface frame (#16): its own entry, its own document.
     # No --external flags needed — the frame imports only the applier and
     # never touches a node backend.
-    deno bundle --platform browser --minify -o serve/frame.js host/frame.ts
-    cp web/frame.html serve/
+    deno bundle --platform browser --minify -o serve/frame.js ../../visor/frame/frame.ts
+    cp ../../visor/frame/frame.html serve/
     cp build/app.component.wasm build/app.plan.json serve/
     cp build/panel-s3.component.wasm build/panel-s3.plan.json serve/
     cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json serve/
@@ -101,6 +101,7 @@ site: translate app panels check
     cp build/engine.plan.json serve/engine.plan.json
     sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > serve/index.html
     cp ../todomvc/web/todomvc-app.css serve/
+    cp ../../visor/ui/visor.css serve/
 
 # Serve the demo (needs `just infra` in another terminal).
 serve: site
@@ -112,10 +113,10 @@ serve: site
 # ?relay=&s3= overrides — Pages hosts the artifact, not the network.
 pages: translate app panels check
     mkdir -p ../../docs/spike-demo
-    deno check host/demo.ts host/frame.ts host/frame-backend.ts
+    deno check host/demo.ts ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o ../../docs/spike-demo/demo.js host/demo.ts
-    deno bundle --platform browser --minify -o ../../docs/spike-demo/frame.js host/frame.ts
-    cp web/frame.html ../../docs/spike-demo/
+    deno bundle --platform browser --minify -o ../../docs/spike-demo/frame.js ../../visor/frame/frame.ts
+    cp ../../visor/frame/frame.html ../../docs/spike-demo/
     cp build/app.component.wasm build/app.plan.json ../../docs/spike-demo/
     cp build/panel-s3.component.wasm build/panel-s3.plan.json ../../docs/spike-demo/
     cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json ../../docs/spike-demo/
@@ -123,6 +124,7 @@ pages: translate app panels check
     cp build/engine.plan.json ../../docs/spike-demo/
     sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > ../../docs/spike-demo/index.html
     cp ../todomvc/web/todomvc-app.css ../../docs/spike-demo/
+    cp ../../visor/ui/visor.css ../../docs/spike-demo/
 
 # --- end-to-end scenarios in a real Chromium (spikes/demo/e2e) -------------
 #

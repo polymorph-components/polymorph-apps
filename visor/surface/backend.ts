@@ -33,8 +33,14 @@ export interface Backend {
   drain(): Promise<void>;
 }
 
-export type BackendKind = "queued" | "direct" | "channel";
+// "frame": the queued protocol carried to a real sandboxed iframe on an
+// opaque origin (visor/frame/frame-backend.ts) rather than constructed
+// in-realm by `createBackend` below — its construction is async (a
+// handshake with the frame's own document) where the other three are
+// synchronous, so it is a distinct code path in every consumer, not a
+// fourth case in the same switch.
+export type BackendKind = "queued" | "direct" | "channel" | "frame";
 
 export function isBackendKind(s: string | null): s is BackendKind {
-  return s === "queued" || s === "direct" || s === "channel";
+  return s === "queued" || s === "direct" || s === "channel" || s === "frame";
 }

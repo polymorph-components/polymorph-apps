@@ -1289,6 +1289,32 @@ realize the powerbox — the picking is the granting — with the
 sensitive authority narrowed to the vocabulary the service already
 owns.
 
+**The visor graduates out of the spikes** (2026-08-20, [visor/](visor/README.md)):
+the framework layer NOTES has been calling "the part that does not
+exist yet" now has a directory. The DOM-op seam (backends, applier +
+independent validation, guest surface, the serialized runner whose
+pause/resume is input suspension), the frame isolation trio
+(sandbox="allow-scripts", opaque origin, MessagePort op protocol), and
+the system-UI core (strip, announcements, anchor colour, identity,
+drawer tenancy with arming) moved to top-level `visor/{surface,frame,ui}`,
+extracted from where they grew inside `spikes/todomvc` and
+`spikes/demo`. Both spikes consume it: the demo keeps its flows
+(petnames, credentials, pairing) as drawer tenants and sheet content
+on the shared machinery, and the todomvc spike — previously
+same-document rendering with a toy strip — now runs the SAME visor and
+defaults to the **frame backend**, so the equivalence harness's app
+renders into an opaque-origin iframe like the demo's panes (the
+harness itself keeps the three same-realm backends: a differential
+that needs to read the DOM cannot reach into the frame, which is the
+point of the frame). "Kill" became real teardown: suspending the app
+destroys its frame rather than blanking a div. Storage keys are
+per-consumer config (`pm-demo-*` untouched, migration intact);
+element ids stay fixed because position is a trust anchor; the
+check-invariants greps follow the moved code (and were
+canary-tested against it), and the demo e2e suite passed unchanged
+throughout — no scenario edits, which was the extraction's definition
+of "identical".
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic

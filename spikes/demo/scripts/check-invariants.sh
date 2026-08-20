@@ -27,12 +27,12 @@ bad() {
 # the visor's own voice. So it must not appear anywhere on the seam.
 echo "[1/6] petname never crosses the frame seam"
 echo "      (the visor's word for a component is never readable or influenceable by it)"
-hits=$(grep -n "petname" host/frame-backend.ts host/frame.ts web/frame.html 2>/dev/null)
+hits=$(grep -n "petname" ../../visor/frame/frame-backend.ts ../../visor/frame/frame.ts ../../visor/frame/frame.html 2>/dev/null)
 if [ -n "$hits" ]; then
   bad "petname appears on the frame seam:"
   printf '%s\n' "$hits" | sed 's/^/       /'
 else
-  ok "no petname reference in host/frame-backend.ts, host/frame.ts, web/frame.html"
+  ok "no petname reference in ../../visor/frame/frame-backend.ts, ../../visor/frame/frame.ts, ../../visor/frame/frame.html"
 fi
 
 # --- (b) the visor never writes the word "password" ---------------------------
@@ -44,17 +44,22 @@ fi
 # Comments are exempt: they explain the rule rather than render it.
 echo "[2/6] the visor never renders the word \"password\""
 echo "      (the visor's labels are the visor's own; a panel must never borrow them)"
-prose=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' host/demo.ts |
+# BOTH halves of the visor render strings now: the system-UI core
+# (visor/ui/visor.ts — strip, sheets, drawer host) and the demo's own
+# sheet content (host/demo.ts). The scan covers all of it, or the
+# property would follow whichever half the next refactor moves.
+VISOR_RENDERERS="host/demo.ts ../../visor/ui/visor.ts"
+prose=$(cat $VISOR_RENDERERS | sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' |
   grep -oiE '"[^"]*password[^"]*"' | grep -vx '"password"')
 if [ -n "$prose" ]; then
   bad "a visor-rendered string literal contains \"password\":"
   printf '%s\n' "$prose" | sed 's/^/       /'
 else
-  ok "no string literal in host/demo.ts spells password inside prose"
+  ok "no string literal in $VISOR_RENDERERS spells password inside prose"
 fi
 # And the bare token is only ever the masking type, never a label.
-misuse=$(grep -n '"password"' host/demo.ts |
-  grep -vE '^[[:space:]]*[0-9]+:[[:space:]]*(//|\*)' |
+misuse=$(grep -n '"password"' $VISOR_RENDERERS |
+  grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' |
   grep -vE 'type: "password"|"text" \| "password"')
 if [ -n "$misuse" ]; then
   bad "\"password\" used somewhere other than the input-masking type:"
@@ -71,24 +76,31 @@ fi
 # secrecy structural instead of a property of the allowlist.
 echo "[3/6] the anchor colour is never made ambient"
 echo "      (--visor-bg is scoped to the visor's own elements; inheriting it would disclose it)"
-ambient=$(grep -nE '(documentElement|:root)[^\n]*--visor-bg' host/*.ts 2>/dev/null)
+# `applyVisorHue` lives in the framework core now, so the scan follows
+# it there; host/*.ts stays in the list because a consumer painting the
+# anchor colour itself would be exactly the regression this catches.
+HUE_PAINTERS="host/*.ts ../../visor/ui/*.ts"
+# shellcheck disable=SC2086
+ambient=$(grep -nE '(documentElement|:root)[^\n]*--visor-bg' $HUE_PAINTERS 2>/dev/null)
 if [ -n "$ambient" ]; then
-  bad "--visor-bg applied to the document root in host/*.ts:"
+  bad "--visor-bg applied to the document root in $HUE_PAINTERS:"
   printf '%s\n' "$ambient" | sed 's/^/       /'
 else
-  ok "no host/*.ts line sets --visor-bg on documentElement/:root"
+  ok "no line in $HUE_PAINTERS sets --visor-bg on documentElement/:root"
 fi
-rootdecl=$(awk '
-  /:root/ { inroot = 1 }
-  inroot && /--visor-bg[[:space:]]*:/ { printf "%d: %s\n", NR, $0 }
-  /}/ { inroot = 0 }
-' web/index.html)
-if [ -n "$rootdecl" ]; then
-  bad "--visor-bg declared inside a :root block in web/index.html:"
-  printf '%s\n' "$rootdecl" | sed 's/^/       /'
-else
-  ok "web/index.html declares --visor-bg in no :root block"
-fi
+for css in web/index.html ../../visor/ui/visor.css; do
+  rootdecl=$(awk '
+    /:root/ { inroot = 1 }
+    inroot && /--visor-bg[[:space:]]*:/ { printf "%d: %s\n", NR, $0 }
+    /}/ { inroot = 0 }
+  ' "$css")
+  if [ -n "$rootdecl" ]; then
+    bad "--visor-bg declared inside a :root block in $css:"
+    printf '%s\n' "$rootdecl" | sed 's/^/       /'
+  else
+    ok "$css declares --visor-bg in no :root block"
+  fi
+done
 
 # --- (d) no key is ever exported from the visor ------------------------------
 # An escrowed signing credential is stored as a NON-EXTRACTABLE WebCrypto
@@ -124,12 +136,12 @@ fi
 echo "[5/6] the user's identity never crosses the frame seam"
 echo "      (name, device and icon are visor pixels; no component may read or steer them)"
 idhits=$(grep -n "pm-demo-identity\|visor-identity" \
-  host/frame.ts host/frame-backend.ts web/frame.html 2>/dev/null)
+  ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts ../../visor/frame/frame.html 2>/dev/null)
 if [ -n "$idhits" ]; then
   bad "the visor identity record appears on the frame seam:"
   printf '%s\n' "$idhits" | sed 's/^/       /'
 else
-  ok "no identity reference in host/frame.ts, host/frame-backend.ts, web/frame.html"
+  ok "no identity reference in ../../visor/frame/frame.ts, ../../visor/frame/frame-backend.ts, ../../visor/frame/frame.html"
 fi
 
 # --- (f) pairing code and SAS render only in visor-owned surfaces --------
@@ -147,7 +159,7 @@ fi
 echo "[6/6] pairing code and SAS render only in visor-owned surfaces"
 echo "      (renderPairingCode()/renderSas() are defined and called only in host/pairing-visor.ts)"
 outside=$(grep -rln "renderPairingCode(\|renderSas(" \
-  host/frame.ts host/frame-backend.ts web/frame.html web/frame.js \
+  ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts ../../visor/frame/frame.html web/frame.js \
   guest-app guest-panel-s3 guest-panel-dropbox \
   2>/dev/null)
 if [ -n "$outside" ]; then
