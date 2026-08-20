@@ -147,6 +147,60 @@ region and call the panel's `commit()`, which returns a config or
 refuses with its own reason. A panel owning its own Save button owns the
 user's sense of what saving means.
 
+## Device pairing + user-system partition (#10, #36)
+
+`host/pairing-mock.ts` implements the async surface pinned in
+`spikes/tasks-engine/PAIRING.md` §3 (`pair-*`/`us-*`/`user-create`) as
+an in-page mock: two mock "devices" share one `MockPairingNetwork`, so a
+code offered on one pane is claimable on the other and both compute the
+same SAS from the same transcript — real UI development without the
+real engine composite. `host/pairing-chrome.ts` is the chrome-owned
+rendering of both ceremonies (it is also the ONLY module allowed to
+render a pairing code or a SAS — `scripts/check-invariants.sh`'s new
+check [6/6] holds that line):
+
+- **Join** (new device): "join existing account" → QR (a vendored,
+  self-contained encoder, `host/vendor/qrcodegen.ts`) + the 79-char code
+  in groups of 4 → SAS screen → **light** confirm ("I initiated this" +
+  SAS match — nothing secret is typed, no arming delay) → the adoption
+  announcement ("this device now follows your profile: ‹name›, your
+  colour"), with the pane's hue visibly repainted to the synced value.
+- **Add** (trusted device): "add a device" → paste/type the code → SAS
+  screen → **heavy** ceremony: a statement of consequence ("full access
+  to everything in your account"), the #22 arming delay (ported
+  verbatim, same 700ms constant as the credential drawer), and a
+  device-name field that is never prefilled from anything the joiner
+  sent — chrome's own words are the user's own words. Completion adds
+  the new device to a devices list.
+- **State migration**: chrome hue, display name and the petname/marks
+  table move to `us-*` driver calls; `localStorage` demotes to a **boot
+  cache** (`host/pairing-chrome.ts`'s `loadBootCache`/
+  `reconcileFromDriver`) — render from cache, reconcile after driver
+  init, announce any diff (never silent). The keystore (device-local
+  signing key handles) is untouched by this.
+- **Announcements** drain `us-events` into a status surface with the
+  same priority-over-ambient-telemetry pattern as the three-pane demo's
+  beat statuses (sticky for 12s once a consequential message writes it):
+  `profile-changed`, `mark-conflict-repaired` (renders as
+  NEW-with-explanation for a `needs-reconfirm` mark), `device-added`,
+  `device-revoked`.
+
+Try it: `just pairing-site && just pairing-serve`, then open
+`http://127.0.0.1:8601/pairing-demo.html` — two panes, one page, no
+engine/wasm/relay/bucket dependency (that is the point: this gate is
+independent of Track A's engine work landing). Playwright gate (real
+headless Chromium): `spikes/demo/tests/pairing.spec.mjs` (see that
+file's header for the exact run recipe) asserts SAS equality across
+panes, that the arming delay actually gates the add-side confirm, that
+announcements render, and that the join pane's hue visibly adopts the
+synced value.
+
+Swapping the mock for the real composite (after Track A lands) touches
+only the driver construction in `host/pairing-demo.ts` (or wherever the
+three-pane demo wires it in next) — `host/pairing-chrome.ts` is written
+against the `PairingDriver` interface alone and does not know the
+difference.
+
 ## Deployment
 
 The hosted build is **continuously deployed**: `.github/workflows/pages.yml`

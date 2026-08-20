@@ -64,6 +64,19 @@ panels:
     deno run --allow-read --allow-write tools/translate.ts \
         build/panel-dropbox.component.wasm build/panel-dropbox.plan.json
 
+# Build + serve the device-pairing chrome demo (Track B, PAIRING.md):
+# join+add flows against the mock driver, NO engine/wasm/relay/bucket
+# dependency — this is the fast, independent gate for the chrome side
+# while the real engine composite (Track A) lands separately.
+pairing-site:
+    mkdir -p serve
+    deno check host/pairing-demo.ts host/pairing-chrome.ts host/pairing-mock.ts
+    deno bundle --platform browser --minify -o serve/pairing-demo.js host/pairing-demo.ts
+    cp web/pairing-demo.html serve/
+
+pairing-serve: pairing-site
+    deno run --allow-net --allow-read jsr:@std/http/file-server serve --port 8601
+
 # Source-level invariant checks (#22 ruling table): the petname never
 # crosses the frame seam, chrome never renders the word "password", and
 # the anchor colour is never made ambient. Cheap tripwires on properties
