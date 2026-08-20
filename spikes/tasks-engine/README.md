@@ -428,6 +428,54 @@ just run    # build guest+fetcher, compose, run vs local relay + MinIO
 just check  # clippy, all three crates
 ```
 
+## JSR pins (jsr-pins branch)
+
+The `IROH_CHECKOUT` sibling-checkout convention above is being replaced
+by two independently-versioned, recorded artifacts (justfile header
+block is the source of truth; this is the narrative account):
+
+- **Endpoint wasm** from `jsr:@polymorph/iroh@0.1.0` — published from
+  `polymorph-iroh @ f3d8990`. `just fetch-endpoint-wasm` extracts the
+  component bytes the package embeds (`tools/fetch-endpoint-wasm.ts`
+  calls the package's own `loadArtifacts()`, which is also how the
+  package's browser consumers reach the wasm — no ad-hoc parsing of
+  `endpoint_component.ts`'s base64). Integrity rides `tools/deno.lock`
+  (`--frozen`); JSR's own content-addressing is the checksum.
+- **iroh-relay** pinned at `1.0.3` via
+  `cargo install --locked iroh-relay@1.0.3` into `.deps/relay/` (`just
+  relay-bin`) — the version vendored at `.deps/iroh` inside that same
+  `f3d8990` publish tree (upstream `n0-computer/iroh` tag `v1.0.3`, rev
+  `f2eb930dda`), so endpoint and relay are known to speak the same wire
+  version.
+
+**Recon finding worth flagging**: the local dev checkout
+(`/home/lmartin/p/polymorph/polymorph-iroh` at `1808ccc`, PR #41) is
+NOT ahead of the publish commit — `git merge-base f3d8990 HEAD` on that
+checkout returns `1808ccc` itself, i.e. `1808ccc` is an *ancestor* of
+`f3d8990`. The publish commit is 63 commits further along (u62-faithful
+close codes, per-path datagram ceiling, event-driven wakeups, JSR-deltic
+convergence for the ports, …). So JSR 0.1.0 is authoritative/newer, not
+a snapshot behind this spike.
+
+**Blocker**: those 63 commits include a `polymorph:iroh/types` WIT
+change this spike hasn't followed — `variant error` grew from 5 cases
+(this spike's vendored `guest/wit/deps/polymorph-iroh/iroh.wit`) to 8
+(`closed, reset(u64), connect-failed, timed-out, not-supported, in-use,
+invalid-argument, other`), plus a new `close-info` record for
+QUIC-application-close codes/reasons. `wac plug` refuses the composed
+type mismatch outright. `compose`/`run`/`pair`/`check` therefore still
+default to `IROH_CHECKOUT` unchanged; `compose-jsr` and
+`fetch-endpoint-wasm` are available, verified (wasm is
+`wasm-tools validate --features cm-async`-clean, sha256
+`4baea7dfb79c895d0a860c940349b42dddb1883d4ede358934d56b29470c4b2f`,
+2045830 bytes), but are not wired into any default target pending a
+guest-WIT rebase onto the published shape (a real code change, not a
+pin bump — out of this track's scope).
+
+`relay-bin`'s pin is independent of that blocker (the relay binary
+doesn't touch the endpoint's WIT) and IS safe to use as the default
+today; see the justfile.
+
 Pins: keyhive `efe6ccf3`, subduction `2401102`, automerge 0.11.0,
 wasmtime 47, wit-bindgen 0.59 (`async`, `async-spawn`,
 `inter-task-wakeup`), polymorph-webcrypto `b13d2523`. The workspace

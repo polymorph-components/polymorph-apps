@@ -1,10 +1,71 @@
 # Engine spike: automerge-DAG tasks engine over keyhive + subduction +
 # component-iroh (realtime) and an S3-compatible bucket (non-realtime).
 #
-# Needs a polymorph-iroh checkout (endpoint component + relay built);
 # MinIO is fetched once into .deps/ and run as a user process.
+#
+# ---------------------------------------------------------------------------
+# PINS (jsr-pins branch: replaces the IROH_CHECKOUT sibling-checkout
+# convention with two independently-versioned, recorded artifacts).
+#
+#   JSR endpoint package : jsr:@polymorph/iroh@0.1.0
+#     (published from polymorph-iroh @ f3d8990, "jsr: publish
+#     @polymorph/iroh"; endpoint component ships base64-embedded in the
+#     package and is extracted verbatim by `just fetch-endpoint-wasm` —
+#     see tools/fetch-endpoint-wasm.ts for the extraction path and
+#     integrity story.)
+#   iroh-relay binary    : 1.0.3
+#     (`cargo install --locked iroh-relay@1.0.3`; matches the .deps/iroh
+#     vendor checkout inside the SAME f3d8990 publish tree, upstream
+#     n0-computer/iroh @ f2eb930dda / tag v1.0.3 — the endpoint and the
+#     relay speak the same wire version by construction of that publish.)
+#
+# These two are recorded as a PAIR: bump one, re-derive the other from
+# whatever polymorph-iroh commit is published next, never drift them
+# independently.
+#
+# STATUS (recorded 2026-08-19, see README.md "JSR pins" section for the
+# full account): the JSR-extracted endpoint wasm is byte-valid
+# (wasm-tools validate --features cm-async) but its `polymorph:iroh/types`
+# WIT has moved out from under this spike's vendored copy
+# (guest/wit/deps/polymorph-iroh/iroh.wit) — `error` grew from 5 variants
+# to 8 (u64-faithful reset codes, close-info, timed-out/not-supported/
+# in-use split out) in commits between f3d8990 and upstream HEAD. `wac
+# plug` refuses the mismatch. `compose`/`run`/`pair` below THEREFORE
+# STILL DEFAULT to IROH_CHECKOUT (unchanged behavior) until this spike's
+# guest WIT + host glue are rebased onto the published shape; the JSR
+# path is available and verified working as `fetch-endpoint-wasm` /
+# `compose-jsr` for that rebase work, but is NOT the default and NOT
+# exercised by `check`/`pair` today.
+# ---------------------------------------------------------------------------
 
 IROH_CHECKOUT := env_var_or_default("IROH_CHECKOUT", "../../../polymorph-iroh")
+IROH_RELAY_VERSION := "1.0.3"
+JSR_IROH_VERSION := "0.1.0"
+
+# Pinned relay binary, installed once into a repo-local bin dir (no
+# sibling checkout needed). `--locked` honors iroh-relay's own Cargo.lock
+# at that release, so the resolved dependency graph matches what n0
+# shipped for 1.0.3.
+relay-bin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .deps/relay
+    if [ ! -x .deps/relay/bin/iroh-relay ] || \
+       [ "$(.deps/relay/bin/iroh-relay --version 2>/dev/null | awk '{print $2}')" != "{{IROH_RELAY_VERSION}}" ]; then
+        echo "installing iroh-relay {{IROH_RELAY_VERSION}} into .deps/relay ..."
+        cargo install --locked --root .deps/relay --features server iroh-relay@{{IROH_RELAY_VERSION}}
+    fi
+
+# Materialize iroh_endpoint.wasm from jsr:@polymorph/iroh@{{JSR_IROH_VERSION}}
+# (see tools/fetch-endpoint-wasm.ts). Available now; NOT wired into the
+# default `compose` — see the STATUS note above.
+fetch-endpoint-wasm:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .deps
+    deno run --allow-read --allow-write --allow-net \
+        --lock=tools/deno.lock --frozen \
+        tools/fetch-endpoint-wasm.ts .deps/iroh_endpoint.wasm
 
 fetcher:
     cargo build --target wasm32-wasip2 --release -p spike-fetcher
@@ -21,6 +82,16 @@ compose: guest
         --plug {{IROH_CHECKOUT}}/target/wasm32-wasip2/release/iroh_endpoint.wasm \
         -o target/composed.wasm
 
+# JSR-pinned equivalent of `compose`, for the guest-WIT rebase work
+# described in the PINS/STATUS header above. NOT the default: as of the
+# STATUS note, this currently fails with a `polymorph:iroh/types`
+# mismatch (the guest's vendored WIT predates the published error-variant
+# expansion).
+compose-jsr: guest fetch-endpoint-wasm
+    wac plug target/wasm32-wasip2/release/spike_guest.wasm \
+        --plug .deps/iroh_endpoint.wasm \
+        -o target/composed.wasm
+
 minio:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -31,11 +102,11 @@ minio:
         chmod +x .deps/minio
     fi
 
-run: compose minio
+run: compose minio relay-bin
     #!/usr/bin/env bash
     set -euo pipefail
-    relay="{{IROH_CHECKOUT}}/.deps/iroh/target/release/iroh-relay"
-    [ -x "$relay" ] || { echo "iroh-relay not built at $relay" >&2; exit 1; }
+    relay=".deps/relay/bin/iroh-relay"
+    [ -x "$relay" ] || { echo "iroh-relay not installed at $relay (run: just relay-bin)" >&2; exit 1; }
     "$relay" --dev &
     relay_pid=$!
     data="$(mktemp -d /tmp/pm-tasks-minio.XXXXXX)"
@@ -59,11 +130,11 @@ check:
 
 # The PAIRING.md §6 acts: device pairing + the user-system partition.
 # Relay only — no bucket is involved, so no MinIO.
-pair: compose
+pair: compose relay-bin
     #!/usr/bin/env bash
     set -euo pipefail
-    relay="{{IROH_CHECKOUT}}/.deps/iroh/target/release/iroh-relay"
-    [ -x "$relay" ] || { echo "iroh-relay not built at $relay" >&2; exit 1; }
+    relay=".deps/relay/bin/iroh-relay"
+    [ -x "$relay" ] || { echo "iroh-relay not installed at $relay (run: just relay-bin)" >&2; exit 1; }
     "$relay" --dev &
     relay_pid=$!
     trap 'kill $relay_pid 2>/dev/null || true' EXIT
