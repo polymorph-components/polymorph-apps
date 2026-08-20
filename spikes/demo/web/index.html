@@ -28,146 +28,13 @@
        file. -->
   <link rel="stylesheet" href="./visor.css">
   <style>
-    /* --- the credential sheet (#22) --------------------------------------
-       Credential entry lives on a surface only the visor can produce: a
-       sheet that unfolds ABOVE the pinned strip, full width, in the
-       user's own anchor colour, with the strip still fully visible
-       BELOW it.
-
-       WHY ABOVE AND NOT BELOW. The first cut hung the sheet beneath the
-       strip, which is forgeable by ADJACENCY: the strip sits over
-       scrollable content, so an app frame can be scrolled flush against
-       the strip's bottom edge and paint a counterfeit sheet that looks
-       attached to the real bar. The space ABOVE the strip has no such
-       reachable position — at every scroll offset the strip is at the
-       viewport's top edge, so nothing but the visor's own pixels can ever
-       occupy the band above it. And the REVEAL ITSELF is unforgeable:
-       the sheet appears by pushing the real bar down, and an app cannot
-       move the real bar. A fake can draw a sheet; it cannot displace the
-       anchor. The open sheet is therefore bracketed — viewport edge
-       above, the user's coloured bar below.
-
-       The assembly is IN FLOW inside the sticky zone, not position:fixed:
-       one animated height drives the strip's descent and the page
-       content's descent together, rigidly glued (the todomvc visor
-       spike settled on this after fr-interpolation proved nonlinear and
-       engine-varied — spikes/todomvc/host/visor.ts:82-90).
-
-       Deliberately NOT a <dialog>: the top layer would fight the zone's
-       stacking (a modal dialog paints above everything, including the
-       anchor the sheet is supposed to be bracketed by), and this
-       embedding's dialog close events are unreliable — see README
-       findings, and the state-change retirement the storage dialog needs
-       because of it.
-
-       (The drawer's own chrome — #visor-drawer, #visor-drawer-inner,
-       #visor-dim, the reveal animation and the reduced-motion override —
-       moved to visor/ui/visor.css with the rest of the shared strip; only
-       this sheet's OWN content styling stays here.) */
-
-    /* A sheet taller than the space above the strip would push the strip
-       off the bottom of the viewport — losing the anchor exactly when it
-       matters. It scrolls internally instead; --visor-sheet-max is the
-       measured viewport-minus-strip budget, set from JS at open/resize.
-       `width:100%` is load-bearing now that the container is a flex
-       column: `margin:0 auto` is an AUTO cross-axis margin, which
-       suppresses the default stretch and would size the sheet to its
-       content instead of to the page's centered column. */
-    .cred-sheet { box-sizing: border-box; width: 100%; max-width: 34em; margin: 0 auto;
-                  max-height: var(--visor-sheet-max, 80dvh); overflow-y: auto;
-                  flex-shrink: 0;
-                  padding: .8em 1.1em 1.1em; font-size: 13px; line-height: 1.45; }
-    .cred-sheet h2 { margin: 0 0 .35em; font-size: 15px; font-weight: 600; }
-    .cred-sheet .cred-line { display: flex; align-items: baseline; gap: .4em;
-                             flex-wrap: wrap; font-size: 12px;
-                             opacity: .92; margin-bottom: .35em; }
-    .cred-sheet .chip { width: .8em; height: .8em; border-radius: 2px; flex: none;
-                        border: 1px solid rgba(255,255,255,.5); }
-    /* Panel-influenced strings (component name, destination origin) are
-       quoted, monospaced and clamped — never part of the visor's sentence. */
-    .cred-sheet q.foreign { font-family: ui-monospace, monospace;
-                            max-width: 20em; overflow: hidden;
-                            text-overflow: ellipsis; white-space: nowrap; }
-    .cred-sheet .cred-warning { font-size: 12px; color: #ffd79a; margin: .3em 0; }
-    .cred-sheet .cred-reason { font-size: 12px; color: #ffd79a; margin-top: .5em;
-                               min-height: 1.2em; }
-    .cred-sheet .cred-note { font-size: 11px; opacity: .8; margin-top: .6em;
-                             line-height: 1.4; }
-    .cred-sheet .cred-field { display: flex; flex-direction: column;
-                              gap: .2em; margin: .55em 0; }
-    .cred-sheet .cred-field label { font-size: 11px; opacity: .85; }
-    .cred-sheet .cred-field .hint { font-size: 10px; opacity: .7; }
-    .cred-sheet .cred-field input { width: 100%; box-sizing: border-box;
-                                    font: inherit; font-size: 13px;
-                                    background: rgba(0,0,0,.32);
-                                    color: var(--visor-fg, #f2f4fb);
-                                    border: 1px solid rgba(255,255,255,.35);
-                                    border-radius: 3px; padding: .4em .5em; }
-    .cred-sheet .cred-row { display: flex; gap: .8em; margin-top: .9em; }
-    .cred-sheet .cred-row button { flex: 1; font: inherit; font-size: 13px;
-                                   padding: .5em .8em; border-radius: 5px; cursor: pointer;
-                                   border: 1px solid rgba(255,255,255,.4);
-                                   background: transparent; color: inherit;
-                                   opacity: .35; transition: opacity 200ms; }
-    /* Visible arming: dim until the timer elapses. The disabled attribute
-       is the enforcement — this is only its visible form. */
-    .cred-sheet.armed .cred-row button { opacity: 1; }
-    .cred-sheet .cred-row button:first-child { background: #fff; color: #17182b;
-                                               border-color: #fff; font-weight: 600; }
-
-    /* --- the naming sheet -----------------------------------------------
-       The SAME reveal above the strip (that geometry is the unforgeable
-       part), a LIGHTER session: no arming delay, no frozen surfaces, no
-       dim — nothing secret is typed here and the ceremony starts from
-       strip pixels no app can draw. It ships with `.armed` already set,
-       so the button row is never dimmed for a delay that does not exist.
-       The user's own word is shown in the visor's voice; what the component
-       calls itself stays in q.foreign, quoted and monospaced. */
-    .name-sheet .petname { font-weight: 600; }
-    .name-sheet .name-swatches { display: flex; gap: .35em; flex-wrap: wrap;
-                                 margin: .1em 0 .6em; }
-    .name-sheet .name-swatches button { width: 1.4em; height: 1.4em; padding: 0;
-                                        border-radius: 3px; cursor: pointer;
-                                        border: 1px solid rgba(255,255,255,.45); }
-    .name-sheet .name-swatches button.picked { outline: 2px solid #fff;
-                                               outline-offset: 1px; }
-    .name-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
-    .name-sheet .name-forget { display: flex; align-items: center; gap: .6em;
-                               flex-wrap: wrap; margin-top: .8em;
-                               padding-top: .6em;
-                               border-top: 1px solid rgba(255,255,255,.18); }
-    .name-sheet .name-forget button.forget { font: inherit; font-size: 12px;
-                                             cursor: pointer; padding: .3em .7em;
-                                             border-radius: 4px; color: #ffd0d0;
-                                             background: transparent;
-                                             border: 1px solid rgba(255,160,160,.5); }
-    .name-sheet .name-forget .hint { font-size: 10px; opacity: .75; }
-
-    /* --- the settings sheet ----------------------------------------------
-       THE THIRD TENANT of the same drawer, and lightweight for the same
-       reason the naming sheet is: the reveal above the strip is the
-       unforgeable part and is kept, but there is no arming delay, no
-       runner suspension and no dim. Nothing secret is typed here, the
-       sheet is opened from strip pixels an app can neither draw nor
-       reach, and the worst a mis-tap can do is open a form the user
-       closes. Paying the arming tax where it buys nothing would train
-       users to click through a delay that means something elsewhere —
-       which is the real cost. It ships `.armed` so the button row is
-       never dimmed for a delay that does not exist. */
-    .settings-sheet .settings-icons,
-    .settings-sheet .settings-hues { display: flex; gap: .35em; flex-wrap: wrap;
-                                     margin: .1em 0 .6em; }
-    .settings-sheet .settings-icons button { font: inherit; font-size: 14px;
-                                             width: 1.9em; height: 1.9em; padding: 0;
-                                             cursor: pointer; border-radius: 3px;
-                                             color: inherit; line-height: 1;
-                                             background: rgba(255,255,255,.1);
-                                             border: 1px solid rgba(255,255,255,.35); }
-    .settings-sheet .settings-hues button { width: 1.4em; height: 1.4em; padding: 0;
-                                            border-radius: 3px; cursor: pointer;
-                                            border: 1px solid rgba(255,255,255,.45); }
-    .settings-sheet .picked { outline: 2px solid #fff; outline-offset: 1px; }
-    .settings-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
+    /* --- the visor's sheets ----------------------------------------------
+       The sheet content rules — `.cred-sheet` (the shared sheet shape
+       every drawer tenant wears, this page's credential sheets
+       included), `.name-sheet` and `.settings-sheet` — moved VERBATIM to
+       visor/ui/visor.css with visor/ui/sheets.ts, which now builds the
+       naming and settings sheets for every consumer. Only this page's
+       OWN page furniture stays below. */
 
     #banner { padding: .6em 0; background: #1a1a2e; color: #eee; font-size: 13px; }
     #banner .bar-inner { padding: 0 1em; box-sizing: border-box; }
@@ -238,7 +105,8 @@
     @media (max-width: 480px) {
       /* The visor's own narrow-viewport cluster rules (context/identity
          truncation) moved to visor/ui/visor.css alongside the rest of
-         the strip's chrome; only this page's own controls/dialog/sheet
+         the strip's chrome, and the sheets' own narrow-viewport rules
+         went with the sheets; only this page's own controls/dialog
          narrow-viewport fixes stay here. */
       #controls { padding: .5em 0; font-size: 12px; }
       #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
@@ -253,17 +121,6 @@
       .provider-tabs { flex-wrap: wrap; }
       .visor-actions { flex-wrap: wrap; }
       .visor-actions .visor-note { max-width: 100%; }
-
-      /* The sheet is already full width; at phone width it just loses its
-         side padding and the button row stops sharing a line badly.
-         Fields are stacked and box-sized, so nothing overflows at 390px.
-         The strip must never be pushed off-screen by a tall sheet, so the
-         measured budget (--visor-sheet-max) matters most here — a phone
-         viewport is short and the vocabulary fields are stacked. */
-      .cred-sheet { padding: .7em .8em 1em; font-size: 13px; }
-      .cred-sheet q.foreign { max-width: 100%; }
-      .cred-sheet .cred-row { gap: .6em; }
-      .cred-sheet .cred-line { row-gap: .2em; }
     }
 
     /* Explainer span is hidden entirely below 400px: at that width even

@@ -85,9 +85,9 @@ export function createBackend(
 
 /** The frame surface's teardown, handed back to the caller so `kind ===
  * "frame"` can be torn down on demand (see TodoApp.teardown). undefined
- * for the three same-realm kinds, whose kill semantics are unchanged:
- * the runner is simply paused forever and the DOM node is dropped by the
- * caller (see host/visor.ts's kill tenant, pre/post-C3). */
+ * for the three same-realm kinds, which need none: retiring one of those
+ * is pausing the runner forever and dropping the DOM node, both of which
+ * the caller can do without help from here. */
 type Teardown = (() => Promise<void>) | undefined;
 
 /** Resolve one backend for `kind`, awaiting the frame handshake when
@@ -122,9 +122,15 @@ export interface TodoApp {
   sendEvent(ev: UiEvent): Promise<void>;
   sendRoute(route: string): Promise<void>;
   /** Destroy the sandboxed frame surface, when there is one — undefined
-   * (no-op) for the three same-realm kinds, whose kill semantics stay
-   * "pause the runner forever, drop the DOM node" (host/visor.ts's kill
-   * tenant does the dropping; this is only the frame's own teardown). */
+   * (no-op) for the three same-realm kinds, where retirement is just
+   * "pause the runner forever, drop the DOM node" and needs no help from
+   * here. This is only the frame's own teardown, and awaiting it is the
+   * difference between the iframe being GONE and merely superseded.
+   *
+   * No caller in this spike today: the visor's simulated "kill" tenant
+   * that used to await it is gone (see host/visor.ts). Kept deliberately
+   * — a real embedder API for retiring a surface is a framework-real
+   * need (#22), and this is the honest half of it. */
   teardown?(): Promise<void>;
 }
 

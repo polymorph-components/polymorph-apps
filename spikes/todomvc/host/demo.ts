@@ -32,12 +32,17 @@ export async function runDemo(): Promise<void> {
     const artifact = guest === "hand" ? "todomvc" : `todomvc-${guest}`;
 
     const route = () => location.hash.replace(/^#\/?/, "");
-    const visor = initTodoVisor(artifact);
+    // The visor is a pure consumer of the shared system UI now — it
+    // draws the strip and registers the framework's own sheets, and has
+    // no hold on the running app at all. (It used to be handed the
+    // runner and the surface teardown for its "kill" tenant, and the
+    // hashchange listener had to ask whether that tenant had killed the
+    // app before delivering a route. Both are gone with the tenant;
+    // `TodoApp.teardown` itself stays in app.ts, unused here.)
+    initTodoVisor(artifact);
     container.textContent = "";
     const app = await startTodoApp(kind, container, route, showError, artifact);
-    visor.bind({ runner: app.runner, teardown: app.teardown });
     addEventListener("hashchange", () => {
-      if (visor.killed) return;
       app.sendRoute(route()).catch(showError);
     });
 

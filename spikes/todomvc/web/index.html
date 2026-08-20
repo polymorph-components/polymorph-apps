@@ -5,11 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TodoMVC — polymorph wasm→DOM spike</title>
   <link rel="stylesheet" href="todomvc-app.css">
-  <!-- The visor's shared system-UI chrome (strip, clusters, drawer host):
-       visor/ui/visor.css, the same stylesheet the demo spike links
-       (#22/#20 — see host/visor.ts, a from-scratch consumer of
-       visor/ui/visor.ts as of C3). Linked BEFORE this page's own <style>
-       block, matching the demo's cascade order. -->
+  <!-- The visor's shared system-UI chrome AND its sheets' styling
+       (strip, clusters, drawer host, .cred-sheet/.name-sheet/
+       .settings-sheet): visor/ui/visor.css, the same stylesheet the demo
+       spike links (#22/#20). It is the only stylesheet the visor needs —
+       this page registers the framework's own naming and settings sheets
+       (visor/ui/sheets.ts) and adds no sheet markup or CSS of its own.
+       Linked BEFORE this page's own <style> block, matching the demo's
+       cascade order. -->
   <link rel="stylesheet" href="./visor.css">
   <style>
     :root { --content-max: 40rem; }
@@ -22,41 +25,6 @@
        zone escapes the body clamp and spans the viewport; its own
        .bar-inner recenters the content. */
     #visor-zone { margin-left: calc(50% - 50vw); margin-right: calc(50% - 50vw); }
-    /* This page's own strip action buttons: "consent demo" and "kill",
-       mounted into the shared visor's #visor-actions slot
-       (visor/ui/visor.ts's Visor.actions). Page-specific because only
-       THIS page's drawer tenants exist to open them — the shared
-       stylesheet owns the clusters, not a consumer's own buttons. */
-    #visor-actions { display: flex; align-items: center; gap: .5em; flex: none; }
-    #visor-actions button { font: inherit; font-size: 12px; color: inherit;
-                             background: rgba(255,255,255,.12);
-                             border: 1px solid rgba(255,255,255,.3);
-                             border-radius: 4px; padding: .35em .7em; cursor: pointer; }
-    /* The two lightweight sheets this page registers: consent (armed,
-       dimmed, foreign-quoted app name) and kill (armed, dimmed,
-       Suspend/Cancel). Same `.cred-sheet`-shaped geometry the demo's
-       sheets use (the reveal above the strip is the shared, unforgeable
-       part); the CONTENT styling below is this page's own, ported
-       verbatim from the pre-C3 visor spike (git show HEAD:spikes/
-       todomvc/host/visor.ts). */
-    .todomvc-sheet { max-width: 480px; margin: 0 auto; padding: 18px 20px 22px;
-                      font-size: 15px; line-height: 1.5; flex-shrink: 0; }
-    .todomvc-sheet h2 { margin: 10px 0 6px; font-size: 17px; }
-    .todomvc-sheet .tm-foreign { font-style: italic; background: #6b5d2f; padding: 0 4px; }
-    .todomvc-sheet .tm-note { font-size: 12px; opacity: .65; }
-    .todomvc-sheet .tm-row { display: flex; gap: 12px; margin-top: 14px; }
-    .todomvc-sheet .tm-row button {
-      flex: 1; font: inherit; padding: 10px; border-radius: 8px;
-      border: 1px solid rgba(255,255,255,.35); background: transparent;
-      color: inherit; cursor: pointer;
-      opacity: .35; transition: opacity 200ms;
-    }
-    .todomvc-sheet.armed .tm-row button { opacity: 1; }
-    .todomvc-sheet .tm-row button:first-child { background: #fff; color: #2b2d42; border: none; }
-    .visor-killed {
-      padding: 40px 20px; text-align: center; color: #666;
-      font: 14px/1.6 -apple-system, system-ui, sans-serif;
-    }
   </style>
 </head>
 <body data-page="demo">
@@ -70,9 +38,6 @@
           <span class="ctx-top"></span>
           <span class="ctx-bottom"></span>
         </span>
-        <!-- This page's own strip controls, mounted by host/visor.ts into
-             the shared core's optional actions slot (Visor.actions). -->
-        <span id="visor-actions"></span>
         <span id="visor-identity"></span>
       </div>
     </div>

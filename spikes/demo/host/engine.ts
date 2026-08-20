@@ -86,8 +86,108 @@ export interface Driver {
     passphrase: string | undefined,
     secret: Uint8Array | undefined,
   ): Promise<string>;
+
+  // --- device pairing (#10) + user-system (#36) --- (spike.wit ~214-280)
+
+  pairJoinStart(): Promise<PairOffer>;
+  pairJoinStatus(): Promise<PairJoinState>;
+  pairJoinConfirm(): Promise<void>;
+
+  pairAddStart(code: string): Promise<void>;
+  pairAddStatus(): Promise<PairAddState>;
+  /** device-name: the user's own word for the new device, recorded in
+   * the devices annotations by the ADDER (spike.wit's pair-add-confirm
+   * doc comment). */
+  pairAddConfirm(deviceName: string): Promise<void>;
+
+  pairAbort(): Promise<void>;
+
+  /** First device only: create user group + user-system partition,
+   * write the initial profile. Returns the user group id. */
+  userCreate(profile: UsProfile): Promise<Uint8Array>;
+
+  usProfileGet(): Promise<UsProfile>;
+  usProfileSet(profile: UsProfile): Promise<void>;
+
+  usMarksList(): Promise<UsMark[]>;
+  usMarkPut(mark: UsMark): Promise<void>;
+  usMarkForget(provenance: string): Promise<void>;
+  usMarkConfirm(provenance: string): Promise<void>;
+
+  usContactsList(): Promise<Array<[Uint8Array, string]>>;
+  usContactPut(card: Uint8Array, petname: string): Promise<void>;
+
+  usDevicesList(): Promise<UsDevice[]>;
+  usDeviceRevoke(agentId: Uint8Array): Promise<void>;
+
+  /** Drain remotely-caused changes the visor must announce (#22).
+   * Local-echo suppression is engine-side: a device never receives
+   * events for its own writes. */
+  usEvents(): Promise<UsEvent[]>;
+
   stats(): Promise<string>;
 }
+
+// --- device-pairing + user-system WIT record/variant mirrors
+// (spike.wit ~214-280). `option<T>` lowers to `T | undefined`, `list<u8>`
+// to Uint8Array, `u64` to bigint, `u16`/`u32` to number, `tuple<A, B>` to
+// `[A, B]`, and a no-payload variant case to `{ tag: "case-name" }` — same
+// conventions the existing Driver/Tasks types above already use.
+
+export interface PairOffer {
+  code: string;
+  expiresMs: bigint;
+}
+
+export interface PairEnrollment {
+  userGroupId: Uint8Array;
+  partitionId: Uint8Array;
+}
+
+export type PairJoinState =
+  | { tag: "waiting" }
+  | { tag: "claimed"; val: string } // SAS — display, await pairJoinConfirm
+  | { tag: "confirmed-waiting" }
+  | { tag: "enrolled"; val: PairEnrollment }
+  | { tag: "expired" }
+  | { tag: "failed"; val: string };
+
+export type PairAddState =
+  | { tag: "connecting" }
+  | { tag: "sas-ready"; val: string } // SAS — display, await pairAddConfirm
+  | { tag: "waiting-peer" }
+  | { tag: "enrolled" }
+  | { tag: "failed"; val: string };
+
+export interface UsProfile {
+  displayName: string;
+  hue: number; // OKLCH hue index per #22 palette (u16)
+  icon?: Uint8Array;
+}
+
+export interface UsMark {
+  provenance: string;
+  petname: string;
+  hue: number;
+  nickname?: string;
+  createdAt: bigint;
+  needsReconfirm: boolean; // set by conflict repair; cleared by usMarkConfirm
+}
+
+export interface UsDevice {
+  agentId: Uint8Array;
+  name: string;
+  enrolledAt: bigint;
+  revoked: boolean;
+}
+
+export type UsEvent =
+  | { tag: "profile-changed" }
+  | { tag: "mark-added"; val: string } // provenance
+  | { tag: "mark-changed"; val: string }
+  | { tag: "mark-conflict-repaired"; val: [string, string] } // (provenance, "petname"|"hue")
+  | { tag: "device-added"; val: string } // name
+  | { tag: "device-revoked"; val: string };
 
 export interface TodoItem {
   id: string;
