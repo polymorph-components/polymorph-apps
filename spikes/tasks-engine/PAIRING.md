@@ -45,10 +45,13 @@ reject-on-unknown, per NOTES).
 
 ```
 1. add  → join : CLAIM   { token, commit = H(nonce_a) }
+     (a CLAIM on an already-claimed or expired offer is answered with
+      REFUSED — distinct error, add-ward only)
 2. join → add  : ACCEPT  { nonce_j, contact-card }      // keyhive contact card
 3. add  → join : REVEAL  { nonce_a }                    // join verifies commit
      transcript = 0x01 ‖ token ‖ join-endpoint-id ‖ add-endpoint-id ‖ nonce_j ‖ nonce_a
-     sas        = decimal(first 20 bits of BLAKE3(transcript)), 6 digits, zero-padded
+     sas        = (first 4 bytes of BLAKE3(transcript), read u32 big-endian)
+                  mod 10^6, zero-padded to 6 digits
 4. both display SAS; both users confirm in chrome (weight classes: §5)
 5. join → add  : CONFIRM-JOIN {}
 6. add  → join : ENROLL  { user-group-id, group-card, partition-id }
@@ -63,9 +66,15 @@ reject-on-unknown, per NOTES).
 - Abort at any step tears down the stream and, on the join side, expires
   the offer (a new offer mints a new token).
 - Enrollment writes on the add side, in order: `kh-add-to-group(user,
-  new-individual, "admin")` → devices-doc entry {agent-id, name,
-  enrolled-at} → flush ops. The joiner appears in `us-devices-list` on
-  every device via normal sync.
+  new-individual, "admin")` → **forced key rotation on every doc
+  delegated to the user group** (the revocation-rotation mechanic, run
+  for an add: measured at the pinned keyhive rev, a post-seal add
+  receives no CGKA leaf until a fresh epoch is derived — without the
+  rotation the joiner holds ciphertext it can never read, including
+  post-join writes) → devices-doc entry {agent-id, name, enrolled-at}
+  → flush ops. The joiner appears in `us-devices-list` on every device
+  via normal sync. History note, unchanged from G3: the joiner reads
+  pre-join history only through causal keys via post-join chunks.
 - After ENROLL the joiner pulls the user-system doc and adopts profile
   state; chrome announces the adoption (hue + name arriving is a
   remotely-caused change, #22: announced).
@@ -190,18 +199,26 @@ Added to `interface driver`:
   pairing path adds devices to the GROUP, which CGKA-propagates).
 - **Marks invariants + repair** (runs after every remote apply):
   petname uniqueness (case-insensitive) and hue uniqueness are
-  cross-record invariants. On violation, the **older record wins**
-  (`created-at`, tie-break lexicographic provenance):
-  - petname collision: loser keeps its petname bytes but gets
-    `needs-reconfirm = true` (chrome renders NEW-with-explanation at
-    next mount; `us-mark-confirm` clears after the user re-confirms or
-    renames);
-  - hue collision: loser is auto-reassigned an unused hue.
+  cross-record invariants. **Hues are palette indices** (u16 index into
+  the #22 framework palette, ~10 entries), not raw angles. On
+  violation, the **older record wins** (`created-at`, tie-break
+  lexicographic provenance):
+  - petname collision: loser keeps its petname bytes but reports
+    `needs-reconfirm = true` (derived, not stored, is acceptable —
+    chrome renders NEW-with-explanation at next mount; `us-mark-confirm`
+    records the exact petname confirmed and clears until it changes);
+  - hue collision: loser is auto-reassigned the smallest unused palette
+    index; if the palette is exhausted, the collision stands (matches
+    assignment-time behaviour — uniqueness is only promisable while
+    unused hues exist).
   Both emit `mark-conflict-repaired`. Repair must be deterministic:
   every device computes the same outcome from the same doc state, no
   repair-write ping-pong (repair writes only from the device that
   observes a violation involving its OWN losing write; others render
   the computed outcome without writing).
+- **Founding device**: `user-create` records the founding device in the
+  devices map with `name: ""` — chrome treats empty as "this device"
+  until a rename surface exists (#36 production item).
 - **Events**: per-instance drained queue; only remotely-caused changes;
   emitted after apply + repair.
 
