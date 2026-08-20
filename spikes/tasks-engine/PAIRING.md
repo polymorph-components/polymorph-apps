@@ -32,9 +32,10 @@ code    = BASE32_NOPAD_VISUAL(payload)        // 79 chars, display in groups of 
   one). Production relay discovery is an open item on #10, recorded, not
   solved here.
 - Offer expiry: **120 s**. Token is **single-claim**: the first CLAIM
-  binds the session; later CLAIMs are refused with a distinct error so
-  the joiner UI can say "someone already tried this code" and regenerate.
-
+  binds the session; a second CLAIM is refused AND burns the bound
+  in-flight session (a code that reached a second party has leaked —
+  the joiner UI says "someone already tried this code" and
+  regenerates).
 ## 2. Wire protocol (one bidi stream on the pairing iroh connection)
 
 Transport is iroh: both endpoint keys are transport-authenticated
