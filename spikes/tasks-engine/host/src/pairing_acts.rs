@@ -676,11 +676,10 @@ async fn act_revoke_and_repair(
     if group2 != group {
         bail!("the re-pair enrolled into a different account");
     }
-    // The partition id legitimately CHANGES: every enrollment regenerates
-    // the user-system doc (PAIRING.md §2). The account is the group; the
-    // generation is an engine detail chrome never sees.
-    if partition2 == partition {
-        bail!("enrollment did not regenerate the user-system doc");
+    // One lineage: enrollment no longer regenerates the doc, so ENROLL
+    // carries the ORIGINAL partition id (PAIRING.md §2, §4b).
+    if partition2 != partition {
+        bail!("enrollment handed out a different partition than the account's own");
     }
     let devices = l.call_us_devices_list(acc).await?.map_err(|e| format_err!("{e}"))?;
     let fresh = devices
@@ -790,14 +789,13 @@ pub(crate) async fn expiry_act(
     Ok(())
 }
 
-/// Post-seal add on the ORIGINAL document, with regeneration disabled.
+/// Post-seal add on the account's document: the boundary act.
 ///
-/// This is the act that verifies the event-delivery fix directly. The
-/// enrollment path's doc regeneration would hand the joiner current state
-/// regardless, which is exactly why it must be switched off here: the
-/// question is whether a device added to the group AFTER the doc was
-/// sealed can read what the founder writes afterwards, on the doc it was
-/// late to.
+/// Enrollment adds a device to the group long after the doc was sealed,
+/// and this act pins what that device can and cannot reach on it. Since
+/// regeneration retired there is only one lineage, so this is simply the
+/// normal flow examined closely — which is the point: the boundary is a
+/// property of every enrollment, not of a special configuration.
 ///
 /// Two assertions, and the boundary between them is the point:
 ///
@@ -848,7 +846,7 @@ pub(crate) async fn post_seal_add_act(
     .await?
     .map_err(|e| format_err!("pre-join mark: {e}"))?;
 
-    // Enrollment WITHOUT regeneration: same doc, joiner added after seal.
+    // Enrollment: same doc, joiner added long after the seal.
     let (_sas, _group, partition) = pair(acc, l, p, "late device").await?;
     wire_us(
         acc,
@@ -932,22 +930,52 @@ pub(crate) async fn post_seal_add_act(
             .map_err(|e| format_err!("joiner ingest: {e}"))?;
     }
 
-    // Assertion 2: the boundary. Pre-join automerge history does not
-    // materialize, and that is design, not regression.
-    let marks = p.call_us_marks_list(acc).await?.map_err(|e| format_err!("{e}"))?;
-    if marks.iter().any(|m| m.petname == "Before") {
-        // Not a failure of safety — but it would mean the boundary this
-        // act documents has moved, and the README finding with it.
+    // Assertion 2: the boundary has MOVED, and both halves are asserted.
+    //
+    // Pre-join chunks are sealed under an epoch this device will never
+    // hold, so a direct decrypt of them must still fail — and they must
+    // nevertheless materialize, because a readable descendant carries
+    // their keys (PAIRING.md §4b). Materialization alone would not
+    // distinguish the walk from a lucky epoch; the walk counter is what
+    // makes "recovered where direct decrypt failed" observable, and the
+    // engine increments it only for chunks whose direct decrypt failed.
+    //
+    // The pre-join ancestry here is the creation change plus the "Before"
+    // mark: at least two chunks must come back through the walk.
+    const PRE_JOIN_CHUNKS: u32 = 2;
+    let t = Instant::now();
+    let mut marks = Vec::new();
+    let mut walked = 0u32;
+    let mut last = String::new();
+    for _ in 0..POLLS {
+        marks = p.call_us_marks_list(acc).await?.map_err(|e| format_err!("{e}"))?;
+        last = p.call_stats(acc).await?;
+        walked = parse_stat(&last, "us-walked");
+        if marks.iter().any(|m| m.petname == "Before") && walked >= PRE_JOIN_CHUNKS {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    if !marks.iter().any(|m| m.petname == "Before") {
         bail!(
-            "UNEXPECTED: pre-join history materialized without the Envelope \
-             content format; the causal-read-back finding needs revisiting"
+            "pre-join content did not materialize through the causal walk \
+             (joiner sees {} mark(s); stats: {last})",
+            marks.len()
         );
     }
-    println!(
-        "            EXPECTED-unreadable: pre-join history did not materialize \
-         (no causal keys without the Envelope format) — {} mark(s) visible",
-        marks.len()
+    if walked < PRE_JOIN_CHUNKS {
+        bail!(
+            "pre-join content materialized WITHOUT the causal walk \
+             (us-walked={walked}, expected at least {PRE_JOIN_CHUNKS}) — the act \
+             would be passing for the wrong reason. stats: {last}"
+        );
+    }
+    ok(
+        &format!("pre-join content recovered by causal walk ({walked} chunk(s)) and materialized"),
+        t,
     );
+    println!("            joiner: {last}");
+
     println!("\nPAIRING ACT (post-seal add, original doc) PASSED");
     Ok(())
 }
@@ -959,4 +987,296 @@ fn parse_stat(stats: &str, name: &str) -> u32 {
         .find_map(|field| field.strip_prefix(&format!("{name}=")))
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(0)
+}
+
+/// A late joiner materializes the account's FULL pre-join history.
+///
+/// This is the property the Envelope format buys (PAIRING.md §4b): the
+/// joiner's epochs cannot open pre-join chunks, but the anchor chunk
+/// written at enrollment carries its parents' keys, and each recovered
+/// chunk carries its own parents' — so the whole ancestry unwinds from
+/// one readable descendant.
+///
+/// `seed` varies arrival order across runs: how much history exists
+/// before the join, whether the founder writes again before the joiner
+/// first pulls, and whether the joiner is subscribed before or after that
+/// write. The previous implementation of this area was order-dependent,
+/// so order is the thing to vary.
+pub(crate) async fn full_history_act(
+    acc: &Accessor<Ctx>,
+    founder: crate::bindings::Spike,
+    joiner: crate::bindings::Spike,
+    relay: String,
+    seed: u32,
+) -> Result<()> {
+    let l: &Driver = founder.polymorph_engine_spike_driver();
+    let p: &Driver = joiner.polymorph_engine_spike_driver();
+
+    let l_id = l.call_init(acc, false).await?.map_err(|e| format_err!("founder init: {e}"))?;
+    let p_id = p.call_init(acc, false).await?.map_err(|e| format_err!("joiner init: {e}"))?;
+    let l_bytes = hex::decode(&l_id)?;
+    let p_bytes = hex::decode(&p_id)?;
+    let l_ep = l.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
+    p.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
+
+    l.call_user_create(
+        acc,
+        UsProfile { display_name: "Alice".into(), hue: 3, icon: None },
+    )
+    .await?
+    .map_err(|e| format_err!("user-create: {e}"))?;
+
+    // 1..=3 pre-join marks, plus a profile edit, so the ancestry the walk
+    // must cover is several chunks deep and varies by seed.
+    let depth = 1 + (seed % 3);
+    for i in 0..depth {
+        l.call_us_mark_put(
+            acc,
+            UsMark {
+                provenance: format!("https://pre-{i}.example/"),
+                petname: format!("Pre{i}"),
+                hue: (i % 10) as u16,
+                nickname: None,
+                created_at: 1_000 + i as u64,
+                needs_reconfirm: false,
+            },
+        )
+        .await?
+        .map_err(|e| format_err!("pre-join mark {i}: {e}"))?;
+    }
+    l.call_us_profile_set(
+        acc,
+        UsProfile { display_name: "Alice Renamed".into(), hue: 4, icon: None },
+    )
+    .await?
+    .map_err(|e| format_err!("pre-join profile edit: {e}"))?;
+
+    let (_sas, _group, partition) = pair(acc, l, p, "late device").await?;
+
+    // Order variation: does the founder write again before the joiner is
+    // wired, or after?
+    let write_before_wire = seed.is_multiple_of(2);
+    if write_before_wire {
+        l.call_us_mark_put(
+            acc,
+            UsMark {
+                provenance: "https://post.example/".into(),
+                petname: "Post".into(),
+                hue: 8,
+                nickname: None,
+                created_at: 5_000,
+                needs_reconfirm: false,
+            },
+        )
+        .await?
+        .map_err(|e| format_err!("post-join mark: {e}"))?;
+    }
+
+    wire_us(
+        acc,
+        (l, "founder", &l_bytes, l_ep.as_str()),
+        (p, "joiner", &p_bytes),
+        &partition,
+        &relay,
+    )
+    .await?;
+
+    if !write_before_wire {
+        l.call_us_mark_put(
+            acc,
+            UsMark {
+                provenance: "https://post.example/".into(),
+                petname: "Post".into(),
+                hue: 8,
+                nickname: None,
+                created_at: 5_000,
+                needs_reconfirm: false,
+            },
+        )
+        .await?
+        .map_err(|e| format_err!("post-join mark: {e}"))?;
+    }
+
+    // Everything the founder ever wrote must materialize on the joiner:
+    // the pre-join marks, the pre-join profile EDIT (not just the initial
+    // value), and the post-join mark.
+    let want_all = move |m: &[UsMark]| {
+        (0..depth).all(|i| m.iter().any(|x| x.petname == format!("Pre{i}")))
+            && m.iter().any(|x| x.petname == "Post")
+    };
+    let marks = wait_marks(
+        acc,
+        p,
+        &format!("seed {seed}: joiner materialized all {} pre-join mark(s) + the post-join one", depth),
+        want_all,
+    )
+    .await?;
+    let profile = p.call_us_profile_get(acc).await?.map_err(|e| format_err!("{e}"))?;
+    if profile.display_name != "Alice Renamed" || profile.hue != 4 {
+        bail!(
+            "seed {seed}: the joiner did not materialize the pre-join profile EDIT \
+             (sees {:?}/{})",
+            profile.display_name,
+            profile.hue
+        );
+    }
+    println!(
+        "            seed {seed}: {} marks, profile '{}' — full history via walk",
+        marks.len(),
+        profile.display_name
+    );
+    Ok(())
+}
+
+/// Concurrent writes from a device that did not see another device's
+/// enrollment survive the merge — including a DELETION.
+///
+/// The value-copy handoff this replaces could resurrect a forgotten mark
+/// (the copy was taken from a state that still contained it) and could
+/// lose a rename (the copy carried the old name). With one document
+/// lineage both are ordinary CRDT merges, and this act is the proof.
+///
+/// Driver limitation, stated exactly rather than overclaimed: there is no
+/// disconnect verb, so this act cannot force a partition. What the
+/// ordering DOES guarantee, and what is asserted below, is one direction:
+/// the second device authors its three writes before the enrollment
+/// writes exist at all, so it cannot have seen them. The other direction
+/// — that the founder had not yet received the second device's writes
+/// when it authored the enrollment entry — is NOT guaranteed here, since
+/// a fast sync may deliver them first; it is reported, not asserted.
+/// Either way the merge properties under test (a deletion that must not
+/// resurrect, a rename that must not be lost) are exercised.
+pub(crate) async fn partitioned_writer_act(
+    acc: &Accessor<Ctx>,
+    founder: crate::bindings::Spike,
+    second: crate::bindings::Spike,
+    joiner: crate::bindings::Spike,
+    relay: String,
+) -> Result<()> {
+    let l: &Driver = founder.polymorph_engine_spike_driver();
+    let b: &Driver = second.polymorph_engine_spike_driver();
+    let c: &Driver = joiner.polymorph_engine_spike_driver();
+
+    let l_id = l.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;
+    let b_id = b.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;
+    c.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;
+    let l_bytes = hex::decode(&l_id)?;
+    let b_bytes = hex::decode(&b_id)?;
+    let l_ep = l.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
+    b.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
+    c.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
+
+    l.call_user_create(
+        acc,
+        UsProfile { display_name: "Alice".into(), hue: 3, icon: None },
+    )
+    .await?
+    .map_err(|e| format_err!("user-create: {e}"))?;
+    for (prov, name, hue, at) in [
+        ("https://keep.example/", "Keep", 1u16, 1_000u64),
+        ("https://rename.example/", "OldName", 2, 1_100),
+        ("https://forget.example/", "Doomed", 6, 1_200),
+    ] {
+        l.call_us_mark_put(
+            acc,
+            UsMark {
+                provenance: prov.into(),
+                petname: name.into(),
+                hue,
+                nickname: None,
+                created_at: at,
+                needs_reconfirm: false,
+            },
+        )
+        .await?
+        .map_err(|e| format_err!("seed mark {name}: {e}"))?;
+    }
+
+    // The second device joins and catches up.
+    let (_s, _g, partition) = pair(acc, l, b, "second device").await?;
+    wire_us(
+        acc,
+        (l, "founder", &l_bytes, l_ep.as_str()),
+        (b, "second", &b_bytes),
+        &partition,
+        &relay,
+    )
+    .await?;
+    wait_marks(acc, b, "second device caught up", |m| m.len() == 3).await?;
+
+    // Concurrency window: the second device makes its three writes from
+    // its own frontier while the founder enrols a third device.
+    b.call_us_mark_put(
+        acc,
+        UsMark {
+            provenance: "https://added.example/".into(),
+            petname: "AddedOffline".into(),
+            hue: 9,
+            nickname: None,
+            created_at: 2_000,
+            needs_reconfirm: false,
+        },
+    )
+    .await?
+    .map_err(|e| format_err!("offline add: {e}"))?;
+    b.call_us_mark_put(
+        acc,
+        UsMark {
+            provenance: "https://rename.example/".into(),
+            petname: "NewName".into(),
+            hue: 2,
+            nickname: None,
+            created_at: 1_100,
+            needs_reconfirm: false,
+        },
+    )
+    .await?
+    .map_err(|e| format_err!("offline rename: {e}"))?;
+    b.call_us_mark_forget(acc, "https://forget.example/".into())
+        .await?
+        .map_err(|e| format_err!("offline forget: {e}"))?;
+
+    // The guaranteed direction: the second device wrote before the third
+    // device existed, so its writes were authored against a frontier that
+    // cannot contain the enrollment.
+    let b_devices = b.call_us_devices_list(acc).await?.map_err(|e| format_err!("{e}"))?;
+    if b_devices.iter().any(|d| d.name == "third device") {
+        bail!("ordering violated: the second device saw the enrollment before authoring");
+    }
+    // The other direction, reported rather than asserted (see the doc
+    // comment): had the founder already merged the second device's work?
+    let l_before = l.call_us_marks_list(acc).await?.map_err(|e| format_err!("{e}"))?;
+    let founder_had_merged = l_before.iter().any(|m| m.petname == "AddedOffline");
+    println!(
+        "            at enrollment time the founder had{} already merged the second device's writes",
+        if founder_had_merged { "" } else { " NOT" }
+    );
+
+    let (_s2, _g2, partition2) = pair(acc, l, c, "third device").await?;
+    if partition2 != partition {
+        bail!("the second enrollment moved the partition");
+    }
+
+    // Heal, and assert all three survive on BOTH the founder and the
+    // device that made them.
+    let converged = |m: &[UsMark]| {
+        m.iter().any(|x| x.petname == "AddedOffline")
+            && m.iter().any(|x| x.petname == "NewName")
+            && !m.iter().any(|x| x.provenance == "https://forget.example/")
+            && m.iter().any(|x| x.petname == "Keep")
+    };
+    let l_marks = wait_marks(acc, l, "founder converged on the concurrent writes", converged).await?;
+    let b_marks = wait_marks(acc, b, "second device converged", converged).await?;
+    if !same_marks(&l_marks, &b_marks) {
+        bail!("replicas diverged:\n  founder {l_marks:?}\n  second  {b_marks:?}");
+    }
+    if l_marks.iter().any(|m| m.petname == "OldName") {
+        bail!("the rename was lost: the old name is still present");
+    }
+    println!(
+        "            add survived, rename survived, forget did NOT resurrect ({} marks)",
+        l_marks.len()
+    );
+    println!("\nPAIRING ACT (partitioned writer) PASSED");
+    Ok(())
 }
