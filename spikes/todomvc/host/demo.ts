@@ -1,10 +1,11 @@
 // The demo page: TodoMVC on a selectable backend
-// (?backend=direct|queued|channel, default direct — the same-realm
-// production configuration per the #15 fast-path plan).
+// (?backend=direct|queued|channel|frame, default frame — the real
+// sandboxed-surface split (#16); harness.ts/bench.ts stay on the three
+// same-realm kinds for their own reasons, see those files).
 
-import { isBackendKind, type BackendKind } from "./backend.ts";
+import { isBackendKind, type BackendKind } from "../../../visor/surface/backend.ts";
 import { startTodoApp } from "./app.ts";
-import { initVisor } from "./visor.ts";
+import { initTodoVisor } from "./visor.ts";
 
 export async function runDemo(): Promise<void> {
   const container = document.getElementById("app") as HTMLElement;
@@ -23,7 +24,7 @@ export async function runDemo(): Promise<void> {
   try {
     const params = new URLSearchParams(location.search);
     const param = params.get("backend");
-    const kind: BackendKind = isBackendKind(param) ? param : "direct";
+    const kind: BackendKind = isBackendKind(param) ? param : "frame";
     const guestParam = params.get("guest");
     const guest = guestParam === "dioxus" || guestParam === "preact"
       ? guestParam
@@ -31,10 +32,10 @@ export async function runDemo(): Promise<void> {
     const artifact = guest === "hand" ? "todomvc" : `todomvc-${guest}`;
 
     const route = () => location.hash.replace(/^#\/?/, "");
-    const visor = initVisor("TodoMVC", `${guest} guest · ${kind} backend`);
+    const visor = initTodoVisor(artifact);
     container.textContent = "";
     const app = await startTodoApp(kind, container, route, showError, artifact);
-    visor.bind(app.runner);
+    visor.bind({ runner: app.runner, teardown: app.teardown });
     addEventListener("hashchange", () => {
       if (visor.killed) return;
       app.sendRoute(route()).catch(showError);
@@ -46,3 +47,4 @@ export async function runDemo(): Promise<void> {
     showError(e);
   }
 }
+

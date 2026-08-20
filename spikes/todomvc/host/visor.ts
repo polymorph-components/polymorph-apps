@@ -1,164 +1,248 @@
-// The spike's framework visor (#22, provisional until user-tested):
-// trusted shell UI rendered strictly OUTSIDE the app rectangle. Trust
-// anchors are position (this code owns everything around #app) and
-// absolute interaction rules (the visor never asks for secret input in a
-// drawer) — never visual style. The modal visor pauses the app's event
-// queue: the app cannot observe or race the user's interaction.
-//
-// Interaction-emergence experiment: visor interactions are revealed by
-// the strip sliding DOWN, exposing the interaction surface above it. The
-// animation is both transition and enforced arming delay (ARM_MS):
-// controls stay disabled until it elapses, defeating baited mis-taps
-// (an app training rapid taps at a position where a visor control is
-// about to appear). Enforcement is the timer, not the animation —
-// prefers-reduced-motion changes the visuals, never the delay.
+// TodoMVC's own consumption of the visor's shared system-UI core
+// (visor/ui/visor.ts): the strip, the identity cluster, the context
+// cluster and the drawer host are the framework's; what stays here is
+// this page's OWN storage keys, its one static app-surface record (there
+// is exactly one artifact, so there is exactly one row in the trust
+// table — no naming ceremony, no per-mark palette assignment the way the
+// demo spike needs for its three panes), and the two lightweight drawer
+// tenants this page has always had: "consent" and "kill", ported from
+// the pre-shared-core spike (`git show HEAD:spikes/todomvc/host/
+// visor.ts`, before this file became a from-scratch consumer of
+// visor/ui/visor.ts — C3 of the visor extraction) with their exact
+// user-facing strings and semantics preserved.
 
+import {
+  initVisor,
+  type SurfaceIdentity,
+  VISOR_HUES,
+} from "../../../visor/ui/visor.ts";
 import type { Runner } from "./app.ts";
 
-const ARM_MS = 700; // <= 1s per the experiment's budget
+// --- this page's own storage keys ---------------------------------------------
+//
+// Two spikes on one origin must not share an anchor colour or an
+// identity record: the palette and the identity vocabulary are the
+// framework's (visor/ui/visor.ts), the KEYS are the consumer's. No
+// legacy key here — todomvc never had a pre-rename ("chrome") key to
+// migrate, unlike the demo spike's #22 migration.
+const HUE_KEY = "pm-todomvc-visor-hue";
+const IDENTITY_KEY = "pm-todomvc-identity";
 
-export interface Visor {
-  bind(runner: Runner): void;
-  killed: boolean;
+/** The component tint for the strip's top-line chip: deterministic from
+ * the artifact name, never random and never user-chosen — this is the
+ * SAME derivation the demo spike explicitly rejected for its own trust
+ * marks (see host/demo.ts's `surfaceMark` comment: deriving the
+ * assigned-mark colour from component bytes lets an impersonator grind
+ * its artifact for a collision). It is safe here for the reason that
+ * comment gives: todomvc has exactly ONE artifact per boot, assigned
+ * once at compile/serve time, not attacker-choosable at runtime the way
+ * a mark record's key is — there is no target color to grind toward,
+ * only "this app" vs. "some other app", and the palette is small and
+ * fixed either way. Spike-grade, documented per the dispatch. */
+function tintFor(name: string): number {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) {
+    h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  return VISOR_HUES[h % VISOR_HUES.length];
 }
 
-export function initVisor(petname: string, detail: string): Visor {
-  const strip = document.getElementById("visor") as HTMLElement;
-  const drawer = document.getElementById("visor-drawer") as HTMLElement;
-  const drawerInner = drawer.firstElementChild as HTMLElement;
-  const dim = document.getElementById("visor-dim") as HTMLElement;
-  const appHost = document.getElementById("app") as HTMLElement;
-  let runner: Runner | null = null;
-  let open = false;
+export interface Visor {
+  /** Hand the visor the running app: the runner the "consent"/"kill"
+   * tenants pause/resume, and the frame surface's own teardown (present
+   * only for `kind === "frame"` — see app.ts's TodoApp.teardown), which
+   * "kill" awaits before it replaces the app host with the killed note. */
+  bind(app: { runner: Runner; teardown?: () => Promise<void> }): void;
+  readonly killed: boolean;
+}
 
-  const visor: Visor = {
-    killed: false,
-    bind(r: Runner) {
-      runner = r;
-    },
+export function initTodoVisor(artifactName: string): Visor {
+  let bound: { runner: Runner; teardown?: () => Promise<void> } | null = null;
+  let killed = false;
+
+  const appSurface: SurfaceIdentity = {
+    name: artifactName,
+    // The guest declares nothing about itself here — there is no
+    // separate self-description surface in this spike, unlike the
+    // demo's panel `nickname()` export.
+    nickname: "",
+    hue: tintFor(artifactName),
+    isNew: false,
+    // The page's own historical user-facing word (pre-C3 `initVisor("TodoMVC", ...)`),
+    // carried over as the assigned petname rather than re-litigated
+    // through a naming ceremony this page does not otherwise offer.
+    petname: "TodoMVC",
   };
 
-  // --- the strip (position is the trust anchor: apps cannot paint here) ---
-  strip.replaceChildren();
-  const title = document.createElement("span");
-  title.className = "visor-petname";
-  title.textContent = `⛨ ${petname}`;
-  const caps = document.createElement("span");
-  caps.className = "visor-caps";
-  caps.textContent = detail;
-  const spacer = document.createElement("span");
-  spacer.className = "visor-spacer";
-  const consentBtn = document.createElement("button");
-  consentBtn.textContent = "consent demo";
-  const killBtn = document.createElement("button");
-  killBtn.textContent = "kill";
-  strip.append(title, caps, spacer, consentBtn, killBtn);
+  const visor = initVisor({
+    hueKey: HUE_KEY,
+    identityKey: IDENTITY_KEY,
+    appSurface: () => appSurface,
+  });
 
-  // --- the drawer: interactions emerge from above the strip ---------------
-  // openDrawer pauses the app, slides the strip down, and arms the
-  // interaction's controls only after ARM_MS.
-  function openDrawer(
-    build: (close: () => void) => { root: HTMLElement; controls: HTMLButtonElement[] },
-  ) {
-    if (open || visor.killed) return;
-    open = true;
-    runner?.pause();
-    const close = () => {
-      open = false;
-      drawer.classList.remove("visor-open");
-      drawerInner.style.height = "0px";
-      dim.hidden = true;
-      runner?.resume();
-      // Clear content after the collapse transition would have finished.
-      setTimeout(() => {
-        if (!open) drawerInner.replaceChildren();
-      }, ARM_MS);
-    };
-    const { root, controls } = build(close);
-    drawerInner.replaceChildren(root);
-    for (const b of controls) b.disabled = true;
-    dim.hidden = false;
-    drawer.classList.add("visor-open");
-    // Animate to the measured content height: strip and content ride one
-    // curve, rigidly glued (the fr-interpolation trick was nonlinear and
-    // engine-varied). scrollHeight misses flex-end top-overflow, so
-    // measure at height:auto, then animate 0 → target.
-    drawerInner.style.height = "auto";
-    const target = drawerInner.offsetHeight;
-    drawerInner.style.height = "0px";
-    void drawerInner.offsetHeight;
-    drawerInner.style.height = `${target}px`;
-    // The arming delay: the timer is the enforcement; the slide is its
-    // visible form. A press started while disabled produces no click.
-    setTimeout(() => {
-      for (const b of controls) b.disabled = false;
-      root.classList.add("visor-armed");
-    }, ARM_MS);
+  // A silently-reset anchor trains the user that it changes sometimes;
+  // a reset is therefore announced, on the visor's own line — identical
+  // wording to the demo spike's boot announcement (host/demo.ts:1128),
+  // because it is the same event under the same rule.
+  if (visor.fresh) {
+    visor.announce("new visor colour set for this device — remember it", 15000);
   }
 
-  function consentContent(close: () => void) {
+  // The context is rendered once at construction (initVisor's own
+  // `setContext(null)` already resolves through `appSurface` above); no
+  // further boot-time render is needed before the strip is live.
+  visor.renderContext();
+
+  // --- this page's own strip controls --------------------------------------
+  //
+  // Mounted into the shared core's optional actions slot
+  // (visor/ui/visor.ts's Visor.actions) — absent for the demo spike's
+  // markup, present here (web/index.html's #visor-actions). Two buttons,
+  // same as the pre-C3 strip: "consent demo" and "kill".
+  const consentBtn = document.createElement("button");
+  consentBtn.type = "button";
+  consentBtn.textContent = "consent demo";
+  const killBtn = document.createElement("button");
+  killBtn.type = "button";
+  killBtn.textContent = "kill";
+  visor.actions?.append(consentBtn, killBtn);
+
+  // --- the "consent" tenant -------------------------------------------------
+  //
+  // A simulated consent prompt: armed (Allow/Deny stay disabled until the
+  // arming delay elapses — defeats a baited mis-tap) and dimmed (the app
+  // is paused for the duration, so it can neither observe nor race the
+  // decision). Ported verbatim in wording from the pre-C3 spike's
+  // `consentContent`.
+  const consentTenant = visor.drawer.tenant<{ appName: string }>({
+    name: "consent",
+    armed: true,
+    dim: true,
+    context: () => ({ ...appSurface, kind: "panel" }),
+    beforeShow: () => {
+      bound?.runner.pause();
+    },
+    afterCollapse: () => {
+      if (!killed) bound?.runner.resume();
+    },
+  });
+
+  function buildConsentSheet(appName: string) {
     const root = document.createElement("div");
-    root.className = "visor-sheet";
+    root.className = "todomvc-sheet";
     const h = document.createElement("h2");
     h.textContent = "Simulated consent prompt";
     const p = document.createElement("p");
-    // Untrusted-string discipline: app-supplied text is quoted and styled
-    // as foreign, never part of the visor's own sentence.
+    // Untrusted-string discipline: app-supplied text is quoted and
+    // styled as foreign, never part of the visor's own sentence.
     p.append("The app ");
     const q = document.createElement("q");
-    q.className = "visor-foreign";
-    q.textContent = petname;
+    q.className = "tm-foreign";
+    q.textContent = appName;
     p.append(
       q,
       " requests a demonstration capability. While this surface is open, the app receives no input.",
     );
     const note = document.createElement("p");
-    note.className = "visor-note";
+    note.className = "tm-note";
     note.textContent =
       "Controls arm only after the reveal completes. The visor never asks you to type a secret here.";
     const row = document.createElement("div");
-    row.className = "visor-row";
+    row.className = "tm-row";
     const allow = document.createElement("button");
+    allow.type = "button";
     allow.textContent = "Allow";
     const deny = document.createElement("button");
+    deny.type = "button";
     deny.textContent = "Deny";
-    allow.onclick = close;
-    deny.onclick = close;
+    allow.onclick = () => consentTenant.close();
+    deny.onclick = () => consentTenant.close();
     row.append(allow, deny);
     root.append(h, p, note, row);
     return { root, controls: [allow, deny] };
   }
 
-  function killContent(close: () => void) {
+  consentBtn.onclick = () => {
+    consentTenant.open({ appName: artifactName }, (s) => buildConsentSheet(s.appName));
+  };
+
+  // --- the "kill" tenant ------------------------------------------------------
+  //
+  // "Suspend this app?", same armed+dimmed sheet shape. On Suspend (the
+  // NEW, now-real part of C3): close the sheet, mark killed, pause the
+  // runner FOR GOOD (never resumed — see `afterCollapse` above's
+  // `!killed` guard), await the frame surface's own teardown when there
+  // is one, and only then replace the app host's content with the
+  // `.visor-killed` note. Awaiting first means a `kind=frame` app's
+  // sandboxed iframe is actually gone — not merely marked dead — before
+  // the note claims it is.
+  const killTenant = visor.drawer.tenant<Record<never, never>>({
+    name: "kill",
+    armed: true,
+    dim: true,
+    context: () => ({ ...appSurface, kind: "panel" }),
+    beforeShow: () => {
+      bound?.runner.pause();
+    },
+    afterCollapse: () => {
+      if (!killed) bound?.runner.resume();
+    },
+  });
+
+  function buildKillSheet() {
     const root = document.createElement("div");
-    root.className = "visor-sheet";
+    root.className = "todomvc-sheet";
     const h = document.createElement("h2");
     h.textContent = "Suspend this app?";
     const p = document.createElement("p");
     p.textContent =
       "Input delivery stops and the app's surface is removed. (Spike semantics; real teardown is a deltic embedder-API question — #22.)";
     const row = document.createElement("div");
-    row.className = "visor-row";
+    row.className = "tm-row";
     const suspend = document.createElement("button");
+    suspend.type = "button";
     suspend.textContent = "Suspend";
     const cancel = document.createElement("button");
+    cancel.type = "button";
     cancel.textContent = "Cancel";
     suspend.onclick = () => {
-      close();
-      visor.killed = true;
-      runner?.pause(); // never resumed: delivery stops for good
-      const note = document.createElement("div");
-      note.className = "visor-killed";
-      note.textContent = "App suspended by user.";
-      appHost.replaceChildren(note);
+      killTenant.close();
+      killed = true;
+      bound?.runner.pause(); // never resumed: delivery stops for good
+      const finish = () => {
+        const appHost = document.getElementById("app") as HTMLElement | null;
+        const note = document.createElement("div");
+        note.className = "visor-killed";
+        note.textContent = "App suspended by user.";
+        appHost?.replaceChildren(note);
+      };
+      // The frame surface (if any) is torn down before the host content
+      // is replaced: awaiting `teardown()` means the sandboxed iframe is
+      // actually gone, not merely superseded, before the note claims the
+      // app is.
+      const teardown = bound?.teardown;
+      if (teardown) {
+        teardown().then(finish);
+      } else {
+        finish();
+      }
     };
-    cancel.onclick = close;
+    cancel.onclick = () => killTenant.close();
     row.append(suspend, cancel);
     root.append(h, p, row);
     return { root, controls: [suspend, cancel] };
   }
 
-  consentBtn.onclick = () => openDrawer(consentContent);
-  killBtn.onclick = () => openDrawer(killContent);
-  return visor;
+  killBtn.onclick = () => {
+    killTenant.open({}, () => buildKillSheet());
+  };
+
+  return {
+    bind(app) {
+      bound = app;
+    },
+    get killed() {
+      return killed;
+    },
+  };
 }

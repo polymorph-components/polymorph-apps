@@ -14,9 +14,9 @@
 // class structurally: there is nothing to read, not merely nothing
 // allowed to be read.
 
-import type { Backend } from "../../todomvc/host/backend.ts";
-import { createQueuedBackend, type Op } from "../../todomvc/host/backend-queued.ts";
-import type { UiEvent } from "../../todomvc/host/events.ts";
+import type { Backend } from "../surface/backend.ts";
+import { createQueuedBackend, type Op } from "../surface/backend-queued.ts";
+import type { UiEvent } from "../surface/events.ts";
 
 type ShellMsg =
   | { t: "ops"; ops: Op[] }

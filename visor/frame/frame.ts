@@ -11,9 +11,9 @@
 // frame→shell message the same-realm version has no need for: `height`,
 // so the shell can size an iframe it cannot measure from the inside.
 
-import { createApplier } from "../../todomvc/host/applier.ts";
-import type { Op } from "../../todomvc/host/backend-queued.ts";
-import type { UiEvent } from "../../todomvc/host/events.ts";
+import { createApplier } from "../surface/applier.ts";
+import type { Op } from "../surface/backend-queued.ts";
+import type { UiEvent } from "../surface/events.ts";
 
 type ShellMsg =
   | { t: "ops"; ops: Op[] }

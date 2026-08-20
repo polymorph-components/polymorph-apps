@@ -15,10 +15,25 @@ import {
   ComponentException,
   instantiate,
 } from "@deltic/runtime/embedder";
-import { createRunner, type Runner } from "../../todomvc/host/app.ts";
-import { createFrameBackend } from "./frame-backend.ts";
-import { createSurface } from "../../todomvc/host/surface.ts";
-import type { UiEvent } from "../../todomvc/host/events.ts";
+import { createRunner, type Runner } from "../../../visor/surface/runner.ts";
+import { createFrameBackend } from "../../../visor/frame/frame-backend.ts";
+import { createSurface } from "../../../visor/surface/surface.ts";
+// The visor's system UI: the strip, the identity cluster, the context
+// cluster and the drawer host. The demo is a CONSUMER of it — it supplies
+// storage keys, the surface the strip falls back to, and the CONTENT of
+// the three sheets it registers as drawer tenants.
+import {
+  identityIcon,
+  IDENTITY_MAX,
+  initVisor,
+  nicknameQuote,
+  petnameSpan,
+  type SurfaceIdentity,
+  VISOR_HUES,
+  VISOR_ICONS,
+  type VisorIdentity,
+} from "../../../visor/ui/visor.ts";
+import type { UiEvent } from "../../../visor/surface/events.ts";
 import {
   type Driver,
   type Engine,
@@ -87,165 +102,21 @@ type StorageConfig =
 
 const STORAGE_KEY = "pm-demo-storage";
 
-// --- visor appearance: the personal, undisclosed anchor -----------------------
+// --- the visor's own storage keys ---------------------------------------------
 //
-// The strip's colour is the user's own: RANDOMISED on first run, pickable
-// from a constrained palette, and never handed to app code. It is a
-// SECONDARY anchor — position is the primary one (apps cannot paint the
-// strip at all) — and it is deliberately NOT the dropped #22
-// personalization secret: it demands no user action at a decision point
-// and no per-prompt verification, so it fails toward "something looks
-// off" rather than "I forgot to check".
-//
-// Why the palette is constrained: fixed lightness and chroma in OKLCH
-// means every choice keeps the same text contrast, so the anchor can
-// never be customised into an unreadable or a look-alike state.
-//
-// Why apps cannot learn it: nothing in the surface API carries a colour;
-// the app rectangle is opaque so visor pixels and app pixels never
-// composite (blend/backdrop-filter pixel-stealing has nothing to
-// sample); and the framework's curated DOM must additionally withhold
-// blend modes, backdrop filters, CSSOM read-back and system-colour
-// keywords — see the #5 ruling table. The demo enforces the structural
-// half: this value is never passed to a guest, and the component tint
-// below is derived from component bytes instead.
-const VISOR_HUES = [265, 210, 175, 140, 95, 60, 35, 10, 330, 300];
+// The visor ITSELF — the anchor colour and its palette, the hue
+// load/migrate/announce semantics, the scoping discipline that keeps
+// --visor-bg off :root, the identity record and its fixed glyph
+// vocabulary, the strip, and the drawer host — lives in
+// visor/ui/visor.ts. What stays here is the DEMO'S KEYS: two spikes
+// sharing an origin must not share an anchor colour or an identity
+// record, so the keys are the consumer's and the palette is the
+// framework's.
 const VISOR_KEY = "pm-demo-visor-hue";
 // CONTRACT: rename-only migration (chrome -> visor, GitHub issue #22); the
-// legacy key is read once below and then removed, never re-created.
+// legacy key is read once by `initVisor` and then removed, never re-created.
 const LEGACY_CHROME_KEY = "pm-demo-chrome-hue";
-
-function visorHue(): { hue: number; fresh: boolean } {
-  try {
-    // One-time migration: carry an existing user's hue to the new key
-    // without a re-roll (see the no-quiet-reset note below), then drop
-    // the old key so this runs at most once per device.
-    if (localStorage.getItem(VISOR_KEY) === null) {
-      const legacy = localStorage.getItem(LEGACY_CHROME_KEY);
-      if (legacy !== null) localStorage.setItem(VISOR_KEY, legacy);
-    }
-    localStorage.removeItem(LEGACY_CHROME_KEY);
-    const raw = localStorage.getItem(VISOR_KEY);
-    if (raw !== null) {
-      const hue = Number(raw);
-      if (VISOR_HUES.includes(hue)) return { hue, fresh: false };
-    }
-  } catch { /* storage unavailable: fall through to a fresh pick */ }
-  // First run (or eviction). A silently-reset anchor would train users
-  // that "visor colour changes sometimes", which inverts the training —
-  // so a reset is ANNOUNCED, never quiet. In the framework this value
-  // belongs with durable device state (#11's identity bundle).
-  const hue = VISOR_HUES[Math.floor(Math.random() * VISOR_HUES.length)];
-  try {
-    localStorage.setItem(VISOR_KEY, String(hue));
-  } catch { /* nothing durable to write to */ }
-  return { hue, fresh: true };
-}
-
-/** The hue currently COMMITTED as the user's anchor colour — as opposed
- * to a live preview the settings sheet is painting. `applyVisorHue`
- * paints; this is set only where the choice is persisted, so a Cancel
- * has something truthful to revert to even in a browser where storage
- * is unavailable (and `visorHue` would otherwise re-roll). */
-let committedHue = VISOR_HUES[0];
-
-function applyVisorHue(hue: number) {
-  // Scoped to the strip ELEMENT and to the credential drawer (the only
-  // other surface visor paints in the user's own colour), never to
-  // :root. A custom property on the document root is ambient authority:
-  // it inherits into every app region, so a component that ever gained a
-  // `style` attribute (or a visor class resolving var(--visor-bg))
-  // could paint the visor's exact colour without ever reading it. Keeping
-  // the value out of scope makes the secrecy structural instead of a
-  // property of the allowlist.
-  for (const id of ["visor-strip", "visor-drawer"]) {
-    const el = document.getElementById(id);
-    if (!el) continue;
-    el.style.setProperty("--visor-bg", `oklch(38% .07 ${hue})`);
-    el.style.setProperty("--visor-fg", "#f4f6fc");
-  }
-}
-
-// --- the identity record: the user's own words, in the visor's voice -------------
-//
-// The user's name for themselves, their word for THIS DEVICE, and the
-// glyph they chose for the visor's own button. All three are user-typed or
-// user-picked, and all three obey exactly the scoping discipline the
-// anchor colour obeys: they are rendered ONLY in visor pixels (the
-// strip and the sheets that hang off it), never written to a :root
-// custom property, never passed to a panel, an engine, or across the
-// frame seam. Nothing in the surface API can carry them, and the
-// invariant check (e) in scripts/check-invariants.sh keeps it that way
-// by grepping the seam files.
-//
-// Why this is worth anything: it gives the anchor a second thing an
-// impersonating rectangle cannot reproduce. Position is primary, the
-// colour is secondary, and these are words an app can only guess at.
-//
-// NO FABRICATION. An unset field renders NOTHING — never "user", never
-// "this device". A default visor invented would be a word the visor says
-// in its own voice that the user never wrote, which is the same
-// authority-lending mistake the petname/nickname split exists to
-// prevent.
 const IDENTITY_KEY = "pm-demo-identity";
-
-/** The button face is THE VISOR'S VOCABULARY, not free text. The record
- * lives in localStorage, so it is hand-editable; if the face were an
- * arbitrary string, a record edited to say "Verified" or "polymorph"
- * would put attacker- (or accident-) chosen WORDS into the anchor, in
- * the visor's own voice, at the one position that is supposed to be
- * unspoofable. A fixed glyph set has no such reading: anything outside
- * it falls back to the default shield. */
-const VISOR_ICONS = ["⛨", "✶", "✦", "◆", "▲", "☘", "⚑", "✿", "☾", "⚙"];
-const DEFAULT_ICON = VISOR_ICONS[0];
-
-/** Cap for the user's own words on the strip. CSS ellipsis handles the
- * visual overflow; this stops a hand-edited record from being long
- * enough to matter in the first place. */
-const IDENTITY_MAX = 24;
-
-interface VisorIdentity {
-  name?: string;
-  device?: string;
-  icon?: string;
-}
-
-function loadIdentity(): VisorIdentity {
-  try {
-    const raw = JSON.parse(localStorage.getItem(IDENTITY_KEY) ?? "{}");
-    if (!raw || typeof raw !== "object") return {};
-    const rec = raw as Record<string, unknown>;
-    const word = (v: unknown) =>
-      typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, IDENTITY_MAX) : undefined;
-    return {
-      name: word(rec.name),
-      device: word(rec.device),
-      // Out-of-vocabulary icons are dropped here rather than rendered;
-      // `identityIcon` supplies the default.
-      icon: typeof rec.icon === "string" && VISOR_ICONS.includes(rec.icon) ? rec.icon : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
-
-function saveIdentity(rec: VisorIdentity): void {
-  // Empty fields are stored as ABSENT, not as "": unset must round-trip
-  // as unset, so the strip keeps rendering nothing for them.
-  const out: VisorIdentity = {};
-  if (rec.name && rec.name.trim() !== "") out.name = rec.name.trim().slice(0, IDENTITY_MAX);
-  if (rec.device && rec.device.trim() !== "") out.device = rec.device.trim().slice(0, IDENTITY_MAX);
-  if (rec.icon && VISOR_ICONS.includes(rec.icon)) out.icon = rec.icon;
-  try {
-    localStorage.setItem(IDENTITY_KEY, JSON.stringify(out));
-  } catch { /* nothing durable to write to */ }
-}
-
-/** The glyph the visor's own button wears. Unknown/absent → the default
- * shield (see VISOR_ICONS). */
-function identityIcon(rec: VisorIdentity): string {
-  return rec.icon && VISOR_ICONS.includes(rec.icon) ? rec.icon : DEFAULT_ICON;
-}
 
 // Surface marks: the recognition colour the visor shows for a component is// ASSIGNED at first sight and stored in a trust record — never derived.
 //
@@ -1220,356 +1091,12 @@ function err(e: unknown): string {
   return typeof p === "string" ? p : String(e);
 }
 
-/** What the visor knows about one component surface. `name` is the
- * unforgeable provenance key the visor fetched the artifact by; `nickname`
- * is what the component says about itself; `petname` is what the user
- * decided to call it. Only the last of the three is ever spoken in
- * the visor's own voice. */
-interface SurfaceIdentity {
-  name: string;
-  nickname: string;
-  hue: number;
-  isNew: boolean;
-  petname?: string;
-  /** When the visor first assigned this record its mark, from the stored
-   * trust record. Shown on the App settings sheet as a locale date — a
-   * "you have seen this before, since <date>" the user can check. */
-  firstSeen?: number;
-  /** One line of visor-known metadata about this surface, for the App
-   * settings sheet. `label` is THE VISOR'S word (never a component's);
-   * `value` may be component-influenced (a panel's declared
-   * destination), so the sheet renders it foreign-quoted. `foreign`
-   * says which. */
-  meta?: { label: string; value: string; foreign: boolean };
-}
-
-/** The visor's context slot: what secondary surface, if any, is on screen.
- * Called with null for "no secondary surface" — which is no longer
- * "nothing": the strip falls back to THE APP's own identity, the
- * artifact the visor fetched and drew into the three regions. `kind` says
- * whose pixels the secondary surface is: a component's config panel,
- * the visor's own credential sheet, the visor's own naming/App-settings sheet,
- * or the visor's own settings sheet. The last has no component behind it at
- * all, which is why it is a bare `kind` rather than a surface. */
-type VisorContext =
-  | (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" })
-  | { kind: "settings" }
-  | null;
-
-let setVisorContext: (surface: VisorContext) => void = () => {};
-
 /** THE APP'S OWN ROW IN THE TRUST TABLE. Registered once at boot, after
  * the app artifact is instantiated for the regions: ONE artifact drawn
  * into three regions is ONE record, so the strip names the component,
  * not the rectangles. Null until then (and if the nickname read fails,
  * the record still exists — only the self-declared name falls back). */
 let appSurface: SurfaceIdentity | null = null;
-
-/** Say something in THE VISOR'S OWN VOICE on the strip's bottom line, for
- * `ms`, and then put the line back by RE-RENDERING the live context.
- *
- * The re-render is the whole design of this helper. The obvious version
- * saves the line's previous content and restores it — which is wrong
- * here, because the thing the line is about can change while the
- * announcement is showing: a sheet opens or closes, a petname is
- * assigned, the context moves to another surface. Restoring a saved
- * string would then put a stale sentence back on the anchor, in the visor's
- * voice, which is the one place a wrong word costs something. Installed
- * by `initVisor`. */
-let announce: (text: string, ms?: number) => void = () => {};
-
-
-/** The visor's naming ceremony, installed by `boot`. Module-level because
- * the strip's "name it" control is rendered by `initVisor`, which runs
- * before the drawer machinery exists. */
-let requestNaming: (surface: SurfaceIdentity) => void = () => {};
-
-/** The visor's settings sheet, installed by `boot` for the same reason:
- * the strip's settings button is rendered by `initVisor`, well before
- * the drawer exists. */
-let requestSettings: () => void = () => {};
-
-/** Repaint the strip's identity cluster from the stored record.
- * Installed by `initVisor`; called after the settings sheet commits. */
-let renderVisorIdentity: () => void = () => {};
-
-/** Repaint the strip's CONTEXT cluster from whatever context is current.
- * Installed by `initVisor`; called when something the current context
- * is drawn from changes underneath it (the app surface being registered
- * at boot, for instance) without the context itself moving. */
-let renderVisorContext: () => void = () => {};
-
-/** The user's word for a component, in THE VISOR'S voice: not quoted, not
- * monospaced, because the user wrote it and the visor is entitled to say
- * it. Clamped anyway — the naming sheet caps input at 40, but a record
- * hand-edited in devtools should not be able to stretch the strip. */
-function petnameSpan(petname: string): HTMLElement {
-  const el = document.createElement("span");
-  el.className = "petname";
-  el.textContent = petname.slice(0, 40);
-  return el;
-}
-
-/** The component's own account of itself, always foreign: quoted,
- * monospaced, clamped, never joined into a visor sentence. */
-function nicknameQuote(nickname: string): HTMLElement {
-  const q = document.createElement("q");
-  q.className = "foreign";
-  q.textContent = nickname.slice(0, 40);
-  return q;
-}
-
-function initVisor() {
-  const { hue, fresh } = visorHue();
-  committedHue = hue;
-  applyVisorHue(hue);
-  const context = document.getElementById("visor-context")!;
-  const ctxTop = context.querySelector(".ctx-top") as HTMLElement;
-  const ctxBottom = context.querySelector(".ctx-bottom") as HTMLElement;
-  const identityBox = document.getElementById("visor-identity")!;
-
-  // THE IDENTITY CLUSTER, rebuilt from the record on every commit. Every
-  // word here is the user's own, said in the visor's voice (plain, full
-  // opacity) — and every word here stays inside the visor's pixels: nothing
-  // below is written to a custom property, handed to a panel, or put on
-  // the frame seam. Same discipline as `applyVisorHue`, for the same
-  // reason: an ambient value is a disclosed value.
-  //
-  // TWO LINES NOW: the user's name above their word for this device,
-  // each ellipsizing in place. They are no longer hidden on a narrow
-  // viewport — the cluster's 45% cap and the per-line ellipsis handle
-  // narrowness, and dropping them was dropping half of what an
-  // impersonating rectangle cannot reproduce, at the width where the
-  // strip is most crowded.
-  renderVisorIdentity = () => {
-    const rec = loadIdentity();
-    identityBox.replaceChildren();
-    const lines = document.createElement("span");
-    lines.className = "id-lines";
-    // textContent, never innerHTML: the record is hand-editable storage,
-    // so it is treated as data even though it is the user's own.
-    // An unset field renders NOTHING — no fabricated "user"/"this
-    // device", and no leftover punctuation (the separator the one-line
-    // cluster needed is gone with the line).
-    if (rec.name) {
-      const who = document.createElement("span");
-      who.className = "who";
-      who.textContent = rec.name.slice(0, IDENTITY_MAX);
-      lines.append(who);
-    }
-    if (rec.device) {
-      const dev = document.createElement("span");
-      dev.className = "who device";
-      dev.textContent = rec.device.slice(0, IDENTITY_MAX);
-      lines.append(dev);
-    }
-    identityBox.append(lines);
-    const btn = document.createElement("button");
-    btn.id = "visor-settings";
-    btn.type = "button";
-    // The face is a glyph from the visor's fixed vocabulary — never a
-    // string out of the record (see VISOR_ICONS).
-    btn.textContent = identityIcon(rec);
-    btn.title = "your visor: name, device, colour";
-    btn.setAttribute("aria-label", "your visor: name, device, colour");
-    btn.onclick = () => requestSettings();
-    identityBox.append(btn);
-  };
-  renderVisorIdentity();
-
-  /** The context currently on the strip, kept so an expiring
-   * announcement can re-render it rather than restore a saved string. */
-  let current: VisorContext = null;
-  /** Bumped by every render and every announcement: a revert timer whose
-   * token is stale has been overtaken and must do nothing. */
-  let announceToken = 0;
-  let announceTimer = 0;
-  /** True while an announcement owns the bottom line. A CONTEXT MOVE
-   * preempts it (a sheet opening is more urgent than any timed note),
-   * but a mere repaint of the same context must not: the app surface
-   * being registered a second after boot would otherwise silently eat
-   * the "new visor colour" announcement. */
-  let announcing = false;
-
-  /** The surface the TOP line is about. The visor's own settings sheet has
-   * no component behind it, so the top line keeps naming the app: the
-   * component identity is a property of what is INSTALLED, not of which
-   * visor sheet happens to be open — that is what "static after
-   * install" means here. */
-  const topSurface = (ctx: VisorContext): SurfaceIdentity | null => {
-    if (ctx === null) return appSurface;
-    if (ctx.kind === "settings") return appSurface;
-    return ctx;
-  };
-
-  const renderContext = ({ keepAnnouncement = false }: { keepAnnouncement?: boolean } = {}) => {
-    const holdBottom = keepAnnouncement && announcing;
-    if (!holdBottom) {
-      announceToken++;
-      clearTimeout(announceTimer);
-      announcing = false;
-    }
-    const ctx = current;
-    const surface = topSurface(ctx);
-    ctxTop.replaceChildren();
-    if (!holdBottom) ctxBottom.replaceChildren();
-
-    // --- the TOP line: the COMPONENT's identity, and only that -------
-    // Component-said words only: its assigned mark and what it calls
-    // itself, quoted/monospaced/clamped as ever. Nothing the visor does to
-    // its own sheets rewrites this line.
-    if (surface) {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.style.background = `oklch(62% .16 ${surface.hue})`;
-      ctxTop.append(chip, nicknameQuote(surface.nickname));
-    }
-
-    // --- the BOTTOM line: THE VISOR'S voice ----------------------------
-    // What is NOT here any more: the sentence "— provider configuration
-    // panel · drawn by the component, not by the visor". It was a standing
-    // description competing for a line that now has to hold the
-    // petname, the first-sight marker and the open sheet's name in one
-    // ellipsizing row; and the claim it made is made better by the
-    // sheets themselves, at the moment they open.
-    const kind = ctx === null ? "app" : (ctx.kind ?? "panel");
-    const sheet = kind === "credentials" || kind === "naming" || kind === "settings";
-    if (sheet && !holdBottom) {
-      // While a visor sheet is open the strip NAMES it: the anchor and
-      // the surface hanging off it say the same thing, so "which pixels
-      // am I typing into" has a visor-side answer. This is the part of
-      // the deleted standing-rule line that was worth keeping.
-      const lead = document.createElement("span");
-      lead.className = "said";
-      lead.textContent = kind === "credentials"
-        ? "storage credentials"
-        : kind === "naming"
-        ? "naming"
-        : "visor settings";
-      ctxBottom.append(lead);
-    }
-    if (surface && !holdBottom) {
-      // THE DEMOTION. With a petname, the name the visor SAYS is the user's
-      // own, in the visor's voice, on the visor's line — and the component's
-      // self-description stays upstairs where it belongs, as a quote.
-      // Without one, the visor offers to fix that.
-      const petname = (surface.petname ?? "").trim();
-      if (petname !== "") {
-        const named = petnameSpan(petname);
-        if (!sheet) {
-          // The click target is visor pixels in the strip — a place no
-          // component can draw — so the ceremony cannot be baited from
-          // inside an app rectangle. (The whole cluster is a tap target
-          // too; this inner one stops the event so one gesture is one
-          // opening.)
-          named.setAttribute("role", "button");
-          named.setAttribute("tabindex", "0");
-          named.classList.add("clickable");
-          named.title = "app settings: rename, recolour, forget";
-          named.onclick = (ev: MouseEvent) => {
-            ev.stopPropagation();
-            requestNaming(surface);
-          };
-          // A control that announces itself as a button to assistive tech
-          // must BE one: Enter and Space activate it, exactly as they
-          // would a real <button>. (Space is prevented from scrolling the
-          // page out from under the ceremony it is about to open.)
-          named.onkeydown = (ev: KeyboardEvent) => {
-            if (ev.key !== "Enter" && ev.key !== " ") return;
-            if (ev.key === " ") ev.preventDefault();
-            ev.stopPropagation();
-            requestNaming(surface);
-          };
-        }
-        ctxBottom.append(named);
-      }
-      if (surface.isNew && !sheet) {
-        // The TOFU moment is the one worth interrupting for: recognition
-        // marks mean nothing the first time, and the first time is when
-        // impersonation would land.
-        const fresh = document.createElement("span");
-        fresh.className = "fresh";
-        fresh.textContent = "NEW — first time this component draws here";
-        ctxBottom.append(fresh);
-      }
-      if (petname === "" && !sheet) {
-        // The visor's own control, in the visor's own pixels: the offer to stop
-        // relying on what the component says about itself.
-        const nameIt = document.createElement("button");
-        nameIt.id = "visor-name-it";
-        nameIt.type = "button";
-        nameIt.textContent = "name it";
-        nameIt.title = "give this component your own name";
-        nameIt.onclick = (ev: MouseEvent) => {
-          ev.stopPropagation();
-          requestNaming(surface);
-        };
-        ctxBottom.append(nameIt);
-      }
-    }
-
-    // THE CLUSTER IS ONE TAP TARGET, opening the visor's App settings sheet
-    // for the surface the top line names. Offered only when there is a
-    // surface and no credential/naming sheet already owns the drawer —
-    // a control that would be a no-op must not announce itself as a
-    // button to assistive tech.
-    const tappable = surface !== null && kind !== "credentials" && kind !== "naming";
-    if (tappable) {
-      context.setAttribute("role", "button");
-      context.setAttribute("tabindex", "0");
-      context.title = "app settings for this component";
-      context.onclick = () => requestNaming(surface!);
-      context.onkeydown = (ev: KeyboardEvent) => {
-        if (ev.key !== "Enter" && ev.key !== " ") return;
-        if (ev.key === " ") ev.preventDefault();
-        requestNaming(surface!);
-      };
-    } else {
-      context.removeAttribute("role");
-      context.removeAttribute("tabindex");
-      context.removeAttribute("title");
-      context.onclick = null;
-      context.onkeydown = null;
-    }
-  };
-
-  announce = (text, ms = 8000) => {
-    const token = ++announceToken;
-    announcing = true;
-    ctxBottom.replaceChildren();
-    const said = document.createElement("span");
-    said.className = "said announce";
-    said.textContent = text;
-    ctxBottom.append(said);
-    clearTimeout(announceTimer);
-    announceTimer = setTimeout(() => {
-      // Overtaken by a newer render or announcement: that one owns the
-      // line now.
-      if (token !== announceToken) return;
-      announcing = false;
-      // REVERT BY RE-RENDER, never by restoring what was there: the
-      // context may have moved while this was showing.
-      renderContext();
-    }, ms);
-  };
-
-  setVisorContext = (surface) => {
-    current = surface;
-    // A context MOVE preempts any live announcement (see `announcing`).
-    renderContext();
-  };
-  renderVisorContext = () => renderContext({ keepAnnouncement: true });
-  setVisorContext(null);
-
-
-  // The colour picker used to live here, as a strip button plus an
-  // inline swatch row. It moved WHOLE into the settings sheet (same
-  // constrained palette, same fixed lightness/chroma, same storage key):
-  // the strip is the anchor, and an anchor with its own editing controls
-  // dangling off it is a busier target than one control that opens
-  // the visor's own surface.
-  return { fresh };
-}
 
 async function boot() {
   const banner = document.getElementById("banner")!;
@@ -1578,11 +1105,26 @@ async function boot() {
     console.log(`[boot] ${s}`);
   };
 
+  // THE VISOR. `contextOverride` is the demo's answer to "who owns the
+  // strip right now, before any drawer tenant does": a LIVE COMPONENT
+  // SURFACE is the only claimant that is not the visor's own, which makes
+  // mislabelling it the one error with a victim. (`activePanel` is
+  // declared further down this same function; the arrow is only ever
+  // called after that point.)
+  const visor = initVisor({
+    hueKey: VISOR_KEY,
+    legacyHueKey: LEGACY_CHROME_KEY,
+    identityKey: IDENTITY_KEY,
+    appSurface: () => appSurface,
+    contextOverride: () => activePanel?.surface ?? null,
+  });
+  const setVisorContext = visor.setContext;
+  const announce = visor.announce;
+
   // An anchor that resets silently trains the user that it changes; a
   // reset is therefore announced — on the visor's own line, which reverts
   // by re-render when the announcement expires.
-  const { fresh } = initVisor();
-  if (fresh) {
+  if (visor.fresh) {
     announce("new visor colour set for this device — remember it", 15000);
   }
 
@@ -1728,7 +1270,7 @@ async function boot() {
   };
   // A repaint, not a context move: whatever is on the strip stays, and a
   // live announcement (the fresh-anchor one, at boot) keeps its line.
-  renderVisorContext();
+  visor.renderContext();
 
   // All background engine work rides ONE chain: never concurrent with
   // itself (a wedged overlap of interval-driven driver calls froze the
@@ -2036,22 +1578,14 @@ async function boot() {
   // strip, painted in the user's own anchor colour, with the panel
   // already torn down and every remaining surface frozen and dimmed.
   //
-  // ABOVE, not below, and the distinction is the whole defence. A sheet
-  // BENEATH the strip is forgeable by adjacency: the strip floats over
-  // scrollable content, so an app frame can be scrolled flush to the
-  // strip's bottom edge and paint a counterfeit that appears attached to
-  // the real bar. The band ABOVE the strip is unreachable at every scroll
-  // offset — the strip is pinned to the viewport's top edge, so there is
-  // no position an app can occupy there. And the sheet ARRIVES by pushing
-  // the real strip down: an app can paint a sheet, but it cannot move
-  // the visor's bar, so the reveal motion is itself unforgeable. Position is
-  // the anchor, the motion is its proof, and the colour is secondary.
-  const drawer = document.getElementById("visor-drawer") as HTMLElement;
+  // The GEOMETRY of that reveal — above and never below, the push that
+  // moves the real bar, the viewport-minus-strip height budget and the
+  // arming delay — is the framework's, and its reasoning now lives with
+  // it in visor/ui/visor.ts. What is left here is the CONTENT of the
+  // sheet and the demo's own two-phase commit.
+  /** The drawer's content box, for the driving handles at the bottom of
+   * this file. The host owns it; the queries below only read it. */
   const drawerInner = document.getElementById("visor-drawer-inner") as HTMLElement;
-  /** The bar the sheet opens above — measured for the sheet's height
-   * budget, so the anchor can never be pushed off-screen. */
-  const strip = document.getElementById("visor-strip") as HTMLElement | null;
-  const dim = document.getElementById("visor-dim") as HTMLElement;
   /** The dialog's own refusal line: the commit-time destination checks
    * fail while the dialog is still open and no sheet exists yet. */
   const dialogReason = document.getElementById("storage-reason") as HTMLElement;
@@ -2083,9 +1617,9 @@ async function boot() {
   let credBinding: HTMLElement | null = null;
   let credWarning: HTMLElement | null = null;
   let credReason: HTMLElement | null = null;
-  const drawerNote = (text: string) => {
-    if (credReason) credReason.textContent = text;
-  };
+  /** The open sheet's refusal line, in the visor's own words — a no-op
+   * while no sheet has declared one (see `visor.drawer.setNote`). */
+  const drawerNote = visor.drawer.note;
 
   heldCredential = (kind) => credValues.get(kind) ?? "";
   depositCredential = (kind, value) => {
@@ -2323,33 +1857,63 @@ async function boot() {
   // That invariant is the reason for the ordering below, and it must be
   // preserved by anything that touches this flow.
 
-  /** The arming delay, ported from the todomvc visor spike
-   * (spikes/todomvc/host/visor.ts:18): controls and inputs stay disabled
-   * until it elapses, which defeats a baited mis-tap — an app training
-   * rapid taps at a position where a visor control is about to appear.
-   * The TIMER is the enforcement; the slide is only its visible form, so
-   * prefers-reduced-motion drops the animation and never the delay. */
-  const ARM_MS = 700;
+  // --- THE DRAWER'S THREE TENANTS ------------------------------------------
+  //
+  // The host (visor/ui/visor.ts) owns the drawer, the reveal, the height
+  // budget, the arming delay and every deferred teardown. What the demo
+  // declares here is WHO may hold it, in what precedence, and what each
+  // one has to undo. REGISTRATION ORDER IS PRECEDENCE ORDER — it is the
+  // order `restoreContext` consults and the order evictions run in — so
+  // the credential session is registered first.
 
   /** What the visor holds between the two phases: the panel's secret-free
    * config, the destination the visor bound it to, and the surface mark of
    * the panel that produced it (for the provider line). Non-null exactly
    * while the drawer owns the interaction. */
-  let drawerSession:
-    | {
-      cfg: StorageConfig;
-      destination: string;
-      surface: SurfaceIdentity;
-    }
-    | null = null;
-  let armTimer = 0;
-  /** Re-fitting listener for the open sheet, removed on close. */
-  let drawerAnchor: (() => void) | null = null;
+  interface CredentialSession {
+    cfg: StorageConfig;
+    destination: string;
+    surface: SurfaceIdentity;
+  }
 
-  /** THE NAMING SESSION — a second, LIGHTWEIGHT tenant of the same
-   * drawer. It reuses the sheet's geometry (the reveal above the strip,
-   * which is the unforgeable part) but NOT the credential session's
-   * defences: no arming delay, no runner suspension, no page dim.
+  /** THE CREDENTIAL SESSION, and it ALWAYS WINS: `exclusive` means the
+   * lightweight tenants refuse to open while this sheet is up or arming,
+   * and that an opening credential sheet evicts either of them. It is
+   * also the only `armed` tenant (a baited mis-tap must not be able to
+   * spend a secret) and the only `dim`med one.
+   *
+   * NO COMPONENT SURFACE IS LIVE WHILE SECRETS ARE ON SCREEN: the panel
+   * is torn down by the caller before the sheet opens, and every
+   * remaining pane's runner is paused in `beforeShow` — queued
+   * invocations are held, not delivered, so app code can neither observe
+   * nor race the entry. */
+  const credentialTenant = visor.drawer.tenant<CredentialSession>({
+    name: "credentials",
+    exclusive: true,
+    armed: true,
+    dim: true,
+    // The strip names the sheet hanging off it, in the same colour it has
+    // always had (the anchor never changes colour per surface).
+    context: (s) => ({ ...s.surface, kind: "credentials" }),
+    beforeShow: () => {
+      for (const p of panes) p.runner?.pause();
+    },
+    // Input delivery resumes for every pane; the panel is already gone.
+    afterCollapse: () => {
+      for (const p of panes) p.runner?.resume();
+    },
+    // Held secrets die with the sheet: the visor keeps nothing after the
+    // interaction it collected them for is over.
+    afterRestore: () => {
+      clearCredentials();
+      credFields = credBinding = credWarning = credReason = null;
+    },
+  });
+
+  /** THE NAMING SESSION — a LIGHTWEIGHT tenant of the same drawer. It
+   * reuses the sheet's geometry (the reveal above the strip, which is the
+   * unforgeable part) but NOT the credential session's defences: no
+   * arming delay, no runner suspension, no page dim.
    *
    * Why that is not a downgrade. Arming defends SECRET ENTRY against a
    * baited mis-tap — an app training rapid taps where a visor control is
@@ -2360,74 +1924,42 @@ async function boot() {
    * closes. Paying the arming tax here would train users to click through
    * a delay that means something elsewhere, which is the real cost.
    *
-   * THE CREDENTIAL SESSION ALWAYS WINS: the lightweight tenants refuse
-   * to open while a credential sheet is up or arming, and an opening
-   * credential sheet evicts either of them. All three sessions share
-   * `drawer`/`drawerInner`, so every deferred teardown below tests ALL
-   * THREE through `drawerOccupied` — a close timer from one session must
-   * never blank another's live sheet (the late-teardown ordering bug
-   * this file has hit before, in session-aware form). */
-  let namingSession: { surface: SurfaceIdentity; hue: number } | null = null;
-  let namingAnchor: (() => void) | null = null;
+   * The session's `surface` is REASSIGNED after a Save (the sheet may
+   * outlive the click, and a re-open is built from this object), so the
+   * host holds the object rather than a copy. */
+  const namingTenant = visor.drawer.tenant<{ surface: SurfaceIdentity; hue: number }>({
+    name: "naming",
+    context: (s) => ({ ...s.surface, kind: "naming" }),
+  });
 
   /** THE SETTINGS SESSION — the THIRD tenant, lightweight on the same
    * grounds as naming: the reveal above the strip is kept (that is the
    * unforgeable part), the arming delay, runner suspension and page dim
    * are not. Nothing secret is typed here, it is opened from strip
    * pixels no app can draw or reach, and a mis-tap costs the user a form
-   * they close. Arming here would tax a gesture that buys nothing and
-   * teach users to click through a delay that means something where it
-   * counts.
+   * they close.
    *
    * `hueAtOpen` is the colour the anchor had when the sheet opened: the
    * swatch row previews LIVE, so Cancel (and eviction) must be able to
-   * put the anchor back exactly as it was. */
-  let settingsSession: { hueAtOpen: number } | null = null;
-  let settingsAnchor: (() => void) | null = null;
+   * put the anchor back exactly as it was. `commit` — passed by Save and
+   * by nothing else — is what distinguishes them. An uncommitted preview
+   * must not survive the sheet: the credential sheet that evicts this one
+   * is painted in the anchor colour, and it must be painted in the REAL
+   * one. */
+  const settingsTenant = visor.drawer.tenant<{ hueAtOpen: number }>({
+    name: "settings",
+    context: () => ({ kind: "settings" }),
+    beforeCollapse: (s, opts) => {
+      if (!opts.commit) visor.applyHue(s.hueAtOpen);
+    },
+  });
 
-  /** ONE occupancy test for three tenants. Every deferred
-   * `drawer.hidden = true` below is gated on this rather than on its own
-   * session: the teardown is DRAWER-scoped work, so it must ask about
-   * the drawer, not about the session that scheduled it. Adding a fourth
-   * tenant is then one line here instead of an audit of every timer. */
-  const drawerOccupied = () =>
-    drawerSession !== null || namingSession !== null || settingsSession !== null;
-
-  /** PUT THE STRIP BACK IN THE HANDS OF WHOEVER ACTUALLY OWNS IT NOW.
-   *
-   * The strip is the trust anchor, and its top line answers "whose
-   * rectangle is this". Every path that ENDS something — a sheet
-   * closing, a panel retiring — has to restore that line, and the naive
-   * restore ("back to the app") is a lie whenever something else has
-   * claimed the strip in the meantime. Since the ending paths are all
-   * DEFERRED in one way or another (a close runs on an animation, a
-   * retirement runs off a dialog event that at least one embedding
-   * delivers late), "in the meantime" is not hypothetical: the thing
-   * that claimed the strip can easily have arrived after the restore was
-   * set in motion.
-   *
-   * So no caller states what the context should become. Each one says
-   * only "I am done", and the answer is recomputed HERE from what is
-   * live, in the same precedence order the openers use:
-   *
-   *   a live PANEL SURFACE  — a component is on the page; it owns the line
-   *   the CREDENTIAL sheet  — secrets are up; it outranks the lightweights
-   *   the NAMING sheet
-   *   the SETTINGS sheet
-   *   otherwise             — nothing is claimed, so the app regions
-   *
-   * The panel comes first and is the entry that was missing: a component
-   * surface is the only tenant here that is not the visor's own, which
-   * makes mislabelling it the one error with a victim. Adding a tenant
-   * is one line here rather than an audit of every close path — the same
-   * reason `drawerOccupied` exists. */
-  const restoreVisorContext = () => {
-    if (activePanel) setVisorContext(activePanel.surface);
-    else if (drawerSession) setVisorContext({ ...drawerSession.surface, kind: "credentials" });
-    else if (namingSession) setVisorContext({ ...namingSession.surface, kind: "naming" });
-    else if (settingsSession) setVisorContext({ kind: "settings" });
-    else setVisorContext(null);
-  };
+  /** PUT THE STRIP BACK IN THE HANDS OF WHOEVER ACTUALLY OWNS IT NOW —
+   * the host's recomputation, in the precedence order above, with the
+   * live panel surface ahead of all three (see the `contextOverride`
+   * passed to `initVisor`). No caller states what the context should
+   * become; each one says only "I am done". */
+  const restoreVisorContext = visor.drawer.restoreContext;
 
   /** Persist and connect: identical to the pre-drawer commit tail, just
    * moved behind the sheet's Confirm. */
@@ -2444,85 +1976,15 @@ async function boot() {
     }
   };
 
-  const closeDrawer = () => {
-    if (!drawerSession) return;
-    drawerSession = null;
-    clearTimeout(armTimer);
-    if (drawerAnchor) globalThis.removeEventListener("resize", drawerAnchor);
-    drawerAnchor = null;
-    drawerInner.style.height = "0px";
-    dim.hidden = true;
-    // Input delivery resumes for every pane; the panel is already gone.
-    for (const p of panes) p.runner?.resume();
-    // Ownership-aware, never a bare `setVisorContext(null)`: this close
-    // may be running late, and the strip may already belong to somebody
-    // else (see restoreVisorContext).
-    restoreVisorContext();
-    // Held secrets die with the sheet: the visor keeps nothing after the
-    // interaction it collected them for is over.
-    clearCredentials();
-    credFields = credBinding = credWarning = credReason = null;
-    setTimeout(() => {
-      // Occupancy-aware, not drawer-scoped: another tenant may have
-      // claimed the drawer in the meantime, and blanking it here would
-      // erase a live sheet belonging to somebody else.
-      if (!drawerOccupied()) {
-        drawerInner.replaceChildren();
-        drawer.hidden = true;
-      }
-    }, ARM_MS);
-  };
-
-  /** Close the naming sheet. Deliberately NOT `closeDrawer`: that one
-   * resumes runners, un-dims and clears held credentials, none of which
-   * this session ever touched. */
-  const closeNamingDrawer = ({ context = true }: { context?: boolean } = {}) => {
-    if (!namingSession) return;
-    namingSession = null;
-    if (namingAnchor) globalThis.removeEventListener("resize", namingAnchor);
-    namingAnchor = null;
-    drawerInner.style.height = "0px";
-    // Ownership-aware (see restoreVisorContext): a close that lands
-    // after a panel surface has mounted must leave the panel's name on
-    // the top line, not put the app's back.
-    if (context) restoreVisorContext();
-    setTimeout(() => {
-      // Same occupancy test as every other close: a credential sheet may
-      // have evicted this one and be live in the drawer now.
-      if (!drawerOccupied()) {
-        drawerInner.replaceChildren();
-        drawer.hidden = true;
-      }
-    }, ARM_MS);
-  };
-
-  /** Close the settings sheet. `commit` distinguishes Save (the previewed
-   * colour is the user's choice and stays) from every other exit —
-   * Cancel, or eviction by another tenant — which puts the anchor back to
-   * the colour it had at open. An uncommitted preview must not survive
-   * the sheet: the credential sheet that evicts this one is painted in
-   * the anchor colour, and it must be painted in the REAL one. */
-  const closeSettingsDrawer = (
-    { context = true, commit = false }: { context?: boolean; commit?: boolean } = {},
-  ) => {
-    const session = settingsSession;
-    if (!session) return;
-    settingsSession = null;
-    if (settingsAnchor) globalThis.removeEventListener("resize", settingsAnchor);
-    settingsAnchor = null;
-    if (!commit) applyVisorHue(session.hueAtOpen);
-    drawerInner.style.height = "0px";
-    // Ownership-aware (see restoreVisorContext): a close that lands
-    // after a panel surface has mounted must leave the panel's name on
-    // the top line, not put the app's back.
-    if (context) restoreVisorContext();
-    setTimeout(() => {
-      if (!drawerOccupied()) {
-        drawerInner.replaceChildren();
-        drawer.hidden = true;
-      }
-    }, ARM_MS);
-  };
+  // The three closes are the tenants' own, thin: everything they used to
+  // do by hand — dropping the session, dropping the resize listener,
+  // collapsing the sheet, un-dimming, restoring the strip to its rightful
+  // owner and blanking the drawer only if nobody else claimed it
+  // meanwhile — is the host's now, driven by the specs above.
+  const closeDrawer = () => credentialTenant.close();
+  const closeNamingDrawer = (opts: { context?: boolean } = {}) => namingTenant.close(opts);
+  const closeSettingsDrawer = (opts: { context?: boolean; commit?: boolean } = {}) =>
+    settingsTenant.close(opts);
 
   /** Build the visor's App settings sheet — the naming ceremony GROWN into
    * the one place the visor says everything it knows about a component.
@@ -2533,7 +1995,7 @@ async function boot() {
    * It is the SAME tenant and the same session variable as the old
    * naming sheet: evolved, not added to. A fourth drawer tenant would
    * have meant a fourth entry in every occupancy test (see
-   * drawerOccupied), for a sheet that is about exactly what naming was
+   * the host's occupancy test), for a sheet that is about exactly what naming was
    * about — this component, and what the user wants to call it. */
   const buildNameSheet = (surface: SurfaceIdentity, hue: number) => {
     const root = document.createElement("div");
@@ -2694,132 +2156,107 @@ async function boot() {
   };
 
   const openNamingDrawer = (surface: SurfaceIdentity) => {
-    // MUTUAL EXCLUSION, and the credential session wins outright: a sheet
-    // that is collecting (or about to accept) secrets is never displaced
-    // by a naming ceremony.
-    if (drawerSession) return;
-    // The two LIGHTWEIGHT tenants evict each other freely — neither holds
-    // anything a user would lose by a click on the strip. Closed without
-    // touching the strip context, which this sheet is about to claim.
-    if (settingsSession) closeSettingsDrawer({ context: false });
-    if (namingSession) closeNamingDrawer({ context: false });
+    // MUTUAL EXCLUSION is the host's: it refuses this open outright while
+    // the exclusive credential tenant holds the drawer (a sheet that is
+    // collecting — or about to accept — secrets is never displaced by a
+    // naming ceremony), and it evicts the settings sheet and any previous
+    // naming sheet, in that order, WITHOUT touching the strip context,
+    // which this sheet is about to claim. The two LIGHTWEIGHT tenants
+    // evict each other freely — neither holds anything a user would lose
+    // by a click on the strip.
     const session = { surface, hue: surface.hue };
-    namingSession = session;
-    drawer.hidden = false;
-    setVisorContext({ ...surface, kind: "naming" });
+    namingTenant.open(session, () => {
+      const built = buildNameSheet(surface, surface.hue);
 
-    const built = buildNameSheet(surface, surface.hue);
-    drawerInner.replaceChildren(built.root);
+      const finish = (status: string) => {
+        closeNamingDrawer();
+        // The visor's own line in the visor's own bar — not a pane's status
+        // line: this is a statement about the shell's trust table, not
+        // about anybody's replica. It expires by RE-RENDERING the strip
+        // (see `announce`), which matters exactly here: the thing the
+        // bottom line shows has just changed — a petname was assigned, or
+        // a whole record was forgotten — so restoring what the line said
+        // before would put a stale claim back on the anchor.
+        if (status) announce(status);
+      };
 
-    const finish = (status: string) => {
-      closeNamingDrawer();
-      // The visor's own line in the visor's own bar — not a pane's status
-      // line: this is a statement about the shell's trust table, not
-      // about anybody's replica. It expires by RE-RENDERING the strip
-      // (see `announce`), which matters exactly here: the thing the
-      // bottom line shows has just changed — a petname was assigned, or
-      // a whole record was forgotten — so restoring what the line said
-      // before would put a stale claim back on the anchor.
-      if (status) announce(status);
-    };
-
-    built.saveBtn.onclick = () => {
-      if (namingSession !== session) return;
-      const petname = built.input.value.trim();
-      if (petname === "") {
-        // Refused rather than treated as "forget": clearing the field is
-        // an ambiguous gesture, and Cancel is the unambiguous way out.
-        built.reason.textContent = "type a name, or Cancel to leave it unnamed";
-        return;
-      }
-      const clash = petnameCollision(surface.name, petname);
-      if (clash) {
-        // The visor's own words, naming the colliding record by BOTH its
-        // petname and its unforgeable provenance key — the user needs to
-        // know which component already answers to this word.
-        built.reason.textContent =
-          `you already call another component "${clash.petname}" (fetched as ${clash.key}) — pick a different name`;
-        return;
-      }
-      setPetname(surface.name, petname, built.hue());
-      // The in-memory app surface is a CACHE of the record; the strip
-      // renders from it, so a commit that only touched storage would
-      // leave the anchor showing yesterday's answer.
-      //
-      // FIRST SIGHT IS OVER: the naming ceremony IS the TOFU moment
-      // completing, so the NEW badge is cleared on every live copy of
-      // this identity. "First time this component draws here —
-      // recognition means nothing yet" and the user's own name for it
-      // are contradictory claims to make side by side; once the user has
-      // decided what to call it, they have done the recognising the
-      // badge was asking for. (Forgetting is untouched: it deletes the
-      // record, so the next mount is honestly NEW again.)
-      if (appSurface && appSurface.name === surface.name) {
-        appSurface = { ...appSurface, petname, hue: built.hue(), isNew: false };
-      }
-      if (activePanel && activePanel.surface.name === surface.name) {
-        activePanel.surface = {
-          ...activePanel.surface,
-          petname,
-          hue: built.hue(),
-          isNew: false,
+      built.saveBtn.onclick = () => {
+        if (!namingTenant.owns(session)) return;
+        const petname = built.input.value.trim();
+        if (petname === "") {
+          // Refused rather than treated as "forget": clearing the field is
+          // an ambiguous gesture, and Cancel is the unambiguous way out.
+          built.reason.textContent = "type a name, or Cancel to leave it unnamed";
+          return;
+        }
+        const clash = petnameCollision(surface.name, petname);
+        if (clash) {
+          // The visor's own words, naming the colliding record by BOTH its
+          // petname and its unforgeable provenance key — the user needs to
+          // know which component already answers to this word.
+          built.reason.textContent =
+            `you already call another component "${clash.petname}" (fetched as ${clash.key}) — pick a different name`;
+          return;
+        }
+        setPetname(surface.name, petname, built.hue());
+        // The in-memory app surface is a CACHE of the record; the strip
+        // renders from it, so a commit that only touched storage would
+        // leave the anchor showing yesterday's answer.
+        //
+        // FIRST SIGHT IS OVER: the naming ceremony IS the TOFU moment
+        // completing, so the NEW badge is cleared on every live copy of
+        // this identity. "First time this component draws here —
+        // recognition means nothing yet" and the user's own name for it
+        // are contradictory claims to make side by side; once the user has
+        // decided what to call it, they have done the recognising the
+        // badge was asking for. (Forgetting is untouched: it deletes the
+        // record, so the next mount is honestly NEW again.)
+        if (appSurface && appSurface.name === surface.name) {
+          appSurface = { ...appSurface, petname, hue: built.hue(), isNew: false };
+        }
+        if (activePanel && activePanel.surface.name === surface.name) {
+          activePanel.surface = {
+            ...activePanel.surface,
+            petname,
+            hue: built.hue(),
+            isNew: false,
+          };
+        }
+        // The session's own surface object: the sheet may outlive this
+        // click (Save leaves it up only briefly, but the object is also
+        // what a re-open would be built from).
+        session.surface = { ...session.surface, petname, hue: built.hue(), isNew: false };
+        finish(`saved — the visor will call this component ${petname} from now on`);
+      };
+      built.cancelBtn.onclick = () => {
+        if (!namingTenant.owns(session)) return;
+        finish("");
+      };
+      if (built.forgetBtn) {
+        built.forgetBtn.onclick = () => {
+          if (!namingTenant.owns(session)) return;
+          forgetSurface(surface.name);
+          // Forgetting must be honest on the strip too: the cached petname
+          // goes with the record, so the anchor stops speaking a name
+          // the visor no longer holds. (`isNew` stays as it is — this session
+          // has seen the component; the NEXT mount is the one that is
+          // genuinely new again, and the sheet says so.)
+          if (appSurface && appSurface.name === surface.name) {
+            appSurface = { ...appSurface, petname: undefined };
+          }
+          finish("forgotten — this component will be announced as NEW next time");
         };
       }
-      // The session's own surface object: the sheet may outlive this
-      // click (Save leaves it up only briefly, but the object is also
-      // what a re-open would be built from).
-      session.surface = { ...session.surface, petname, hue: built.hue(), isNew: false };
-      finish(`saved — the visor will call this component ${petname} from now on`);
 
-    };
-    built.cancelBtn.onclick = () => {
-      if (namingSession !== session) return;
-      finish("");
-    };
-    if (built.forgetBtn) {
-      built.forgetBtn.onclick = () => {
-        if (namingSession !== session) return;
-        forgetSurface(surface.name);
-        // Forgetting must be honest on the strip too: the cached petname
-        // goes with the record, so the anchor stops speaking a name
-        // the visor no longer holds. (`isNew` stays as it is — this session
-        // has seen the component; the NEXT mount is the one that is
-        // genuinely new again, and the sheet says so.)
-        if (appSurface && appSurface.name === surface.name) {
-          appSurface = { ...appSurface, petname: undefined };
-        }
-        finish("forgotten — this component will be announced as NEW next time");
-
+      // The height budget (the anchor must never be pushed off-screen by a
+      // sheet that hangs off it) and the reveal are the host's.
+      return {
+        root: built.root,
+        // No arming delay (see the naming tenant's spec): focus is given
+        // immediately, because there is nothing here a mis-tap could spend.
+        onShown: () => built.input.focus(),
       };
-    }
-
-    // Same height budget as the credential sheet: the anchor must never
-    // be pushed off-screen by a sheet that hangs off it.
-    const fit = () => {
-      const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
-      drawer.style.setProperty(
-        "--visor-sheet-max",
-        `${Math.max(0, globalThis.innerHeight - stripH)}px`,
-      );
-    };
-    const refit = () => {
-      fit();
-      if (namingSession !== session) return;
-      drawerInner.style.height = "auto";
-      drawerInner.style.height = `${drawerInner.offsetHeight}px`;
-    };
-    fit();
-    namingAnchor = refit;
-    globalThis.addEventListener("resize", refit);
-
-    drawerInner.style.height = "auto";
-    const target = drawerInner.offsetHeight;
-    drawerInner.style.height = "0px";
-    void drawerInner.offsetHeight;
-    drawerInner.style.height = `${target}px`;
-    // No arming delay (see namingSession): focus is given immediately,
-    // because there is nothing here a mis-tap could spend.
-    built.input.focus();
+    });
   };
 
   /** The visor's settings sheet. EVERY string on it is the visor's own or the
@@ -2827,8 +2264,8 @@ async function boot() {
    * makes it the only sheet with no foreign-quoted text anywhere. */
   const buildSettingsSheet = (rec: VisorIdentity, hueAtOpen: number) => {
     const root = document.createElement("div");
-    // `.armed` from the start: there is no arming delay here (see
-    // settingsSession), so the button row must never be drawn dimmed for
+    // `.armed` from the start: there is no arming delay here (see the
+    // settings tenant's spec), so the button row must never be drawn dimmed for
     // a wait that does not exist.
     root.className = "cred-sheet settings-sheet armed";
     root.style.maxWidth = "72rem"; // rem: aligns with the page's --content-max column
@@ -2931,7 +2368,7 @@ async function boot() {
         // evicted record), and telling someone about the change they are
         // in the middle of making would devalue the announcement that
         // matters. Save commits it; Cancel puts it back.
-        applyVisorHue(hue);
+        visor.applyHue(hue);
       };
       hueButtons.push(b);
       hueRow.append(b);
@@ -2976,83 +2413,56 @@ async function boot() {
   };
 
   const openSettingsDrawer = () => {
-    // Same precedence as naming: a sheet that is collecting (or about to
-    // accept) secrets is never displaced by the visor's own settings.
-    if (drawerSession) return;
-    if (namingSession) closeNamingDrawer({ context: false });
-    if (settingsSession) closeSettingsDrawer({ context: false });
+    // Precedence and eviction are the host's (see openNamingDrawer): the
+    // credential tenant refuses this open outright, and the naming sheet
+    // is evicted context-free.
+    //
     // The committed colour: the anchor to revert to if this sheet does
-    // not end in Save. Read from `committedHue` rather than re-reading
-    // storage, so a live preview from an earlier (evicted) sheet can
-    // never be mistaken for the user's committed choice.
-    const hueAtOpen = committedHue;
+    // not end in Save. Read from the visor's committed value rather than
+    // re-reading storage, so a live preview from an earlier (evicted)
+    // sheet can never be mistaken for the user's committed choice.
+    const hueAtOpen = visor.committedHue();
     const session = { hueAtOpen };
-    settingsSession = session;
-    drawer.hidden = false;
-    setVisorContext({ kind: "settings" });
+    settingsTenant.open(session, () => {
+      const built = buildSettingsSheet(visor.identity(), hueAtOpen);
 
-    const built = buildSettingsSheet(loadIdentity(), hueAtOpen);
-    drawerInner.replaceChildren(built.root);
+      built.saveBtn.onclick = () => {
+        if (!settingsTenant.owns(session)) return;
+        visor.saveIdentity({
+          name: built.nameInput.value,
+          device: built.deviceInput.value,
+          icon: built.icon(),
+        });
+        // Remember, paint, persist — in that order.
+        visor.commitHue(built.hue());
+        // The strip is repainted from the RECORD, not from the inputs, so
+        // what the bar shows is exactly what was persisted (clamping and
+        // the unset-is-absent rule included).
+        visor.renderIdentity();
+        closeSettingsDrawer({ commit: true });
+      };
+      built.cancelBtn.onclick = () => {
+        if (!settingsTenant.owns(session)) return;
+        // commit:false — the live colour preview is reverted (by the
+        // tenant's own beforeCollapse) and the typed edits are simply
+        // dropped with the sheet.
+        closeSettingsDrawer();
+      };
 
-    built.saveBtn.onclick = () => {
-      if (settingsSession !== session) return;
-      saveIdentity({
-        name: built.nameInput.value,
-        device: built.deviceInput.value,
-        icon: built.icon(),
-      });
-      const hue = built.hue();
-      committedHue = hue;
-      applyVisorHue(hue);
-      try {
-        localStorage.setItem(VISOR_KEY, String(hue));
-      } catch { /* not durable here */ }
-      // The strip is repainted from the RECORD, not from the inputs, so
-      // what the bar shows is exactly what was persisted (clamping and
-      // the unset-is-absent rule included).
-      renderVisorIdentity();
-      closeSettingsDrawer({ commit: true });
-    };
-    built.cancelBtn.onclick = () => {
-      if (settingsSession !== session) return;
-      // commit:false — the live colour preview is reverted and the typed
-      // edits are simply dropped with the sheet.
-      closeSettingsDrawer();
-    };
-
-    // Same height budget as the other two sheets: the anchor must never
-    // be pushed off-screen by a sheet that hangs off it.
-    const fit = () => {
-      const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
-      drawer.style.setProperty(
-        "--visor-sheet-max",
-        `${Math.max(0, globalThis.innerHeight - stripH)}px`,
-      );
-    };
-    const refit = () => {
-      fit();
-      if (settingsSession !== session) return;
-      drawerInner.style.height = "auto";
-      drawerInner.style.height = `${drawerInner.offsetHeight}px`;
-    };
-    fit();
-    settingsAnchor = refit;
-    globalThis.addEventListener("resize", refit);
-
-    drawerInner.style.height = "auto";
-    const target = drawerInner.offsetHeight;
-    drawerInner.style.height = "0px";
-    void drawerInner.offsetHeight;
-    drawerInner.style.height = `${target}px`;
-    // No arming delay (see settingsSession): focus goes straight to the
-    // first field, because there is nothing here a mis-tap could spend.
-    built.nameInput.focus();
+      return {
+        root: built.root,
+        // No arming delay (see the settings tenant's spec): focus goes
+        // straight to the first field, because there is nothing here a
+        // mis-tap could spend.
+        onShown: () => built.nameInput.focus(),
+      };
+    });
   };
 
   /** Build the visor's sheet. Every word here is the visor's; the only foreign
    * strings are the component's name and the destination origin, both
    * quoted, clamped and foreign-styled. */
-  const buildSheet = (session: NonNullable<typeof drawerSession>, needs: string[]) => {    const root = document.createElement("div");
+  const buildSheet = (session: CredentialSession, needs: string[]) => {    const root = document.createElement("div");
     root.className = "cred-sheet";
     // The DRAWER spans the full window width (it hangs off the pinned
     // strip, which is full-width by construction — that is the anchor).
@@ -3096,6 +2506,10 @@ async function boot() {
     credFields = document.createElement("div");
     credReason = document.createElement("div");
     credReason.className = "cred-reason";
+    // Where `drawerNote` writes for as long as this sheet is up. The host
+    // clears it on close, so a note aimed at a sheet that is gone cannot
+    // land in the next one.
+    visor.drawer.setNote(credReason);
 
     // THE VISOR'S OWN SIGN-IN CONTROL. It appears only when this session
     // actually needs both halves of the ceremony's inputs and outputs —
@@ -3134,7 +2548,7 @@ async function boot() {
   };
 
   const openCredentialDrawer = (
-    session: NonNullable<typeof drawerSession>,
+    session: CredentialSession,
     needs: string[],
     prefill: Record<string, string>,
     mismatch: boolean,
@@ -3145,169 +2559,118 @@ async function boot() {
   ) => {
     heldSigningKey = held;
     // The credential session takes the drawer from anything else holding
-    // it: the lightweight tenants are interruptible conveniences, secret
-    // entry is not. Closed WITHOUT touching the strip context, which this
-    // session is about to claim for itself.
-    if (namingSession) closeNamingDrawer({ context: false });
-    if (settingsSession) closeSettingsDrawer({ context: false });
-    drawerSession = session;
-    // NO COMPONENT SURFACE IS LIVE WHILE SECRETS ARE ON SCREEN: the panel
-    // was torn down by the caller before this ran, and every remaining
-    // pane's runner is paused here — queued invocations are held, not
-    // delivered, so app code can neither observe nor race the entry.
-    for (const p of panes) p.runner?.pause();
-    dim.hidden = false;
-    drawer.hidden = false;
-    // The strip names the sheet hanging off it, in the same colour it has
-    // always had (the anchor never changes colour per surface).
-    setVisorContext({ ...session.surface, kind: "credentials" });
-
-    const { root, confirmBtn, cancelBtn, connectBtn } = buildSheet(session, needs);
-    drawerInner.replaceChildren(root);
-    const refused = renderCredentials(needs, prefill);
-    if (mismatch) {
-      drawerNote("stored credentials are for a different destination — not filled");
-    }
-
-    confirmBtn.onclick = () => {
-      const s = drawerSession;
-      if (!s) return;
-      // Requiredness is the visor's rule, judged in the visor's pixels; the
-      // panel is not told which credential was missing (it is gone).
-      const missing = missingCredential();
-      if (missing !== null) {
-        drawerNote(`${missing} is required`);
-        return;
+    // it — the host evicts the lightweight tenants context-free, because
+    // they are interruptible conveniences and secret entry is not. The
+    // caller has usually CLAIMED this same session object already (see
+    // the storage Save handler), which the host reads as a claim being
+    // revealed rather than a re-entry: nothing held is dropped.
+    credentialTenant.open(session, () => {
+      const { root, confirmBtn, cancelBtn, connectBtn } = buildSheet(session, needs);
+      const refused = renderCredentials(needs, prefill);
+      if (mismatch) {
+        drawerNote("stored credentials are for a different destination — not filled");
       }
-      // The visor merges its held values into the panel's secret-free
-      // config — the same withCredentials path as before the drawer.
-      // The S3 secret is NOT among them: it goes straight into the
-      // keystore as a non-extractable handle and is never part of any
-      // config object. Read the sheet's values HERE, because closing the
-      // drawer drops them.
-      const secret = heldCredential("secret-key").trim();
-      const access = heldCredential("access-key").trim();
-      const destination = s.destination;
-      const full = withCredentials(s.cfg);
-      closeDrawer();
-      void (async () => {
-        if (full.provider === "s3" && secret !== "") {
-          // Non-empty = replace the held key; empty = keep it (the
-          // field's placeholder said so, and requiredness agreed).
-          // Escrow BEFORE persisting: a config that points at a
-          // destination with no usable key is the one state worth
-          // avoiding, since setup would then refuse.
-          try {
-            await putSigningKey(destination, access, secret);
-          } catch (e) {
-            tablet.status(`could not escrow the signing key: ${err(e)}`, true);
-            return;
-          }
-        }
-        persistAndConnect(full);
-      })();
-    };
-    if (connectBtn) {
-      const btn = connectBtn;
-      btn.onclick = async () => {
-        // The app key comes from THIS SHEET's own field, never from a
-        // panel: the visor authorizes against what the user typed under the
-        // bar, so nothing a component said can steer the ceremony.
-        const clientId = (credValues.get("app-key") ?? "").trim();
-        if (clientId === "") {
-          drawerNote("enter the App key first");
+
+      confirmBtn.onclick = () => {
+        const s = credentialTenant.session();
+        if (!s) return;
+        // Requiredness is the visor's rule, judged in the visor's pixels; the
+        // panel is not told which credential was missing (it is gone).
+        const missing = missingCredential();
+        if (missing !== null) {
+          drawerNote(`${missing} is required`);
           return;
         }
-        // Re-entrancy: the popup + token exchange is a long await, and a
-        // second ceremony would race the deposit.
-        btn.disabled = true;
-        drawerNote("waiting for the provider's sign-in window…");
-        try {
-          await authorize(clientId);
-          // The sheet may have been confirmed or cancelled while the
-          // popup was up; its held values are gone, so a late deposit
-          // must not be reported as this session's success.
-          if (drawerSession !== session) return;
-          drawerNote("signed in ✓ — the token fields above were filled by the visor");
-        } catch (e) {
-          if (drawerSession !== session) return;
-          drawerNote(`sign-in failed: ${err(e)}`);
-        } finally {
-          if (drawerSession === session) btn.disabled = false;
-        }
+        // The visor merges its held values into the panel's secret-free
+        // config — the same withCredentials path as before the drawer.
+        // The S3 secret is NOT among them: it goes straight into the
+        // keystore as a non-extractable handle and is never part of any
+        // config object. Read the sheet's values HERE, because closing the
+        // drawer drops them.
+        const secret = heldCredential("secret-key").trim();
+        const access = heldCredential("access-key").trim();
+        const destination = s.destination;
+        const full = withCredentials(s.cfg);
+        closeDrawer();
+        void (async () => {
+          if (full.provider === "s3" && secret !== "") {
+            // Non-empty = replace the held key; empty = keep it (the
+            // field's placeholder said so, and requiredness agreed).
+            // Escrow BEFORE persisting: a config that points at a
+            // destination with no usable key is the one state worth
+            // avoiding, since setup would then refuse.
+            try {
+              await putSigningKey(destination, access, secret);
+            } catch (e) {
+              tablet.status(`could not escrow the signing key: ${err(e)}`, true);
+              return;
+            }
+          }
+          persistAndConnect(full);
+        })();
       };
-    }
-    cancelBtn.onclick = () => {
-      // Nothing was persisted and nothing was released: the held config
-      // and the held credentials both die here.
-      closeDrawer();
-      tablet.status("storage setup cancelled — nothing saved", true);
-    };
-
-    // Budget the sheet against the space it actually has. The sheet grows
-    // ABOVE the strip inside one sticky assembly, so a sheet taller than
-    // the viewport would push the strip off the bottom of the screen —
-    // losing the anchor at the exact moment a secret is on screen. The
-    // sheet is therefore capped at viewport-minus-strip and scrolls
-    // internally past that (see .cred-sheet's --visor-sheet-max).
-    // Measured rather than hardcoded because the strip wraps to two rows
-    // on a phone, and re-measured on resize/rotation.
-    const fit = () => {
-      // ceil: a fractional strip height (it wraps to two rows on a phone)
-      // would otherwise leave the bar hanging a subpixel off the bottom.
-      const stripH = Math.ceil(strip?.getBoundingClientRect().height ?? 0);
-      const budget = Math.max(0, globalThis.innerHeight - stripH);
-      drawer.style.setProperty("--visor-sheet-max", `${budget}px`);
-    };
-    const refit = () => {
-      fit();
-      // The animated height is a pixel target, so it goes stale when the
-      // budget changes under it; re-measure at auto and retarget.
-      if (drawerSession !== session) return;
-      drawerInner.style.height = "auto";
-      const h = drawerInner.offsetHeight;
-      drawerInner.style.height = `${h}px`;
-    };
-    fit();
-    drawerAnchor = refit;
-    globalThis.addEventListener("resize", refit);
-
-    // Disabled BEFORE the first frame, inputs included: a secret must not
-    // be typeable into a sheet the user has not yet had time to see.
-    const controls: Array<HTMLButtonElement | HTMLInputElement> = [
-      confirmBtn,
-      cancelBtn,
-      // The visor's sign-in control is armed by the SAME delay as the rest:
-      // it opens a provider window, which is exactly the sort of thing a
-      // baited mis-tap should not be able to reach.
-      ...(connectBtn ? [connectBtn] : []),
-      ...credInputs.values(),
-    ];
-    for (const c of controls) c.disabled = true;
-
-    // Animate 0 → the measured content height. One property drives the
-    // whole assembly: the sheet's growth pushes the strip down and the
-    // page content with it, on one curve (spikes/todomvc/host/visor.ts:82-90
-    // — scrollHeight misses the flex-end top-overflow, so measure at auto).
-    drawerInner.style.height = "auto";
-    const target = drawerInner.offsetHeight;
-    drawerInner.style.height = "0px";
-    void drawerInner.offsetHeight;
-    drawerInner.style.height = `${target}px`;
-
-    clearTimeout(armTimer);
-    armTimer = setTimeout(() => {
-      if (drawerSession !== session) return;
-      for (const c of controls) c.disabled = false;
-      // Rule 3 still governs the inputs after arming: with no bound
-      // destination there is nowhere to release to, so nothing may be
-      // typed. (Refused kinds keep Confirm out of reach for good.)
-      if (boundDestination === null) {
-        for (const input of credInputs.values()) input.disabled = true;
+      if (connectBtn) {
+        const btn = connectBtn;
+        btn.onclick = async () => {
+          // The app key comes from THIS SHEET's own field, never from a
+          // panel: the visor authorizes against what the user typed under the
+          // bar, so nothing a component said can steer the ceremony.
+          const clientId = (credValues.get("app-key") ?? "").trim();
+          if (clientId === "") {
+            drawerNote("enter the App key first");
+            return;
+          }
+          // Re-entrancy: the popup + token exchange is a long await, and a
+          // second ceremony would race the deposit.
+          btn.disabled = true;
+          drawerNote("waiting for the provider's sign-in window…");
+          try {
+            await authorize(clientId);
+            // The sheet may have been confirmed or cancelled while the
+            // popup was up; its held values are gone, so a late deposit
+            // must not be reported as this session's success.
+            if (!credentialTenant.owns(session)) return;
+            drawerNote("signed in ✓ — the token fields above were filled by the visor");
+          } catch (e) {
+            if (!credentialTenant.owns(session)) return;
+            drawerNote(`sign-in failed: ${err(e)}`);
+          } finally {
+            if (credentialTenant.owns(session)) btn.disabled = false;
+          }
+        };
       }
-      if (refused) confirmBtn.disabled = true;
-      root.classList.add("armed");
-    }, ARM_MS);
+      cancelBtn.onclick = () => {
+        // Nothing was persisted and nothing was released: the held config
+        // and the held credentials both die here.
+        closeDrawer();
+        tablet.status("storage setup cancelled — nothing saved", true);
+      };
+
+      return {
+        root,
+        // Disabled BEFORE the first frame, inputs included: a secret must
+        // not be typeable into a sheet the user has not yet had time to
+        // see. The host holds them disabled for ARM_MS.
+        controls: [
+          confirmBtn,
+          cancelBtn,
+          // The visor's sign-in control is armed by the SAME delay as the
+          // rest: it opens a provider window, which is exactly the sort of
+          // thing a baited mis-tap should not be able to reach.
+          ...(connectBtn ? [connectBtn] : []),
+          ...credInputs.values(),
+        ],
+        onArmed: () => {
+          // Rule 3 still governs the inputs after arming: with no bound
+          // destination there is nowhere to release to, so nothing may be
+          // typed. (Refused kinds keep Confirm out of reach for good.)
+          if (boundDestination === null) {
+            for (const input of credInputs.values()) input.disabled = true;
+          }
+          if (refused) confirmBtn.disabled = true;
+        },
+      };
+    });
   };
 
   const tabs: Record<"s3" | "dropbox", HTMLButtonElement> = {
@@ -3381,11 +2744,11 @@ async function boot() {
     // credential drawer, which is the one case where the visor must keep
     // holding them (the OAuth broker deposits during the panel session,
     // and the sheet that will show them opens a moment later). The drawer
-    // clears them itself on Confirm or Cancel. Testing drawerSession
+    // clears them itself on Confirm or Cancel. Testing the credential session
     // rather than a transient flag matters because at least one embedding
     // delivers the dialog's `close` event LATE — after the drawer is
     // already up — and that stray teardown must not wipe the sheet.
-    if (drawerSession === null) clearCredentials();
+    if (credentialTenant.session() === null) clearCredentials();
     // Publish the completion, and retire it once it lands so a later
     // mount does not await a teardown that finished long ago. The
     // identity check is the usual discipline: only the teardown that is
@@ -3598,10 +2961,10 @@ async function boot() {
 
   // The visor's naming ceremony, reachable ONLY from the strip's own
   // pixels (see setVisorContext).
-  requestNaming = (surface) => {
+  const requestNaming = (surface: SurfaceIdentity) => {
     // The credential session wins: while secrets are on screen (or
     // arming) the drawer is not available for anything else.
-    if (drawerSession) return;
+    if (credentialTenant.isOpen()) return;
     // A modal <dialog> paints in the TOP LAYER — above the pinned visor
     // zone, and therefore above the sheet the strip would reveal. So the
     // ceremony takes the page back first: the panel is retired and the
@@ -3617,12 +2980,12 @@ async function boot() {
   };
 
   // The visor's settings sheet, reachable ONLY from the strip's own button
-  // (rendered by renderVisorIdentity — visor pixels, unreachable from
+  // (rendered by the visor's identity cluster — visor pixels, unreachable from
   // any app rectangle).
-  requestSettings = () => {
+  const requestSettings = () => {
     // Same precedence as naming, enforced twice: here, so a click on the
     // strip while secrets are up is a no-op, and again in the opener.
-    if (drawerSession) return;
+    if (credentialTenant.isOpen()) return;
     // A modal <dialog> paints in the TOP LAYER, above the visor zone and
     // so above the sheet the strip would reveal — the same reason the
     // naming ceremony takes the page back first.
@@ -3632,6 +2995,12 @@ async function boot() {
     }
     openSettingsDrawer();
   };
+
+  // THE STRIP'S LATE-BOUND CONTROLS. The strip is built by `initVisor`,
+  // long before the drawer's tenants exist, so the "name it" affordance,
+  // the context cluster and the settings button call through the visor's
+  // handler slots. Installed here, once both ceremonies are defined.
+  visor.install({ requestNaming, requestSettings });
 
   const openStorage = () => {
     // The dialog would paint over either lightweight sheet (top layer);
@@ -3738,8 +3107,9 @@ async function boot() {
           surface: active.surface,
         };
         // Claim the handoff BEFORE the teardown, so the panel's retirement
-        // (and any late `close` event) leaves the held values alone.
-        drawerSession = session;
+        // (and any late `close` event) leaves the held values alone. A
+        // claim is state only: no sheet, no DOM, no context move.
+        credentialTenant.claim(session);
         // ORDERING IS THE INVARIANT: the panel is retired and the dialog
         // is closed FIRST, so no component surface is alive on the page
         // when the credential sheet appears.
@@ -3747,7 +3117,7 @@ async function boot() {
         dialog.close();
         if (needs.length === 0) {
           // Nothing to ask for: no sheet, connect straight away.
-          drawerSession = null;
+          credentialTenant.claim(null);
           const full = withCredentials(cfg);
           clearCredentials();
           persistAndConnect(full);
@@ -3853,7 +3223,7 @@ async function boot() {
     // arming delay exactly as a user does: a click before ARM_MS lands on
     // a disabled button and does nothing.
     drawer: {
-      open: () => drawerSession !== null,
+      open: () => credentialTenant.isOpen(),
       confirm: () =>
         (drawerInner.querySelector(".cred-row button:first-child") as
           | HTMLButtonElement
@@ -3868,7 +3238,7 @@ async function boot() {
     // the only place the ceremony can start; `openCluster` clicks the
     // whole left cluster, which is the other way in.
     naming: {
-      open: () => namingSession !== null,
+      open: () => namingTenant.isOpen(),
       nameIt: () =>
         (document.getElementById("visor-name-it") as HTMLButtonElement | null)?.click(),
       openCluster: () =>
@@ -3908,7 +3278,7 @@ async function boot() {
     // opener, so a driver exercises the same path a user does (visor
     // pixels, the only place this ceremony can start).
     settings: {
-      open: () => settingsSession !== null,
+      open: () => settingsTenant.isOpen(),
       openSheet: () =>
         (document.getElementById("visor-settings") as HTMLButtonElement | null)?.click(),
       type: (field: "name" | "device", value: string) => {
@@ -3932,7 +3302,7 @@ async function boot() {
         (drawerInner.querySelector(".settings-sheet .cred-row button:last-child") as
           | HTMLButtonElement
           | null)?.click(),
-      identity: () => loadIdentity(),
+      identity: () => visor.identity(),
     },
     /** The app's own row in the trust table, as the visor registered it at
      * boot: provenance key, self-declared nickname, assigned mark, the

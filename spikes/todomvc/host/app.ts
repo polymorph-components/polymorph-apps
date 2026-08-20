@@ -2,13 +2,17 @@
 // serialized guest-call runner used by every page.
 
 import { artifactsFromEnvelope, instantiate } from "@deltic/runtime/embedder";
-import { createSurface, type Surface } from "./surface.ts";
-import type { Backend, BackendKind } from "./backend.ts";
-import { createDirectBackend } from "./backend-direct.ts";
-import { createQueuedBackend } from "./backend-queued.ts";
-import { createChannelBackend } from "./backend-channel.ts";
-import { createApplier } from "./applier.ts";
-import type { UiEvent } from "./events.ts";
+import { createSurface } from "../../../visor/surface/surface.ts";
+import type { Backend, BackendKind } from "../../../visor/surface/backend.ts";
+import { createDirectBackend } from "../../../visor/surface/backend-direct.ts";
+import { createQueuedBackend } from "../../../visor/surface/backend-queued.ts";
+import { createChannelBackend } from "../../../visor/surface/backend-channel.ts";
+import { createFrameBackend } from "../../../visor/frame/frame-backend.ts";
+import { createApplier } from "../../../visor/surface/applier.ts";
+import type { UiEvent } from "../../../visor/surface/events.ts";
+import { createRunner, type Runner } from "../../../visor/surface/runner.ts";
+
+export { createRunner, type Runner };
 
 // --- artifacts ---------------------------------------------------------------
 
@@ -53,8 +57,15 @@ export async function instantiateWorld(
 
 // --- backends ------------------------------------------------------------------
 
+/** The three backends `createBackend` builds synchronously, in-realm.
+ * "frame" is deliberately excluded from this type: its construction is
+ * async (a handshake with the sandboxed frame's own document — see
+ * createFrameBackend), so every caller branches on it separately rather
+ * than folding it into this switch (see `resolveBackend` below). */
+export type SameRealmBackendKind = Exclude<BackendKind, "frame">;
+
 export function createBackend(
-  kind: BackendKind,
+  kind: SameRealmBackendKind,
   container: HTMLElement,
   dispatch: (ev: UiEvent) => void,
 ): Backend {
@@ -72,67 +83,28 @@ export function createBackend(
   }
 }
 
-// --- the serialized guest-call runner -------------------------------------------
+/** The frame surface's teardown, handed back to the caller so `kind ===
+ * "frame"` can be torn down on demand (see TodoApp.teardown). undefined
+ * for the three same-realm kinds, whose kill semantics are unchanged:
+ * the runner is simply paused forever and the DOM node is dropped by the
+ * caller (see host/visor.ts's kill tenant, pre/post-C3). */
+type Teardown = (() => Promise<void>) | undefined;
 
-export interface Runner {
-  /** Queue one guest invocation; flushes at the end even if it traps. */
-  call<T>(f: () => Promise<T>): Promise<T>;
-  /** Settle the chain AND the backend (ops applied to the DOM). */
-  settle(): Promise<void>;
-  /** Monotonic count of queued invocations (quiescence detection). */
-  readonly generation: number;
-  /** Suspend guest invocations (modal visor, #22): queued, not delivered. */
-  pause(): void;
-  /** Resume delivery of queued invocations. */
-  resume(): void;
-}
-
-export function createRunner(surface: Surface): Runner {
-  let chain: Promise<unknown> = Promise.resolve();
-  let generation = 0;
-  let gate: Promise<void> = Promise.resolve();
-  let releaseGate: (() => void) | null = null;
-  const call = <T>(f: () => Promise<T>): Promise<T> => {
-    generation++;
-    // Ops emitted before a trap are applied; the flush runs on both paths.
-    // The gate (visor-owned input suspension) is crossed before the guest
-    // sees the invocation.
-    const next = chain.then(() => gate).then(f).then(
-      (v) => {
-        surface.flush();
-        return v;
-      },
-      (e) => {
-        surface.flush();
-        throw e;
-      },
-    );
-    // The chain itself must survive rejections so later calls still run.
-    chain = next.catch(() => {});
-    return next;
-  };
-  return {
-    call,
-    settle: async () => {
-      await chain;
-      await surface.drain();
-    },
-    get generation() {
-      return generation;
-    },
-    pause() {
-      if (!releaseGate) {
-        gate = new Promise((r) => {
-          releaseGate = r;
-        });
-      }
-    },
-    resume() {
-      releaseGate?.();
-      releaseGate = null;
-      gate = Promise.resolve();
-    },
-  };
+/** Resolve one backend for `kind`, awaiting the frame handshake when
+ * `kind === "frame"` and constructing synchronously otherwise (a small
+ * internal async step either way — `createBackend`'s own signature and
+ * the three same-realm cases inside it are unchanged). */
+async function resolveBackend(
+  kind: BackendKind,
+  container: HTMLElement,
+  dispatch: (ev: UiEvent) => void,
+): Promise<{ backend: Backend; teardown: Teardown }> {
+  if (kind === "frame") {
+    const frameBackend = createFrameBackend(container, dispatch);
+    const backend = await frameBackend.backend;
+    return { backend, teardown: () => frameBackend.destroy() };
+  }
+  return { backend: createBackend(kind, container, dispatch), teardown: undefined };
 }
 
 // --- the TodoMVC app ------------------------------------------------------------
@@ -149,6 +121,11 @@ export interface TodoApp {
   /** Inject a synthetic event record (harness use). */
   sendEvent(ev: UiEvent): Promise<void>;
   sendRoute(route: string): Promise<void>;
+  /** Destroy the sandboxed frame surface, when there is one — undefined
+   * (no-op) for the three same-realm kinds, whose kill semantics stay
+   * "pause the runner forever, drop the DOM node" (host/visor.ts's kill
+   * tenant does the dropping; this is only the frame's own teardown). */
+  teardown?(): Promise<void>;
 }
 
 export async function startTodoApp(
@@ -161,7 +138,7 @@ export async function startTodoApp(
   // DOM-originated events land on the same serialized chain as everything
   // else; the exports binding below closes the loop.
   let dispatch: (ev: UiEvent) => void = () => {};
-  const backend = createBackend(kind, container, (ev) => dispatch(ev));
+  const { backend, teardown } = await resolveBackend(kind, container, (ev) => dispatch(ev));
   const surface = createSurface(backend, route);
   const exports = (await instantiateWorld(
     artifact,
@@ -177,6 +154,7 @@ export async function startTodoApp(
     exports,
     sendEvent: (ev) => runner.call(() => exports.onEvent(ev)),
     sendRoute: (r) => runner.call(() => exports.onRoute(r)),
+    teardown,
   };
 }
 
@@ -196,7 +174,7 @@ export async function startLab(
   kind: BackendKind,
   container: HTMLElement,
 ): Promise<LabApp> {
-  const backend = createBackend(kind, container, () => {});
+  const { backend } = await resolveBackend(kind, container, () => {});
   const surface = createSurface(backend, () => "");
   const exports = (await instantiateWorld(
     "lab",

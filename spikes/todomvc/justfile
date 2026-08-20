@@ -33,13 +33,19 @@ build: guests
       build/todomvc-preact.component.wasm build/todomvc-preact.plan.json
     deno run --allow-read --allow-write tools/translate.ts \
       build/lab.component.wasm build/lab.plan.json
-    deno check host/main.ts
+    deno check host/main.ts ../../visor/frame/frame.ts
     deno bundle --platform browser --minify -o {{out}}/app.js host/main.ts
+    # The sandboxed surface frame (#16): its own entry, its own document,
+    # served from the SAME directory as the app bundle (frame-backend.ts's
+    # `frame.src = "./frame.html"` is relative to whatever page loaded it).
+    deno bundle --platform browser --minify -o {{out}}/frame.js ../../visor/frame/frame.ts
+    cp ../../visor/frame/frame.html {{out}}/
     cp build/todomvc.component.wasm build/todomvc.plan.json {{out}}/
     cp build/todomvc-dioxus.component.wasm build/todomvc-dioxus.plan.json {{out}}/
     cp build/todomvc-preact.component.wasm build/todomvc-preact.plan.json {{out}}/
     cp build/lab.component.wasm build/lab.plan.json {{out}}/
     cp web/index.html web/harness.html web/bench.html web/todomvc-app.css {{out}}/
+    cp ../../visor/ui/visor.css {{out}}/
 
 guests:
     cd guest && cargo build --release --target wasm32-unknown-unknown
@@ -47,6 +53,11 @@ guests:
     cd lab && cargo build --release --target wasm32-unknown-unknown
     cd guest-preact && npm run build
 
-# Serve the built demo locally.
+# Serve the built demo locally. The deno file-server, NOT python's
+# http.server: the frame backend's surface iframe is sandboxed without
+# `allow-same-origin`, so its origin is opaque and its module-script
+# fetch of frame.js is a cross-origin request — it needs the CORS
+# headers the file-server CLI sends by default (GitHub Pages sends
+# them too; python's server does not).
 serve: build
-    python3 -m http.server 8931 --directory ../../docs
+    deno run --allow-net --allow-read jsr:@std/http/file-server ../../docs --port 8931

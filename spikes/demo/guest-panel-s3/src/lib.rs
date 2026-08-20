@@ -82,7 +82,7 @@ fn el(tag: &str, class: &str) -> Element {
 }
 
 /// Build one labeled text input row. `input type` is validated against
-/// {"text", "checkbox"} only (spikes/todomvc/host/validate.ts). Nothing
+/// {"text", "checkbox"} only (visor/surface/validate.ts). Nothing
 /// secret is ever typed here: this panel only draws the PUBLIC parts of
 /// the configuration (endpoint, bucket).
 fn field(root: &Element, label_text: &str, placeholder: &str, token: u32) -> Element {

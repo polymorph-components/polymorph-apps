@@ -18,173 +18,16 @@
        keeps only the vertical padding and background. */
     .bar-inner { max-width: var(--content-max); margin: 0 auto; width: 100%;
                  box-sizing: border-box; }
-
-    /* THE VISOR STRIP (#22). The one region an app can never paint, so
-       it is where identity lives. Its background is the user's own
-       colour: randomised on first run, changeable, and never disclosed
-       to app code — a SECONDARY anchor behind position, defending the
-       case where an app mimics the visor inside its own rectangle. It stays
-       CONSTANT while secondary surfaces come and go: an anchor that
-       changes per component would stop being an anchor. */
-    /* PINNED. An anchor that scrolls away is not an anchor: the strip
-       must be on screen at the moment a secret is typed, which is only
-       guaranteed if it cannot leave the viewport. Pinning now belongs to
-       #visor-zone, the assembly that holds the sheet ABOVE the strip:
-       both must ride the same sticky box, or the sheet could be scrolled
-       away from the bar it hangs off. The zone's z-index puts the whole
-       assembly above the dim layer and all page content — nothing an app
-       draws can ever be painted over it. */
-    #visor-zone { position: sticky; top: 0; z-index: 30; }
-    #visor-strip { padding: .45em 0; font-size: 12px;
-                    background: var(--visor-bg, oklch(38% .07 260));
-                    color: var(--visor-fg, #f2f4fb);
-                    border-bottom: 1px solid rgba(0,0,0,.35); }
-    /* TWO CLUSTERS, AND A GUARANTEED GAP BETWEEN THEM. The strip carries
-       two stacked lines per side now, so it is roughly twice as tall as
-       the single-line bar it replaces — deliberately: the anchor is the
-       one thing that must be legible at a glance, and a 12px single line
-       was the thinnest possible version of it.
-
-       The centre is EMPTY BY CONSTRUCTION: space-between plus a 45% cap
-       on each cluster leaves at least a 10% exclusion band down the
-       middle at every width, with no element in it to measure or to
-       collide with. The old standing-rule line lived there and is GONE — see
-       the note on .ctx-bottom below. */
-    #visor-strip .bar-inner { display: flex; align-items: stretch;
-                               justify-content: space-between; gap: .8em;
-                               padding: 0 .9em; box-sizing: border-box; }
-    /* LEFT CLUSTER — two lines, and the split between them is the whole
-       point of the restructure:
-         .ctx-top    the COMPONENT's identity: its mark and what it calls
-                     itself. Static after install; nothing the visor does to
-                     its own sheets rewrites it.
-         .ctx-bottom THE VISOR'S line: the user's petname (or the offer to
-                     assign one), the first-sight marker, the name of
-                     whichever visor sheet is open, and timed
-                     announcements.
-       One voice per line: what the component said above, what the visor and
-       the user say below. */
-    #visor-context { display: flex; flex-direction: column;
-                      justify-content: center; gap: .15em;
-                      min-width: 0; max-width: 45%; }
-    #visor-context .ctx-top, #visor-context .ctx-bottom {
-      display: flex; align-items: center; gap: .5em; min-width: 0;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    /* The cluster is one tap target: it opens the visor's App settings
-       sheet for whatever surface the top line names. Strip pixels, so
-       the gesture starts somewhere no component can draw or reach. */
-    #visor-context[role="button"] { cursor: pointer; }
-    #visor-context[role="button"]:focus-visible { outline: 2px solid rgba(255,255,255,.7);
-                                                   outline-offset: 2px; border-radius: 3px; }
-    #visor-context .chip { width: .8em; height: .8em; border-radius: 2px;
-                            border: 1px solid rgba(255,255,255,.5); flex: none; }
-    /* App-supplied text is quoted, clamped and styled as foreign — never
-       part of the visor's own sentence (#22's untrusted-string rule). */
-    #visor-context q.foreign { font-family: ui-monospace, monospace;
-                                max-width: 22em; overflow: hidden;
-                                text-overflow: ellipsis; white-space: nowrap; }
-    #visor-context .said { opacity: .85; overflow: hidden;
-                            text-overflow: ellipsis; }
-
-    /* THE PETNAME: the user's own word for a component, so the visor says it
-       in THE VISOR'S voice — no quotes, no monospace, full opacity, slightly
-       heavier than the surrounding visor text. The contrast with
-       q.foreign above is the whole message: quoted+monospace means "a
-       component said this", plain visor text means "you said this". */
-    #visor-context .petname { font-weight: 600; letter-spacing: .01em;
-                               max-width: 14em; overflow: hidden;
-                               text-overflow: ellipsis; white-space: nowrap;
-                               /* The user's word is never the thing flex
-                                  squeezes: the max-width above caps a
-                                  pathological record, but within it the
-                                  petname wins the space fight — the
-                                  descriptive visor sentences shrink
-                                  first. */
-                               flex: none; }
-    /* "calls itself" is one phrase; breaking it mid-air reads as two
-       stray words. The LONG visor sentence stays wrappable. */
-    #visor-context .calls-itself, .cred-sheet .calls-itself { white-space: nowrap; }
-    /* Clickable petname / "name it": visor pixels in the strip, which is
-       the one place a component can never draw or reach. */
-    #visor-context .petname.clickable { cursor: pointer;
-                                         text-decoration: underline dotted;
-                                         text-underline-offset: .2em; }
-    #visor-name-it { font: inherit; color: inherit; cursor: pointer;
-                      background: rgba(255,255,255,.12);
-                      border: 1px solid rgba(255,255,255,.3);
-                      border-radius: 3px; padding: .05em .5em; white-space: nowrap; }
-    #visor-context .fresh { background: #b03030; color: #fff; font-weight: 600;
-                             padding: .05em .5em; border-radius: 2px;
-                             letter-spacing: .03em; white-space: nowrap; }
-    /* A timed announcement in the visor's own voice, on the visor's own line.
-       It replaces the bottom line for a few seconds and then the line is
-       RE-RENDERED from the live context — never restored from a saved
-       string, because what belongs there may have changed underneath. */
-    #visor-context .announce { font-weight: 600; overflow: hidden;
-                                text-overflow: ellipsis; }
-
-    /* THE STANDING RULE LINE IS GONE. It used to sit in the
-       centre of this bar reciting "storage secrets are only entered in
-       the sheet this bar reveals above itself" at all times. Two reasons
-       it went:
-         - a sentence recited permanently is read once and then becomes
-           furniture; the claim matters AT THE MOMENT OF ENTRY, and that
-           is where it now lives — the credential sheet states the
-           invariant in its own note, on the surface it is about;
-         - the centre of the strip has to be EMPTY for the two clusters
-           to have a structural exclusion gap between them (see
-           .bar-inner). An element there is one more thing that can be
-           crowded, wrapped or mistaken for a component's words.
-       What survives of its job on the strip is session naming: while a
-       visor sheet is open, .ctx-bottom says which one, so the anchor
-       and the surface hanging off it agree. */
-
-    /* THE IDENTITY CLUSTER (strip right). The user's own name and their
-       word for this device, spoken in THE VISOR'S voice — plain text, full
-       opacity, slightly heavier — because the user typed them. Same
-       contrast as the petname above: q.foreign means "a component said
-       this", this means "you said this". Nothing here is ever handed to
-       a component (see host/demo.ts's identity record), so the cluster
-       is a second thing an impersonating rectangle cannot reproduce: it
-       would have to guess words it can never read.
-
-       The old standalone "⛨ polymorph" brand mark is deliberately GONE.
-       The anchor's authority is its POSITION and the user's colour, not
-       a word — and a word is precisely the part an app CAN paint inside
-       its own rectangle. What sits here instead is a control: the
-       user's chosen glyph, opening the visor's settings sheet.
-
-       TWO LINES HERE TOO, mirroring the left cluster: the user's name
-       above, their word for this device below, each ellipsizing inside
-       the same 45% cap. The button spans BOTH lines as a square. */
-    #visor-identity { display: flex; align-items: stretch; gap: .5em;
-                       min-width: 0; max-width: 45%; flex: none; }
-    #visor-identity .id-lines { display: flex; flex-direction: column;
-                                 justify-content: center; gap: .15em;
-                                 min-width: 0; text-align: right; }
-    #visor-identity .who { font-weight: 600; letter-spacing: .01em;
-                            max-width: 16em; overflow: hidden;
-                            text-overflow: ellipsis; white-space: nowrap; }
-    /* The device word is the quieter half of the pair. */
-    #visor-identity .who.device { font-weight: 500; opacity: .85; }
-    /* THE DOUBLED BUTTON. It spans both text lines, which does two
-       things: it makes the visor's own control the most prominent object on
-       the bar (it is the only control here that opens the visor's own
-       settings), and it gives the gesture a target that clears the 44px
-       touch minimum at the strip's 12px type — hence the px floor beside
-       the em sizing: at 12px, 2.4em is only ~29px. */
-    #visor-settings { font: inherit; color: inherit; cursor: pointer;
-                       background: rgba(255,255,255,.12);
-                       border: 1px solid rgba(255,255,255,.3);
-                       border-radius: 4px; padding: 0;
-                       align-self: center; flex: none;
-                       display: inline-flex; align-items: center;
-                       justify-content: center;
-                       width: 2.4em; height: 2.4em;
-                       min-width: 44px; min-height: 44px;
-                       font-size: 1.5em; line-height: 1; }
-
-
+  </style>
+  <!-- The visor's shared system-UI chrome (strip, clusters, drawer host):
+       visor/ui/visor.css, extracted whole out of this page alongside
+       visor/ui/visor.ts (#22/#20). Linked BEFORE the page's own <style>
+       block below so the cascade order matches what visor.css was
+       authored against — the demo's page-specific rules (sheet content,
+       panes, storage dialog) come after, as they always did in this
+       file. -->
+  <link rel="stylesheet" href="./visor.css">
+  <style>
     /* --- the credential sheet (#22) --------------------------------------
        Credential entry lives on a surface only the visor can produce: a
        sheet that unfolds ABOVE the pinned strip, full width, in the
@@ -215,38 +58,12 @@
        anchor the sheet is supposed to be bracketed by), and this
        embedding's dialog close events are unreliable — see README
        findings, and the state-change retirement the storage dialog needs
-       because of it. */
-    #visor-drawer { background: var(--visor-bg, oklch(38% .07 260));
-                     color: var(--visor-fg, #f2f4fb); }
-    #visor-drawer[hidden] { display: none; }
-    /* Only while the sheet is up does the assembly cast onto the page and
-       does the strip grow a top edge: closed, the strip must look exactly
-       as it always has at the top of the viewport. */
-    #visor-zone:has(#visor-drawer:not([hidden])) {
-      box-shadow: 0 10px 26px rgba(0,0,0,.5);
-    }
-    #visor-zone:has(#visor-drawer:not([hidden])) #visor-strip {
-      border-top: 1px solid rgba(255,255,255,.22);
-    }
-    /* Pixel-height animation set from JS at open (0 → measured target):
-       the same single-property curve the todomvc visor spike settled on.
-       flex-end keeps the growing content glued to the sheet's BOTTOM edge
-       — i.e. to the strip's top edge — so the sheet unfurls upward out of
-       the bar rather than sliding down over the page. The ARMING DELAY is
-       the setTimeout in demo.ts, never this transition — reduced motion
-       drops the animation and keeps the delay. */
-    #visor-drawer-inner { height: 0; overflow: hidden;
-                           display: flex; flex-direction: column;
-                           justify-content: flex-end;
-                           transition: height 700ms cubic-bezier(.2,.8,.2,1); }
-    @media (prefers-reduced-motion: reduce) {
-      #visor-drawer-inner { transition: none; }
-    }
-    /* The dim layer sits BETWEEN the page and the visor assembly: the
-       zone (30) above, every app surface below. */
-    #visor-dim { position: fixed; inset: 0; z-index: 20;
-                  background: rgba(6,8,16,.62); }
-    #visor-dim[hidden] { display: none; }
+       because of it.
+
+       (The drawer's own chrome — #visor-drawer, #visor-drawer-inner,
+       #visor-dim, the reveal animation and the reduced-motion override —
+       moved to visor/ui/visor.css with the rest of the shared strip; only
+       this sheet's OWN content styling stays here.) */
 
     /* A sheet taller than the space above the strip would push the strip
        off the bottom of the viewport — losing the anchor exactly when it
@@ -419,16 +236,10 @@
        question, not attempted here — this just stops horizontal
        overflow and keeps the strip/controls/dialog usable on a phone. */
     @media (max-width: 480px) {
-      /* No wrapping and no hiding: the two clusters are each capped at
-         45% and every line inside them ellipsizes, so narrowness is
-         handled by TRUNCATION rather than by dropping content. The
-         identity words used to be display:none here — which quietly
-         removed half of what makes the anchor unspoofable at exactly the
-         width where the strip is most crowded. They stay visible now. */
-      #visor-context q.foreign { max-width: 100%; }
-      #visor-context .petname { max-width: 100%; flex: 0 1 auto; min-width: 0; }
-      #visor-identity .who { max-width: 100%; }
-
+      /* The visor's own narrow-viewport cluster rules (context/identity
+         truncation) moved to visor/ui/visor.css alongside the rest of
+         the strip's chrome; only this page's own controls/dialog/sheet
+         narrow-viewport fixes stay here. */
       #controls { padding: .5em 0; font-size: 12px; }
       #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
       #controls button { padding: .25em .6em; font-size: 12px; }
