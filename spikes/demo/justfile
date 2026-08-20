@@ -49,7 +49,7 @@ app:
         build/app.component.wasm build/app.plan.json
 
 # Build the storage-provider config panels (#19 × #22: provider config
-# UI as sandboxed components, launched from chrome).
+# UI as sandboxed components, launched from the visor).
 panels:
     cd guest-panel-s3 && cargo build --release --target wasm32-unknown-unknown
     cd guest-panel-dropbox && cargo build --release --target wasm32-unknown-unknown
@@ -65,7 +65,7 @@ panels:
         build/panel-dropbox.component.wasm build/panel-dropbox.plan.json
 
 # Source-level invariant checks (#22 ruling table): the petname never
-# crosses the frame seam, chrome never renders the word "password", and
+# crosses the frame seam, the visor never renders the word "password", and
 # the anchor colour is never made ambient. Cheap tripwires on properties
 # whose loss is otherwise invisible until it is a security bug.
 check:

@@ -1,9 +1,9 @@
 // Storage-egress seams for the DENO-SIDE PROBES (bringup, leak-probe,
 // table-probe) — not part of the browser bundle.
 //
-// The browser demo wires the real thing: grants held by chrome and a
+// The browser demo wires the real thing: grants held by the visor and a
 // signer over an escrowed non-extractable key (host/keystore.ts). A CLI
-// probe has no chrome, no IndexedDB and no user to type a secret, so it
+// probe has no visor, no IndexedDB and no user to type a secret, so it
 // wires the same three seams over a credential passed on the command
 // line. This mirrors the native rig's `Egress`
 // (spikes/tasks-engine/host/src/main.rs) and is honest about being a rig:

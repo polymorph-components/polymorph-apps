@@ -32,15 +32,15 @@ visible in a todo list.
 
 ## Storage config as a sandboxed component (#22)
 
-The #22 provisional ruling says chrome is trusted shell code, with one
-named exception: *"third-party chrome-ish things (a storage backend's
+The #22 provisional ruling says the visor is trusted shell code, with one
+named exception: *"third-party visor-ish things (a storage backend's
 config panel) are **apps** — own sandboxed region, own grants, launched
-from chrome, never rendered as chrome."* This demo implements exactly
+from the visor, never rendered as the visor."* This demo implements exactly
 that, and it is the first place the framework's capability story is
 visible in UI:
 
 ```
-chrome (page JS, trusted)          panel component (sandboxed, per-provider)
+visor (page JS, trusted)           panel component (sandboxed, per-provider)
   Storage… button                    guest-panel-s3       — dom/events/shell ONLY
   dialog frame + provider tabs         "pure component: cannot reach the network"
   #panel-region (the grant) ────────►  guest-panel-dropbox — + oauth-broker
@@ -52,14 +52,14 @@ chrome (page JS, trusted)          panel component (sandboxed, per-provider)
   as the app** (`createBackend`/`createSurface`, a `root()` grant that
   is the dialog region) — position, not style, marks the boundary; the
   region is visibly inset and labeled "sandboxed panel".
-- **Chrome brokers OAuth.** Navigation, popups and redirect handling are
-  chrome capabilities a sandboxed panel must not have, so the Dropbox
-  panel calls `oauth-broker.authorize(app-key)` and chrome runs the
+- **The visor brokers OAuth.** Navigation, popups and redirect handling are
+  visor capabilities a sandboxed panel must not have, so the Dropbox
+  panel calls `oauth-broker.authorize(app-key)` and the visor runs the
   whole PKCE ceremony (S256 challenge, popup, `postMessage` relay
   through the redirect, code exchange) and returns only the tokens. The
   panel never sees the ceremony; the app guests never see any of it.
 - The panel's `fetch` import **is** the per-destination network grant:
-  chrome's shim refuses any host but `api.dropboxapi.com` with a WIT err
+  the visor's shim refuses any host but `api.dropboxapi.com` with a WIT err
   (`__demo.panelFetch` exposes it so the refusal is demonstrable, not
   merely asserted). Its S3 sibling gets no fetch import at all — the
   #21 pure-vs-egress capability-profile contrast, in one dialog.
@@ -92,11 +92,11 @@ per pane (×3, one browser page):
   `kh-knows-agent(doc)` → subscriptions → bucket grant/flush → tablet
   cold boot → apps mounted.
 
-## Chrome, and where untrusted pixels live
+## The visor, and where untrusted pixels live
 
 Two changes make the trust boundary legible rather than implied.
 
-**A persistent chrome strip** (#22) carries identity in the one region a
+**A persistent visor strip** (#22) carries identity in the one region a
 component can never paint. Its background is the **user's own colour** —
 randomised on first run, changeable from a constrained palette (fixed
 lightness/chroma in OKLCH, so contrast cannot be customised away), and
@@ -105,14 +105,14 @@ surfaces come and go: an anchor that changed per component would stop
 being an anchor. While a provider panel is open, the strip names it — a
 recognition chip whose colour is **assigned at first sight** (a TOFU
 trust table, locally unique), its name QUOTED and clamped, then
-chrome's own words ("drawn by the component, not by chrome") — plus a
+the visor's own words ("drawn by the component, not by the visor") — plus a
 loud **"NEW — first time this component draws here"** marker on first
 sight, which is the moment impersonation would land. The same assigned
 colour edges the panel region, so the rectangle and its label visibly
 agree.
 
 Recognition colours are **never derived**. Two derivations died here to
-one attack — making chrome's own strip vouch the wrong colour: deriving
+one attack — making the visor's own strip vouch the wrong colour: deriving
 from component bytes let an impersonator grind its artifact until the
 strip assigned it the target's colour (and reshuffled on every
 legitimate update); deriving from HMAC(user-secret, name) closed the
@@ -121,7 +121,7 @@ self-declared. Assignment also buys what no derivation can: local
 uniqueness — hues are handed out from the unused set, so two trust
 records on one device never share a mark while the palette lasts. The
 trust-record key must be unforgeable provenance (here: the artifact
-name as fetched by chrome from its own origin; with #3/#10, the
+name as fetched by the visor from its own origin; with #3/#10, the
 publisher's verifying key) — a self-declared name must never be able to
 look up someone else's record. A reset (storage eviction) is
 ANNOUNCED, never silent — an anchor that quietly changes trains the user
@@ -136,13 +136,13 @@ forgot to check". It is a SECONDARY anchor behind position.
 `sandbox="allow-scripts"` with no `allow-same-origin`, so each surface
 has an opaque origin, and the op protocol crosses a `MessagePort` to a
 frame-side applier that re-validates independently. Apps and panels no
-longer render into chrome's document at all. `__demo.frameProbe()`
+longer render into the visor's document at all. `__demo.frameProbe()`
 asserts the property (`sameOriginReachable: false`), and the anchor is
 now out of reach by construction rather than by allowlist — verified:
-`--chrome-bg` is scoped to the strip ELEMENT, not `:root`, so it does
+`--visor-bg` is scoped to the strip ELEMENT, not `:root`, so it does
 not even inherit into a region.
 
-Chrome also owns the **commit**: Save/Cancel live outside the granted
+The visor also owns the **commit**: Save/Cancel live outside the granted
 region and call the panel's `commit()`, which returns a config or
 refuses with its own reason. A panel owning its own Save button owns the
 user's sense of what saving means.
@@ -251,7 +251,7 @@ reports background queue depth and per-timer skip counts.
   Pull outcomes and the revocation guarantee note are the *payload* of
   those beats, and a 4 s `stats()` tick overwrote them within one frame.
   Status lines are now **sticky for 12 s** when a beat writes them
-  (stats stand down). Worth carrying into the framework's chrome: a
+  (stats stand down). Worth carrying into the framework's visor: a
   status surface that mixes ambient telemetry with consequential
   one-shot messages needs priority, not last-writer-wins.
 - **A bare transport error is undiagnosable, and one of them killed the
@@ -357,7 +357,7 @@ reports background queue depth and per-timer skip counts.
   hunt: the automation webview is not a reference environment — the
   companion CDP probe confirms real Chromium delivers the event and
   tears down correctly.
-- **Isolation costs the old verification path**: chrome (and any test
+- **Isolation costs the old verification path**: the visor (and any test
   driver) can no longer read into surfaces, and `browser_snapshot` stops
   at the iframe. Driving is now engine-level assertions plus frame
   self-reports; UI-level driving needs an explicit frame-side hook.

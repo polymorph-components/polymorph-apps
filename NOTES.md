@@ -315,9 +315,10 @@ discipline as webcrypto's WPT-deviation registry:
 - Covert timing/contention channels between colluding code: candidate
   explicit non-goal, stated rather than discovered.
 
-Anti-spoofing: consent UI renders in framework chrome strictly outside
+Anti-spoofing: consent UI renders in the framework visor (formerly
+"chrome") strictly outside
 any app pixel rectangle; an app frame can always draw a *fake* prompt,
-so real prompts must be distinguishable by position/chrome, never by
+so real prompts must be distinguishable by position/visor, never by
 content alone.
 
 ## Permission model
@@ -1229,19 +1230,19 @@ differentiator no platform has.
 
 **The config-panel exception, executed 2026-08-17**
 ([spikes/demo/](spikes/demo/README.md)): #22's named exception — a
-storage backend's config panel is an *app*, not chrome — is now real in
+storage backend's config panel is an *app*, not the visor — is now real in
 the browser demo, and it is the first place the capability story is
-visible in UI. Chrome owns the Storage dialog frame and provider tabs;
+visible in UI. The visor owns the Storage dialog frame and provider tabs;
 each provider ships a **panel component** mounted through the same
 curated-DOM surface as the app (the dialog region is its `root()`
-grant), which returns an opaque config blob chrome carries to the
+grant), which returns an opaque config blob the visor carries to the
 engine. Two panels, deliberately unequal: the S3 panel imports only
 dom/events/shell (**pure — cannot reach the network**, and says so),
-while the Dropbox panel additionally holds a `fetch` import chrome
+while the Dropbox panel additionally holds a `fetch` import the visor
 scopes to `api.dropboxapi.com` (refusing every other host with a WIT
 err — the per-destination grant *is* the import) plus an
 **oauth-broker** import, because navigation/popups/redirect handling
-are chrome capabilities: chrome runs the entire PKCE ceremony and hands
+are visor capabilities: the visor runs the entire PKCE ceremony and hands
 back only tokens. That is the powerbox shape at the provider boundary —
 the sensitive authority (a network destination, an authorization
 ceremony) stays outside the sandbox, and what crosses in is exactly the
@@ -1255,11 +1256,11 @@ unification extend to the permission dialog itself — a regular
 component distinguished only by a sensitive import? **Yes at the
 mechanism level, no at the trust level.** Mechanically the consent
 renderer is the most confinable component in the system: its profile
-is `grant-table` (propose/commit) + `trusted-surface` (chrome-owned
+is `grant-table` (propose/commit) + `trusted-surface` (visor-owned
 rendering, exclusive input) + pending-request metadata — no doc
 access, no egress, the "pure" badge on the thing that grants
 everything else; and the curated-DOM surface mechanism (#16) can host
-it in chrome space unchanged. But three things break the "just a
+it in visor space unchanged. But three things break the "just a
 sensitive capability" framing: (1) **self-reference** — every grant is
 mediated by the consent surface except its own; its authority is
 axiomatic, appointed by the release, the fixed point of the grant

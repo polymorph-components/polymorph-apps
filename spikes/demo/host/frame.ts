@@ -67,7 +67,7 @@ function wire(port: MessagePort): void {
     } else if (m.data.t === "theme") {
       // Coarse mode ONLY. "light"/"dark" is already inferable by any
       // content via prefers-color-scheme, so telling the component
-      // leaks nothing new — whereas chrome's personal anchor colour
+      // leaks nothing new — whereas the visor's personal anchor colour
       // must never cross this boundary in any form.
       const mode = m.data.mode === "dark" ? "dark" : "light";
       document.documentElement.dataset.theme = mode;

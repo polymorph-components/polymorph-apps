@@ -1,13 +1,13 @@
 // The frame backend: the queued op protocol carried to a REAL sandboxed
 // iframe (#16's per-surface frame; #5's zero-network frame). This is
 // backend-channel.ts (../../todomvc/host/backend-channel.ts:1) with the
-// applier moved out of chrome's realm entirely — the frame side lives in
+// applier moved out of the visor's realm entirely — the frame side lives in
 // ./frame.ts and reaches the DOM of its own document, never ours.
 //
-// Why the demo uses this instead of the `direct` backend: chrome's strip
+// Why the demo uses this instead of the `direct` backend: the visor's strip
 // carries the user's personal colour, which must never be disclosed to
-// component code (see web/index.html's chrome-strip comment). While the
-// guest's nodes lived in CHROME'S OWN DOCUMENT, non-disclosure rested on
+// component code (see web/index.html's visor-strip comment). While the
+// guest's nodes lived in THE VISOR'S OWN DOCUMENT, non-disclosure rested on
 // an allowlist holding the line against CSS custom-property inheritance,
 // class borrowing, getComputedStyle, and whatever the allowlist might
 // grow next. A separate document on an OPAQUE ORIGIN closes that whole
@@ -48,8 +48,8 @@ export function createFrameBackend(
   const frame = document.createElement("iframe");
   // THE load-bearing attribute. `allow-scripts` and NOTHING else: with
   // no `allow-same-origin`, the frame's document gets an opaque origin,
-  // so it cannot touch chrome's DOM, styles, cookies or storage even
-  // though it was served from chrome's own URL space. Adding
+  // so it cannot touch the visor's DOM, styles, cookies or storage even
+  // though it was served from the visor's own URL space. Adding
   // `allow-same-origin` here would silently undo the entire point of
   // this file.
   frame.setAttribute("sandbox", "allow-scripts");

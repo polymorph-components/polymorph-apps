@@ -6,16 +6,16 @@
   <title>TodoMVC — polymorph wasm→DOM spike</title>
   <link rel="stylesheet" href="todomvc-app.css">
   <style>
-    /* Framework chrome (#22): rendered strictly outside the app rectangle.
+    /* Framework visor (#22): rendered strictly outside the app rectangle.
        Interaction-emergence experiment: the strip slides DOWN to reveal the
        interaction surface above it; controls arm only after the reveal
        (the timer is the enforcement, the animation its visible form). */
-    #chrome-zone {
+    #visor-zone {
       position: sticky; top: 0; z-index: 10;
       background: #2b2d42; color: #fff;
       font: 14px/1.4 -apple-system, system-ui, sans-serif;
     }
-    #chrome-drawer > div {
+    #visor-drawer > div {
       /* Pixel-height animation (set from JS at open): fr-interpolation is
          nonlinear and engine-varied, which decoupled the perceived content
          motion from the frame. One animated property drives both. */
@@ -24,55 +24,55 @@
       transition: height 700ms cubic-bezier(.2, .8, .2, 1);
     }
     @media (prefers-reduced-motion: reduce) {
-      #chrome-drawer > div { transition: none; }
+      #visor-drawer > div { transition: none; }
     }
-    #chrome {
+    #visor {
       display: flex; align-items: center; gap: 10px;
       padding: 8px 12px;
       padding-top: max(8px, env(safe-area-inset-top));
       border-bottom: 1px solid rgba(255,255,255,.15);
     }
-    #chrome .chrome-petname { font-weight: 600; }
-    #chrome .chrome-caps { opacity: .7; font-size: 12px; }
-    #chrome .chrome-spacer { flex: 1; }
-    #chrome button {
+    #visor .visor-petname { font-weight: 600; }
+    #visor .visor-caps { opacity: .7; font-size: 12px; }
+    #visor .visor-spacer { flex: 1; }
+    #visor button {
       font: inherit; font-size: 12px; color: #fff; background: #4a4e69;
       border: none; border-radius: 4px; padding: 4px 10px; cursor: pointer;
     }
-    #chrome-dim {
+    #visor-dim {
       position: fixed; inset: 0; z-index: 5;
       background: rgba(0,0,0,.45);
     }
-    #chrome-dim[hidden] { display: none; }
-    .chrome-sheet {
+    #visor-dim[hidden] { display: none; }
+    .visor-sheet {
       max-width: 480px; margin: 0 auto; padding: 18px 20px 22px;
       font-size: 15px; line-height: 1.5;
       flex-shrink: 0;
     }
-    .chrome-sheet h2 { margin: 10px 0 6px; font-size: 17px; }
-    .chrome-foreign { font-style: italic; background: #6b5d2f; padding: 0 4px; }
-    .chrome-note { font-size: 12px; opacity: .65; }
-    .chrome-row { display: flex; gap: 12px; margin-top: 14px; }
-    .chrome-row button {
+    .visor-sheet h2 { margin: 10px 0 6px; font-size: 17px; }
+    .visor-foreign { font-style: italic; background: #6b5d2f; padding: 0 4px; }
+    .visor-note { font-size: 12px; opacity: .65; }
+    .visor-row { display: flex; gap: 12px; margin-top: 14px; }
+    .visor-row button {
       flex: 1; font: inherit; padding: 10px; border-radius: 8px;
       border: 1px solid rgba(255,255,255,.35); background: transparent;
       color: #fff; cursor: pointer;
       opacity: .35; transition: opacity 200ms;
     }
-    .chrome-armed .chrome-row button { opacity: 1; }
-    .chrome-row button:first-child { background: #fff; color: #2b2d42; border: none; }
-    .chrome-killed {
+    .visor-armed .visor-row button { opacity: 1; }
+    .visor-row button:first-child { background: #fff; color: #2b2d42; border: none; }
+    .visor-killed {
       padding: 40px 20px; text-align: center; color: #666;
       font: 14px/1.6 -apple-system, system-ui, sans-serif;
     }
   </style>
 </head>
 <body data-page="demo">
-  <div id="chrome-zone">
-    <div id="chrome-drawer"><div></div></div>
-    <header id="chrome"></header>
+  <div id="visor-zone">
+    <div id="visor-drawer"><div></div></div>
+    <header id="visor"></header>
   </div>
-  <div id="chrome-dim" hidden></div>
+  <div id="visor-dim" hidden></div>
   <div id="app">loading…</div>
   <footer class="info">
     <p>Double-click (or double-tap) to edit a todo</p>

@@ -4,7 +4,7 @@
 
 import { isBackendKind, type BackendKind } from "./backend.ts";
 import { startTodoApp } from "./app.ts";
-import { initChrome } from "./chrome.ts";
+import { initVisor } from "./visor.ts";
 
 export async function runDemo(): Promise<void> {
   const container = document.getElementById("app") as HTMLElement;
@@ -31,12 +31,12 @@ export async function runDemo(): Promise<void> {
     const artifact = guest === "hand" ? "todomvc" : `todomvc-${guest}`;
 
     const route = () => location.hash.replace(/^#\/?/, "");
-    const chrome = initChrome("TodoMVC", `${guest} guest · ${kind} backend`);
+    const visor = initVisor("TodoMVC", `${guest} guest · ${kind} backend`);
     container.textContent = "";
     const app = await startTodoApp(kind, container, route, showError, artifact);
-    chrome.bind(app.runner);
+    visor.bind(app.runner);
     addEventListener("hashchange", () => {
-      if (chrome.killed) return;
+      if (visor.killed) return;
       app.sendRoute(route()).catch(showError);
     });
 
