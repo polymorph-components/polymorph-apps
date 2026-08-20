@@ -1315,6 +1315,18 @@ canary-tested against it), and the demo e2e suite passed unchanged
 throughout — no scenario edits, which was the extraction's definition
 of "identical".
 
+Blast-zone honesty, recorded after the fact
+([#45](https://github.com/polymorph-components/polymorph-apps/issues/45)):
+the isolation above is for PIXELS and FAULTS, not time or memory. A
+guest trap is a promise rejection the runner survives by construction
+(differentially tested — identical trap vectors across backends), but
+the guest still executes on the visor's own thread, so a spinning app
+wedges the kill button that would kill it. Apps run in workers
+*eventually* — the surface's handle-table/op-queue split already fits
+(ops could stream worker → frame with the visor's thread out of the
+data path), and `worker.terminate()` is what makes the #22 kill
+ceremony honest against a guest that never yields.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
