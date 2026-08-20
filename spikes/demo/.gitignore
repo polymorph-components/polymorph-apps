@@ -2,3 +2,6 @@ target/
 build/
 serve/
 node_modules/
+test-results/
+playwright-report/
+

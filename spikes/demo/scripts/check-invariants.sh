@@ -25,7 +25,7 @@ bad() {
 # that could read it could impersonate the user's trust in itself; a
 # component that could influence it could put attacker-chosen words into
 # the visor's own voice. So it must not appear anywhere on the seam.
-echo "[1/5] petname never crosses the frame seam"
+echo "[1/6] petname never crosses the frame seam"
 echo "      (the visor's word for a component is never readable or influenceable by it)"
 hits=$(grep -n "petname" host/frame-backend.ts host/frame.ts web/frame.html 2>/dev/null)
 if [ -n "$hits" ]; then
@@ -37,12 +37,12 @@ fi
 
 # --- (b) the visor never writes the word "password" ---------------------------
 # A panel may DECLARE a credential kind; the visor renders the field with
-# the visor's own words. "password" is never one of them: the moment the visor's
-# pixels ask for a password on a panel's behalf, the panel has borrowed
-# the visor's authority. The ONLY admissible occurrence is the bare token
-# "password" as an input-masking type — never inside a sentence.
+# the visor's own words. "password" is never one of them: the moment the
+# visor's pixels ask for a password on a panel's behalf, the panel has
+# borrowed the visor's authority. The ONLY admissible occurrence is the
+# bare token "password" as an input-masking type — never inside a sentence.
 # Comments are exempt: they explain the rule rather than render it.
-echo "[2/5] the visor never renders the word \"password\""
+echo "[2/6] the visor never renders the word \"password\""
 echo "      (the visor's labels are the visor's own; a panel must never borrow them)"
 prose=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' host/demo.ts |
   grep -oiE '"[^"]*password[^"]*"' | grep -vx '"password"')
@@ -69,7 +69,7 @@ fi
 # that ever gained a style attribute (or a class resolving the variable)
 # could paint the visor's exact colour without reading it. Scope keeps the
 # secrecy structural instead of a property of the allowlist.
-echo "[3/5] the anchor colour is never made ambient"
+echo "[3/6] the anchor colour is never made ambient"
 echo "      (--visor-bg is scoped to the visor's own elements; inheriting it would disclose it)"
 ambient=$(grep -nE '(documentElement|:root)[^\n]*--visor-bg' host/*.ts 2>/dev/null)
 if [ -n "$ambient" ]; then
@@ -100,7 +100,7 @@ fi
 # Banning the verb outright from host code keeps the property one grep
 # wide instead of a review argument. Comments are exempt: they explain
 # the rule rather than perform it.
-echo "[4/5] the visor never exports a key"
+echo "[4/6] the visor never exports a key"
 echo "      (escrowed signing keys are non-extractable; nothing reads them back)"
 exported=$(grep -n "exportKey" host/*.ts 2>/dev/null |
   grep -vE "^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)")
@@ -121,7 +121,7 @@ fi
 # that could INFLUENCE them would be putting attacker-chosen words into
 # the visor's own voice on the anchor. So neither the storage key nor the
 # cluster's id may appear anywhere on the seam.
-echo "[5/5] the user's identity never crosses the frame seam"
+echo "[5/6] the user's identity never crosses the frame seam"
 echo "      (name, device and icon are visor pixels; no component may read or steer them)"
 idhits=$(grep -n "pm-demo-identity\|visor-identity" \
   host/frame.ts host/frame-backend.ts web/frame.html 2>/dev/null)
@@ -130,6 +130,38 @@ if [ -n "$idhits" ]; then
   printf '%s\n' "$idhits" | sed 's/^/       /'
 else
   ok "no identity reference in host/frame.ts, host/frame-backend.ts, web/frame.html"
+fi
+
+# --- (f) pairing code and SAS render only in visor-owned surfaces --------
+# PAIRING.md §5's new CI invariant: "the pairing code and SAS render
+# only in visor-owned surfaces, never inside a component frame". The
+# grep-enforceable marker (chosen by Track B, per that section): both
+# are rendered EXCLUSIVELY through two named functions,
+# `renderPairingCode(` and `renderSas(`, defined once in
+# host/pairing-visor.ts (see that file's own comment at the
+# definitions for the reasoning — pinning the RENDERING CALL SITE is a
+# stronger property than grepping the word "SAS", which would also fire
+# on comments). A component frame has no path to a host-side function
+# call at all, so if either name ever appeared outside pairing-visor.ts
+# the architecture itself would have grown a new seam-crossing path.
+echo "[6/6] pairing code and SAS render only in visor-owned surfaces"
+echo "      (renderPairingCode()/renderSas() are defined and called only in host/pairing-visor.ts)"
+outside=$(grep -rln "renderPairingCode(\|renderSas(" \
+  host/frame.ts host/frame-backend.ts web/frame.html web/frame.js \
+  guest-app guest-panel-s3 guest-panel-dropbox \
+  2>/dev/null)
+if [ -n "$outside" ]; then
+  bad "renderPairingCode()/renderSas() referenced outside host/pairing-visor.ts:"
+  printf '%s\n' "$outside" | sed 's/^/       /'
+else
+  ok "no reference to renderPairingCode()/renderSas() outside host/pairing-visor.ts"
+fi
+definers=$(grep -rl "^function renderPairingCode(\|^function renderSas(" host/*.ts 2>/dev/null | grep -v 'host/pairing-visor.ts$')
+if [ -n "$definers" ]; then
+  bad "renderPairingCode()/renderSas() defined somewhere other than host/pairing-visor.ts:"
+  printf '%s\n' "$definers" | sed 's/^/       /'
+else
+  ok "renderPairingCode()/renderSas() are defined only in host/pairing-visor.ts"
 fi
 
 echo

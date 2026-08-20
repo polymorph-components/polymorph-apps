@@ -2393,6 +2393,42 @@ async function boot() {
   const drawerOccupied = () =>
     drawerSession !== null || namingSession !== null || settingsSession !== null;
 
+  /** PUT THE STRIP BACK IN THE HANDS OF WHOEVER ACTUALLY OWNS IT NOW.
+   *
+   * The strip is the trust anchor, and its top line answers "whose
+   * rectangle is this". Every path that ENDS something — a sheet
+   * closing, a panel retiring — has to restore that line, and the naive
+   * restore ("back to the app") is a lie whenever something else has
+   * claimed the strip in the meantime. Since the ending paths are all
+   * DEFERRED in one way or another (a close runs on an animation, a
+   * retirement runs off a dialog event that at least one embedding
+   * delivers late), "in the meantime" is not hypothetical: the thing
+   * that claimed the strip can easily have arrived after the restore was
+   * set in motion.
+   *
+   * So no caller states what the context should become. Each one says
+   * only "I am done", and the answer is recomputed HERE from what is
+   * live, in the same precedence order the openers use:
+   *
+   *   a live PANEL SURFACE  — a component is on the page; it owns the line
+   *   the CREDENTIAL sheet  — secrets are up; it outranks the lightweights
+   *   the NAMING sheet
+   *   the SETTINGS sheet
+   *   otherwise             — nothing is claimed, so the app regions
+   *
+   * The panel comes first and is the entry that was missing: a component
+   * surface is the only tenant here that is not the visor's own, which
+   * makes mislabelling it the one error with a victim. Adding a tenant
+   * is one line here rather than an audit of every close path — the same
+   * reason `drawerOccupied` exists. */
+  const restoreVisorContext = () => {
+    if (activePanel) setVisorContext(activePanel.surface);
+    else if (drawerSession) setVisorContext({ ...drawerSession.surface, kind: "credentials" });
+    else if (namingSession) setVisorContext({ ...namingSession.surface, kind: "naming" });
+    else if (settingsSession) setVisorContext({ kind: "settings" });
+    else setVisorContext(null);
+  };
+
   /** Persist and connect: identical to the pre-drawer commit tail, just
    * moved behind the sheet's Confirm. */
   const persistAndConnect = (cfg: StorageConfig) => {
@@ -2418,7 +2454,10 @@ async function boot() {
     dim.hidden = true;
     // Input delivery resumes for every pane; the panel is already gone.
     for (const p of panes) p.runner?.resume();
-    setVisorContext(null);
+    // Ownership-aware, never a bare `setVisorContext(null)`: this close
+    // may be running late, and the strip may already belong to somebody
+    // else (see restoreVisorContext).
+    restoreVisorContext();
     // Held secrets die with the sheet: the visor keeps nothing after the
     // interaction it collected them for is over.
     clearCredentials();
@@ -2443,7 +2482,10 @@ async function boot() {
     if (namingAnchor) globalThis.removeEventListener("resize", namingAnchor);
     namingAnchor = null;
     drawerInner.style.height = "0px";
-    if (context) setVisorContext(null);
+    // Ownership-aware (see restoreVisorContext): a close that lands
+    // after a panel surface has mounted must leave the panel's name on
+    // the top line, not put the app's back.
+    if (context) restoreVisorContext();
     setTimeout(() => {
       // Same occupancy test as every other close: a credential sheet may
       // have evicted this one and be live in the drawer now.
@@ -2470,7 +2512,10 @@ async function boot() {
     settingsAnchor = null;
     if (!commit) applyVisorHue(session.hueAtOpen);
     drawerInner.style.height = "0px";
-    if (context) setVisorContext(null);
+    // Ownership-aware (see restoreVisorContext): a close that lands
+    // after a panel surface has mounted must leave the panel's name on
+    // the top line, not put the app's back.
+    if (context) restoreVisorContext();
     setTimeout(() => {
       if (!drawerOccupied()) {
         drawerInner.replaceChildren();
@@ -3285,7 +3330,7 @@ async function boot() {
   /** The live panel surface's sandboxed frame, if any (see
    * frame-backend.ts). Teardown must destroy it explicitly: clearing the
    * region would orphan the port and the window listener. */
-  let panelFrame: { destroy(): void } | null = null;
+  let panelFrame: { destroy(): Promise<void> } | null = null;
 
   /** Drop the panel: clear its granted subtree and cut the event path.
    * (Instance teardown proper is an OPEN deltic question — there is no
@@ -3297,33 +3342,37 @@ async function boot() {
   // component frame to a region nobody is looking at — an invisible
   // surface holding a granted rectangle.
   let panelGeneration = 0;
-  const teardownPanel = () => {
+  /** THE COMPLETION SIGNAL FOR THE LAST TEARDOWN — the thing this file's
+   * late-teardown ordering class was missing a fourth time.
+   *
+   * The other three members of that class (the retirement observer's
+   * `open`-attribute trigger, teardownPanel's session-aware context
+   * restore, and the drawer's occupancy-checked timers) all exist
+   * because a lifecycle step here finishes LATER than the code that
+   * caused it returns. Frame teardown is the same shape and had no
+   * signal at all: `destroy()` returned void, so a remount had no way to
+   * ask "is the old surface actually gone?" and simply hoped. It is a
+   * promise now (frame-backend.ts's `destroy`), and this holds the
+   * in-flight one so `mountPanel` can await it.
+   *
+   * Null when no teardown is outstanding. */
+  let teardownInFlight: Promise<void> | null = null;
+  const teardownPanel = (): Promise<void> => {
     panelGeneration++;
     panelDispatch = () => {};
     // Close the port and drop the frame BEFORE clearing the region, so
     // the frame's window listener and MessagePort go with it rather than
     // being left holding a detached document.
-    panelFrame?.destroy();
+    const gone = panelFrame?.destroy() ?? Promise.resolve();
     panelFrame = null;
     region.innerHTML = "";
     panelMounted = null;
     activePanel = null;
-    // The strip goes back to naming the app regions — UNLESS a visor
-    // sheet has already claimed the strip context: the dialog's close
-    // event/observer fires AFTER the handoff (the same late-teardown
-    // ordering the retirement observer exists for), and resetting here
-    // would blank the live sheet's line. Session-aware, not
-    // surface-scoped: ALL THREE tenants of the drawer must be tested, in
-    // the same precedence order the openers use.
-    if (drawerSession) {
-      setVisorContext({ ...drawerSession.surface, kind: "credentials" });
-    } else if (namingSession) {
-      setVisorContext({ ...namingSession.surface, kind: "naming" });
-    } else if (settingsSession) {
-      setVisorContext({ kind: "settings" });
-    } else {
-      setVisorContext(null);
-    }
+    // The strip goes back to whoever rightfully owns it now (see
+    // restoreVisorContext): NOT unconditionally to the app, because the
+    // dialog's close event/observer fires AFTER a handoff and would
+    // otherwise blank a live sheet's line.
+    restoreVisorContext();
     region.style.removeProperty("--component-color");
     saveBtn.disabled = false;
     dialogNote("");
@@ -3337,10 +3386,19 @@ async function boot() {
     // delivers the dialog's `close` event LATE — after the drawer is
     // already up — and that stray teardown must not wipe the sheet.
     if (drawerSession === null) clearCredentials();
+    // Publish the completion, and retire it once it lands so a later
+    // mount does not await a teardown that finished long ago. The
+    // identity check is the usual discipline: only the teardown that is
+    // still the current one may clear the slot.
+    const done = gone.then(() => {
+      if (teardownInFlight === done) teardownInFlight = null;
+    });
+    teardownInFlight = done;
+    return done;
   };
 
   const mountPanel = async (provider: "s3" | "dropbox") => {
-    teardownPanel();
+    const gone = teardownPanel();
     const generation = ++panelGeneration;
     if (!dialog.open) return;
     for (const [k, btn] of Object.entries(tabs)) {
@@ -3378,14 +3436,41 @@ async function boot() {
     };
     setVisorContext(identity);
 
+    // THE PREVIOUS SURFACE MUST BE ACTUALLY GONE before this one is
+    // stood up. Teardown does not finish when `teardownPanel()` returns
+    // — the old frame's window can still have messages in flight toward
+    // the visor (frame-backend.ts's `destroy`), and creating the next frame
+    // inside that window is how a stale delivery ends up attributed to
+    // the new surface. Awaiting the completion is what turns "reopen
+    // immediately after ESC" from a race into an ordering.
+    await gone;
+    // GENERATION AFTER EVERY AWAIT, this one included: two reopens in
+    // the time the teardown took would leave this mount stale, and a
+    // stale mount must not resurrect itself into a region a newer one
+    // already owns.
+    if (generation !== panelGeneration) return;
+    if (!dialog.open) return;
+
     // Same sandboxed-frame treatment as the app panes: the panel handles
     // provider credentials, so the argument for keeping it out of
     // the visor's document is if anything stronger here.
     const frameBackend = createFrameBackend(region, (ev) => panelDispatch(ev), "dark");
     panelFrame = frameBackend;
-    const backend = await frameBackend.backend;
-    if (generation !== panelGeneration) {
-      frameBackend.destroy();
+    // A HANDSHAKE THAT NEVER COMPLETES BECAUSE WE WERE TORN DOWN IS
+    // CANCELLATION, NOT FAILURE. `backend` rejects when the surface is
+    // destroyed before it is ready, and an unguarded `await` turns that
+    // into a thrown error — which openStorage's `.catch` then writes
+    // into the region as "panel failed to mount: frame backend destroyed
+    // before it was ready", clobbering whatever surface is legitimately
+    // there by now. The generation is what distinguishes the two: if we
+    // have been superseded, the rejection is our own retirement arriving
+    // and this mount simply stops, silently.
+    const backend = await frameBackend.backend.catch((e: unknown) => {
+      if (generation !== panelGeneration) return null;
+      throw e;
+    });
+    if (backend === null || generation !== panelGeneration) {
+      await frameBackend.destroy();
       return;
     }
     const surface = createSurface(backend, () => "");
@@ -3403,7 +3488,7 @@ async function boot() {
       imports,
     );
     if (generation !== panelGeneration) {
-      frameBackend.destroy();
+      await frameBackend.destroy();
       return;
     }
     const panel = instance.exports as unknown as PanelExports;
@@ -3493,7 +3578,20 @@ async function boot() {
   // as belt-and-braces for engines where the attribute mutation and the
   // event race differently. teardownPanel is idempotent, so double
   // firing is free.
-  dialog.addEventListener("close", () => teardownPanel());
+  //
+  // BOTH PATHS ARE GUARDED ON `open` BEING FALSE AT THE MOMENT THEY RUN,
+  // and that is the fourth member of this file's late-teardown ordering
+  // class rather than a redundancy. The `close` event is delivered as a
+  // TASK, so a reopen can land between the close and the event: the
+  // event then arrives describing a session that is already over, while
+  // a NEW surface is mid-handshake in the region. Retiring on it would
+  // destroy that new frame before it was ready. A close event that finds
+  // the dialog open again is by construction stale — its session ended,
+  // and a later one has already begun — so it is dropped.
+  dialog.addEventListener("close", () => {
+    if (dialog.open) return;
+    teardownPanel();
+  });
   new MutationObserver(() => {
     if (!dialog.open && panelMounted !== null) teardownPanel();
   }).observe(dialog, { attributes: true, attributeFilter: ["open"] });

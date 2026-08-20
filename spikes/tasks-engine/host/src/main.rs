@@ -32,6 +32,8 @@ mod bindings {
     });
 }
 
+mod pairing_acts;
+
 use bindings::exports::polymorph::engine_spike::driver::{Guest as Driver, S3Config, StoreConfig};
 use bindings::polymorph::engine_spike::store_fetch_types::Response as FetchResponse;
 use bindings::exports::polymorph_data::tasks::tasks::{Guest as Tasks, TodoItem};
@@ -353,6 +355,9 @@ async fn main() -> Result<()> {
     let mut bucket = "pm-tasks-spike".to_string();
     let mut access = "minioadmin".to_string();
     let mut secret = "minioadmin".to_string();
+    // Which act set to run. `full` is the G1–G5 scenario (needs a relay
+    // AND MinIO); `pairing` is the PAIRING.md §6 set (relay only).
+    let mut acts = "full".to_string();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--relay" => relay = args.next().ok_or_else(|| format_err!("--relay needs a URL"))?,
@@ -362,6 +367,7 @@ async fn main() -> Result<()> {
             "--bucket" => bucket = args.next().ok_or_else(|| format_err!("--bucket needs a name"))?,
             "--access" => access = args.next().ok_or_else(|| format_err!("--access needs a key"))?,
             "--secret" => secret = args.next().ok_or_else(|| format_err!("--secret needs a key"))?,
+            "--acts" => acts = args.next().ok_or_else(|| format_err!("--acts needs a name"))?,
             other => bail!("unknown argument {other}"),
         }
     }
@@ -401,18 +407,38 @@ async fn main() -> Result<()> {
     bindings::store_public_fetch::add_to_linker::<Ctx, Ctx>(&mut linker, |c| c)?;
     bindings::store_signer::add_to_linker::<Ctx, Ctx>(&mut linker, |c| c)?;
 
-    let mut store = Store::new(
-        &engine,
-        Ctx {
-            wasi: WasiCtxBuilder::new().inherit_stdout().inherit_stderr().build(),
-            webcrypto: WasiWebcryptoCtx::new(),
-            websocket: WasiWebsocketCtx::new(),
-            webrtc: WebrtcCtx::new(),
-            http: wasmtime_wasi_http::WasiHttpCtx::new(),
-            egress,
-            table: ResourceTable::new(),
-        },
-    );
+    // One store per act set. The negative pairing acts need guest-side
+    // verification hooks, and WASI environment is per-store, so isolating
+    // them in their own store is what keeps those hooks from touching the
+    // positive acts.
+    let make_store = |env: &[(&str, &str)]| {
+        let mut wasi = WasiCtxBuilder::new();
+        wasi.inherit_stdout().inherit_stderr();
+        for (k, v) in env {
+            wasi.env(k, v);
+        }
+        Store::new(
+            &engine,
+            Ctx {
+                wasi: wasi.build(),
+                webcrypto: WasiWebcryptoCtx::new(),
+                websocket: WasiWebsocketCtx::new(),
+                webrtc: WebrtcCtx::new(),
+                http: wasmtime_wasi_http::WasiHttpCtx::new(),
+                egress: egress.clone(),
+                table: ResourceTable::new(),
+            },
+        )
+    };
+
+    if acts == "pairing" {
+        return pairing_scenarios(&engine, &component, &linker, &make_store, relay).await;
+    }
+    if acts != "full" {
+        bail!("unknown act set {acts} (want `full` or `pairing`)");
+    }
+
+    let mut store = make_store(&[]);
 
     let t0 = Instant::now();
     let laptop = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
@@ -431,6 +457,104 @@ async fn main() -> Result<()> {
             scenario(acc, laptop, phone, bob, tablet, laptop2, laptop3, relay, s3).await
         })
         .await?
+}
+
+/// The PAIRING.md §6 act sets, each in its own store.
+///
+/// The shortened offer TTL below applies only to the expiry act's store:
+/// the contract value (120 s) is what every other instance uses, and what
+/// ships.
+const TEST_TTL_MS: u64 = 2_000;
+
+/// Builds a store with the given WASI environment (see `make_store`).
+type StoreFactory<'a> = dyn Fn(&[(&str, &str)]) -> Store<Ctx> + 'a;
+
+async fn pairing_scenarios(
+    engine: &Engine,
+    component: &Component,
+    linker: &Linker<Ctx>,
+    make_store: &StoreFactory<'_>,
+    relay: String,
+) -> Result<()> {
+    let _ = engine;
+
+    let mut outcomes: Vec<(&str, std::result::Result<(), String>)> = Vec::new();
+    let relay_for_post_seal = relay.clone();
+
+    let mut store = make_store(&[]);
+    let laptop = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let phone = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let stranger = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let rejoin = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let r = relay.clone();
+    outcomes.push((
+        "positive acts",
+        store
+            .run_concurrent(async move |acc| {
+                pairing_acts::positive_acts(acc, laptop, phone, stranger, rejoin, r).await
+            })
+            .await?
+            .map_err(|e| e.to_string()),
+    ));
+
+    let mut store = make_store(&[("PM_PAIR_FAULT", "commit")]);
+    let adder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let r = relay.clone();
+    outcomes.push((
+        "commitment violation aborts",
+        store
+            .run_concurrent(
+                async move |acc| pairing_acts::commitment_act(acc, adder, joiner, r).await,
+            )
+            .await?
+            .map_err(|e| e.to_string()),
+    ));
+
+    let mut store = make_store(&[("PM_PAIR_TTL_MS", &TEST_TTL_MS.to_string())]);
+    let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    outcomes.push((
+        "offer expiry",
+        store
+            .run_concurrent(async move |acc| {
+                pairing_acts::expiry_act(acc, joiner, relay, TEST_TTL_MS).await
+            })
+            .await?
+            .map_err(|e| e.to_string()),
+    ));
+
+    // Post-seal add on the ORIGINAL doc: regeneration off, so the
+    // event-delivery behaviour is what is under test.
+    let mut store = make_store(&[("PM_NO_REGEN", "1"), ("PM_EVENT_DIFF", "1")]);
+    let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let r = relay_for_post_seal;
+    outcomes.push((
+        "post-seal add readable on the original doc",
+        store
+            .run_concurrent(
+                async move |acc| pairing_acts::post_seal_add_act(acc, founder, joiner, r).await,
+            )
+            .await?
+            .map_err(|e| e.to_string()),
+    ));
+
+    println!("\n=== PAIRING ACT SETS ===");
+    let mut failed = 0;
+    for (name, outcome) in &outcomes {
+        match outcome {
+            Ok(()) => println!("  PASS  {name}"),
+            Err(e) => {
+                failed += 1;
+                println!("  FAIL  {name}: {e}");
+            }
+        }
+    }
+    if failed > 0 {
+        bail!("{failed} pairing act set(s) failed");
+    }
+    println!("\nPAIRING ACTS PASSED");
+    Ok(())
 }
 
 struct S3Args {

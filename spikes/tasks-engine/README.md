@@ -165,6 +165,124 @@ only in the archive**: a stale bundle predating the device's own
 authoring cannot reach epochs its own rotations created — refresh the
 persisted bundle after authoring, or design a re-join path.
 
+## Device pairing + the user-system partition (#10 G6, #36)
+
+`PAIRING.md` is the pinned contract; the engine implements §1–§4 and the
+headless acts in §6 run under `just pair` (relay only — no bucket is
+involved, so no MinIO). Twelve acts, including a post-seal-add act that
+guards the boundary the finding below corrects.
+
+The ceremony is interactive on BOTH devices: the new device displays a
+79-character `BASE32_NOPAD_VISUAL` code (version ‖ endpoint-id ‖ token),
+the trusted device consumes it, and one bidi stream on a pairing-only
+ALPN carries length-framed bincode. Two properties carry it:
+
+- **Commitment ordering.** The adder commits to its nonce before the
+  joiner reveals one, so it cannot search the transcript for a chosen
+  short authentication string. The joiner verifies on REVEAL.
+- **Reject-on-unknown.** Every step has exactly one legal next message;
+  an unknown kind, an undecodable frame, an out-of-order message, or a
+  peer that closes the stream ends the session.
+
+Plus single-claim (a second claim refuses with a distinct error and
+BURNS the offer — a code that reached a second party has leaked) and a
+120 s expiry. Enrollment writes in a pinned order: group membership at
+**admin** first, then the card export, so the delegation rides the card.
+
+The user-system doc backs `profile`/`marks`/`contacts`/`devices` behind a
+WIT surface that hides the partitioning — including which document holds
+them, which is what lets enrollment regenerate the doc underneath the visor
+(see the finding below). Petname (case-insensitive) and
+hue uniqueness are repaired deterministically after every remote apply —
+older `created-at` wins, ties broken by lexicographic provenance — and
+every device computes the same outcome, so only the device whose OWN
+write lost persists it. `needs-reconfirm` is derived rather than stored,
+which removes the write entirely on that path. `us-events` drains
+remotely-caused changes only; local writes update the diff baseline as
+they are made, so a device can never be announced its own work.
+
+### Finding: post-seal enrollment was never broken — the gate was measuring the wrong thing
+
+This section previously reported that a device added to the user group
+*after* a document was sealed could never read that document, and blamed
+the pinned keyhive revision. **That attribution was wrong, and so was the
+framing.** `spikes/keyhive-addwedge` settled the upstream half — 140/140
+green across every legitimate shape, at the pin and at upstream `main`
+(which is the same commit) — and the engine-side measurement below
+settles the rest.
+
+**What is actually true.** A late-joining device decrypts post-join
+content correctly. What it cannot do is *materialize* that content,
+because the automerge dependency chain of every post-join change roots in
+changes written before it joined, and automerge buffers changes whose
+dependencies are missing rather than erroring. The old gate asserted
+materialization (`us-profile-get` returning the name, a mark appearing in
+`us-marks-list`), so a joiner that was opening envelopes perfectly still
+presented as reading nothing at all. The `[decrypt] KeyNotFound` output
+was the pre-join chunks, which is designed non-retroactivity.
+
+The engine now measures the two separately: `stats` reports
+`us-decrypted` (envelopes opened) alongside `us-undecryptable` and
+`us-revision` (automerge state materialized). With that distinction
+visible, the picture is unambiguous.
+
+**Measurements** (act: post-seal add on the original doc, regeneration
+disabled — `just pair`, 10/10):
+
+- the late joiner opens the chunk the founder writes after the add;
+- it opens that chunk with the forced epoch rotation **switched off**
+  (`PM_NO_ROTATE`) — so the rotation is defence in depth, not the
+  mechanism: keyhive's `add_member` already propagates the CGKA add to
+  every doc transitively containing the group;
+- it opens that chunk with the hand-delivered ENROLL card **suppressed**
+  (`PM_SKIP_ENROLL_CARD`) — so the subduction/keyhive bridge does deliver
+  the joiner's event set; enrollment does not depend on the out-of-band
+  card;
+- pre-join content stays dark in all configurations, which is design.
+
+On the founder, the bridge computes 18 events reachable to the joiner and
+18 to itself, so the per-peer reachability the cache serves from is
+correct.
+
+**One measurement I could not resolve**, recorded rather than smoothed
+over: re-ingesting the founder's authoritative card late in the act
+reports every event in it as new to the joiner (`delegations+4
+prekeys-expanded+7 prekey-rotations+2 cgka-operations+5`), which sits
+badly with the joiner demonstrably having synced. The likeliest
+explanations are that the card at that instant contains ops created after
+the joiner's last sync round, or that keyhive's op counters are not
+idempotent across a duplicate ingest. It is no longer load-bearing for the
+attribution — the card-suppressed run settles delivery directly — but it
+is not explained, and anyone extending this should not treat that counter
+as a set difference.
+
+**A methodological note worth keeping.** An earlier version of this
+instrumentation hashed locally-reconstructed `StaticEvent`s and diffed the
+digests. Those digests are not stable across two instances' constructions,
+so it reported "everything missing" for an instance that provably held the
+ops — a measurement that looked like strong evidence and was noise. The
+current instrument counts through keyhive's own accounting instead. The
+original error this whole section corrects was of the same family:
+comparing op *counts* and reading equality as set equality.
+
+**What remains true by design**, and is now asserted as such rather than
+mistaken for a defect:
+
+- **Non-retroactivity.** BeeKEM adds are not retroactive; pre-join
+  ciphertext stays dark. The new act asserts this as EXPECTED-unreadable
+  so the boundary is documented, not folded into a pass.
+- **Causal read-back needs the Envelope content format.**
+  `try_causal_decrypt_content` expects plaintext to be an `Envelope`
+  carrying ancestor keys, while `try_encrypt_content` — what this spike
+  uses — encrypts raw content. That is the production path for late
+  joiners reading history (#36), not a bug.
+- **Regeneration stays**, reclassified. It is not a workaround for a
+  readability defect; it is the STATE-HANDOFF mechanism. Until the
+  Envelope format lands, a new device cannot materialize pre-join
+  history, and the generation is what hands it the account's current
+  state. Its other properties (the fork-detecting map pointer, the
+  carried diff baseline, engine-driven subscriptions) are unaffected.
+
 ## Findings
 
 - **Cards must be distributed to every member instance; the wire will
