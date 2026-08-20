@@ -45,10 +45,14 @@ fi
 echo "[2/6] the visor never renders the word \"password\""
 echo "      (the visor's labels are the visor's own; a panel must never borrow them)"
 # BOTH halves of the visor render strings now: the system-UI core
-# (visor/ui/visor.ts — strip, sheets, drawer host) and the demo's own
-# sheet content (host/demo.ts). The scan covers all of it, or the
-# property would follow whichever half the next refactor moves.
-VISOR_RENDERERS="host/demo.ts ../../visor/ui/visor.ts"
+# (visor/ui/*.ts — visor.ts's strip/drawer host, sheets.ts's naming and
+# settings ceremonies) and the demo's own sheet content (host/demo.ts).
+# The scan covers all of it — as a GLOB, so it follows the next file the
+# framework layer grows rather than needing this list edited, which is
+# exactly the miss this check would otherwise have after the naming and
+# settings sheets moved out of host/demo.ts.
+VISOR_RENDERERS="host/demo.ts ../../visor/ui/*.ts"
+# shellcheck disable=SC2086
 prose=$(cat $VISOR_RENDERERS | sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' |
   grep -oiE '"[^"]*password[^"]*"' | grep -vx '"password"')
 if [ -n "$prose" ]; then
@@ -58,6 +62,7 @@ else
   ok "no string literal in $VISOR_RENDERERS spells password inside prose"
 fi
 # And the bare token is only ever the masking type, never a label.
+# shellcheck disable=SC2086
 misuse=$(grep -n '"password"' $VISOR_RENDERERS |
   grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' |
   grep -vE 'type: "password"|"text" \| "password"')

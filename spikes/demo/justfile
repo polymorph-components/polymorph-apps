@@ -43,6 +43,13 @@ infra:
 bringup PHASE="solo": translate
     deno run -A host/bringup.ts {{PHASE}}
 
+# Headless pairing + user-system smoke over the real engine composite,
+# through the pairing-engine.ts adapter (Track A -> Track B). Needs
+# `just infra` running (relay only; no bucket use).
+pairing-bringup: translate
+    deno check host/pairing-bringup.ts
+    deno run -A host/pairing-bringup.ts
+
 # Build the app guest and translate both components.
 app:
     cd guest-app && cargo build --release --target wasm32-unknown-unknown

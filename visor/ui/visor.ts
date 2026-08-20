@@ -442,15 +442,14 @@ export interface Visor {
   /** Commit: remember, paint, persist. */
   commitHue(hue: number): void;
   readonly drawer: DrawerHost;
-  /** A consumer's OWN strip controls, alongside the shared clusters —
-   * e.g. todomvc's "consent demo"/"kill" buttons (spikes/todomvc/host/
-   * visor.ts). The host mounts nothing here itself: it is an empty slot
-   * (`#visor-actions` in the consumer's markup) the consumer populates
-   * with its own buttons, exactly as it would any other DOM node it
-   * owns. `null` when the consumer's markup carries no such element —
-   * the demo spike does not, so this is inert there and does not change
-   * demo-observable behavior. */
-  readonly actions: HTMLElement | null;
+  // NO CONSUMER-CONTROL SLOT. There was one — an optional strip element
+  // a consumer could mount its own buttons into, exposed here as a
+  // nullable node. Its only user was the todomvc spike's
+  // pair of demonstration buttons, and both are gone. It is not
+  // reinstated on demand either — every control the strip carries is one
+  // more thing on the trust anchor whose provenance a user has to
+  // reason about, so a new one is a framework decision with a framework
+  // argument behind it, not a slot a consumer fills.
 }
 
 export function initVisor(config: VisorConfig): Visor {
@@ -471,9 +470,6 @@ export function initVisor(config: VisorConfig): Visor {
    * budget, so the anchor can never be pushed off-screen. */
   const strip = document.getElementById("visor-strip") as HTMLElement | null;
   const dim = document.getElementById("visor-dim") as HTMLElement;
-  /** See `Visor.actions`: optional, consumer-populated, absent for a
-   * consumer whose markup has no such element. */
-  const actions = document.getElementById("visor-actions");
 
   const handlers: VisorHandlers = {};
   const requestNaming = (surface: SurfaceIdentity) => handlers.requestNaming?.(surface);
@@ -954,6 +950,5 @@ export function initVisor(config: VisorConfig): Visor {
       } catch { /* not durable here */ }
     },
     drawer: drawerHost,
-    actions,
   };
 }

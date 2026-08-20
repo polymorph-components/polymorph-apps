@@ -208,25 +208,38 @@ reads. Findings:
 ## Framework visor: a consumer of the shared system-UI core (#22)
 
 The visor's own UI — the strip, the identity cluster, the context
-cluster, and the drawer host with its tenancy, arming delay and height
-budget — is no longer reimplemented here: `host/visor.ts` is a
-from-scratch CONSUMER of `visor/ui/visor.ts`, the same shared core the
-`spikes/demo` spike uses (visor extraction Phase C). What stays in this
-spike's own `host/visor.ts` is this page's OWN storage keys
-(`pm-todomvc-visor-hue`, `pm-todomvc-identity` — no legacy migration key,
-unlike the demo's #22 rename), its one static app-surface record (one
-artifact, one row in the trust table, petname fixed to `"TodoMVC"`, hue
-derived deterministically from the artifact name), and two drawer
-tenants carried over verbatim from the pre-C3 spike: a simulated consent
-sheet ("Simulated consent prompt", foreign-quoted app name, armed
-Allow/Deny) that **pauses the app's event queue** while open, and "kill"
-("Suspend this app?", behind its own confirm) that stops delivery
-permanently, tears down the frame surface when there is one (awaiting
-its completion — see `app.ts`'s `TodoApp.teardown`), and replaces the
-app's DOM with a suspended note. The two strip buttons ("consent demo",
-"kill") mount into the shared core's optional `#visor-actions` slot
-(`Visor.actions`), which is absent — and therefore inert — for the demo
-spike's own markup.
+cluster, the drawer host with its tenancy, arming delay and height
+budget, AND the two ceremonies that hang off the strip (the naming /
+App-settings sheet and the "Your visor" settings sheet, with the trust
+table behind them) — is not reimplemented here. `host/visor.ts` is a thin
+CONSUMER of `visor/ui/visor.ts` plus `visor/ui/sheets.ts`, the same
+shared modules the `spikes/demo` spike uses.
+
+What stays in this spike's own `host/visor.ts` is this page's OWN storage
+keys (`pm-todomvc-visor-hue`, `pm-todomvc-identity`,
+`pm-todomvc-surface-marks` — no legacy migration key, unlike the demo's
+#22 rename) and its one row in the trust table: one artifact, one record,
+its recognition hue ASSIGNED from the unused palette at first sight like
+any other, and its petname SEEDED with this page's historical word
+`"TodoMVC"` on first run. From there it is an ordinary petname — clicking
+it on the strip opens the real naming ceremony, a rename persists in this
+page's own marks table, and the identity button opens the real settings
+sheet (name, device, glyph, anchor hue with live preview and revert).
+Before this the strip drew a clickable petname with no handler behind it:
+a dead affordance on the trust anchor, which is the worst place to have
+one.
+
+WHAT WAS REMOVED: the "consent demo" and "kill" strip buttons and their
+two drawer tenants — a simulated permission prompt and a simulated app
+teardown from the pre-shared-core spike. The drawer mechanics they existed
+to demonstrate (arming, dimming, tenancy, the reveal above the strip) are
+demonstrated by the shared sheets themselves now, against real state
+rather than a mock. The strip's consumer-owned button slot went with them:
+every control on the trust anchor is one more thing whose provenance a
+user has to reason about, so adding one is a framework decision rather
+than a slot a consumer fills. (`app.ts`'s `TodoApp.teardown` stays — it is
+a framework-real capability; nothing about dropping a spike button argues
+against having it.)
 
 Style is deliberately shared-looking: position and absolute interaction
 rules are the trust anchors, never CSS. Secret entry is out of scope for
