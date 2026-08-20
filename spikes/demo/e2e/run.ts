@@ -37,6 +37,7 @@ import credentialFlow from "./scenarios/credential-flow.ts";
 import transportRefusal from "./scenarios/transport-refusal.ts";
 import tenantPrecedence from "./scenarios/tenant-precedence.ts";
 import dialogCloseRetirement from "./scenarios/dialog-close-retirement.ts";
+import stripOwnership from "./scenarios/strip-ownership.ts";
 
 // Re-exported so a scenario imports its whole contract from one place:
 // `Scenario` and the `Ctx` it is handed.
@@ -70,6 +71,10 @@ const SCENARIOS: Scenario[] = [
   transportRefusal,
   tenantPrecedence,
   dialogCloseRetirement,
+  // Last: it provokes the chrome-timer races, so it is the scenario most
+  // likely to leave a page in an interesting state — and it gets a fresh
+  // context either way.
+  stripOwnership,
 ];
 
 const here = new URL(".", import.meta.url).pathname;

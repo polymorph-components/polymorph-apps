@@ -254,10 +254,12 @@ export async function waitForSheet(
  * the panel to an origin, and a non-null binding is exactly the
  * precondition chrome's own Save re-validates against. Side-effect free.
  *
- * (The strip's context is NOT usable for this: closing a lightweight
- * sheet restores the app context on a delayed timer, which can land
- * AFTER the panel mounts and put the app's name back on the top line
- * while the panel is up.) */
+ * (The strip's context is NOT usable for this, for a plainer reason than
+ * this comment once gave: chrome claims the top line for the panel in
+ * STAGES — the provenance key at mount, the self-declared nickname a
+ * moment later — so the line is a poor readiness signal even though it
+ * is never WRONG. That it is never wrong is its own claim, made by
+ * scenarios/strip-ownership.ts.) */
 export async function waitForPanelSurface(page: Page, timeout = UI_TIMEOUT): Promise<void> {
   await page.waitForFunction(
     () =>
@@ -402,6 +404,82 @@ export async function recordPaneStatus(
       return await handle.jsonValue() as string;
     },
   };
+}
+
+/** Record EVERY value the strip's TOP line takes, from now on.
+ *
+ * The top line is the trust anchor's component-identity line, and the
+ * claim being made about it is a NEVER: no deferred chrome timer may put
+ * one surface's name up while a different surface owns the context. A
+ * `never` cannot be checked by sampling — the wrong label may be up for
+ * one frame — so this records rather than polls, on BOTH edges:
+ *
+ *   - a MutationObserver, which cannot miss a value the DOM took;
+ *   - a rAF tick, which timestamps how long each value was actually on
+ *     screen (a mutation pair that lands within one frame never painted).
+ *
+ * `stop()` returns every distinct value observed, in order. */
+export async function recordStripTop(page: Page): Promise<{
+  samples(): Promise<string[]>;
+  stop(): Promise<string[]>;
+}> {
+  await page.evaluate(() => {
+    const el = document.querySelector("#chrome-context .ctx-top") as HTMLElement;
+    const store = ((globalThis as Record<string, unknown>).__e2e_ctx_top = [] as string[]);
+    const push = () => {
+      const text = (el.textContent ?? "").trim();
+      if (store.length === 0 || store[store.length - 1] !== text) store.push(text);
+    };
+    push();
+    const mo = new MutationObserver(push);
+    mo.observe(el, { childList: true, characterData: true, subtree: true });
+    let running = true;
+    const tick = () => {
+      if (!running) return;
+      push();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    (globalThis as Record<string, unknown>).__e2e_ctx_top_stop = () => {
+      running = false;
+      mo.disconnect();
+      push();
+    };
+  });
+  const samples = () =>
+    page.evaluate(() =>
+      ((globalThis as Record<string, unknown>).__e2e_ctx_top ?? []) as string[]
+    );
+  return {
+    samples,
+    async stop() {
+      await page.evaluate(() =>
+        ((globalThis as Record<string, unknown>).__e2e_ctx_top_stop as () => void)?.()
+      );
+      return await samples();
+    },
+  };
+}
+
+/** Everything the page has said on its console since it was opened.
+ *
+ * The runner attaches the collector at `ctx.fresh` time (run.ts) and
+ * dumps the tail when a scenario fails. A scenario that is ABOUT the
+ * absence of a particular complaint has to read it directly: a mount
+ * that fails on a race is caught by chrome's own `.catch` and written
+ * into the panel region, but the warnings around it only exist here. */
+export function consoleLog(page: Page): string[] {
+  return (page as unknown as { __log?: string[] }).__log ?? [];
+}
+
+/** The panel region's text — where `openStorage`'s mount `.catch` writes
+ * `panel failed to mount: …`. The region normally holds nothing but the
+ * surface's iframe, so any text in it at all is chrome reporting a
+ * failure. */
+export function regionText(page: Page): Promise<string> {
+  return page.evaluate(() =>
+    (document.getElementById("panel-region")?.textContent ?? "").trim()
+  );
 }
 
 // --- the demo's own driving hooks -----------------------------------------

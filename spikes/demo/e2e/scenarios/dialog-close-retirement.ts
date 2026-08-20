@@ -21,10 +21,13 @@ import {
   assert,
   assertEquals,
   assertIncludes,
+  assertList,
+  consoleLog,
   frameProbe,
   hook,
+  paneStatus,
+  regionText,
   sheetOpen,
-  sleep,
   stripText,
   UI_TIMEOUT,
   waitForDrawerHidden,
@@ -138,15 +141,6 @@ const scenario: Scenario = {
     await act("and the dialog can be opened again afterwards", async () => {
       // Retirement left chrome in a re-usable state rather than a
       // half-torn-down one.
-      //
-      // FINDING (harness-visible, reported rather than papered over):
-      // re-opening the dialog IMMEDIATELY after ESC can fail to mount
-      // with "frame backend destroyed before it was ready" — the new
-      // mount races the previous teardown, which chrome exposes no
-      // completion signal for. A human cannot hit this window, so it is
-      // waited out here rather than asserted on; if it ever becomes a
-      // real complaint, the fix is a teardown promise to await.
-      await sleep(500);
       await hook(page, "openStorage");
       await waitForPanelSurface(page);
       assertEquals(await isOpen(page), true, "the dialog on a second open");
@@ -157,6 +151,64 @@ const scenario: Scenario = {
         { timeout: UI_TIMEOUT },
       );
       assertEquals(await panelLive(page), false, "the panel surface after a second ESC");
+    });
+
+    await act("ESC-then-REOPEN with no gap, ten times, mounts cleanly every time", async () => {
+      // THE PROVOCATION for the teardown/remount race (was: a 500ms
+      // settle here, papering over it).
+      //
+      // The window is narrow and specific. ESC flips the dialog's `open`
+      // attribute synchronously and QUEUES the `close` event; the
+      // MutationObserver retirement path runs off the attribute
+      // mutation, but the belt-and-braces `close` listener runs a task
+      // later. Reopening in between means the stale close event lands
+      // while the NEW mount is mid-handshake — and an unguarded teardown
+      // there destroys the new frame backend before it is ready, which
+      // chrome reports as `panel failed to mount: frame backend
+      // destroyed before it was ready`.
+      //
+      // So: no `sleep`, no settle. Press ESC and reopen in the SAME
+      // driver round trip, so the reopen is as close to the close as the
+      // page can make it, and repeat — the race is probabilistic, and
+      // one iteration is a coin toss rather than a test.
+      for (let i = 0; i < 10; i++) {
+        await page.evaluate(() => {
+          const dialog = document.getElementById("storage-dialog") as HTMLDialogElement;
+          // ESC's own effect, in-page and synchronous, immediately
+          // followed by the reopen: this is the tightest the ordering
+          // can be driven, and it is the ordering a slow machine can
+          // produce from two real key/click events.
+          dialog.close();
+          // deno-lint-ignore no-explicit-any
+          (globalThis as any).__demo.openStorage();
+        });
+        await waitForPanelSurface(page).catch(async (e) => {
+          throw new Error(`reopen ${i + 1}/10 never registered a panel surface: ${e.message}`);
+        });
+        assertEquals(await isOpen(page), true, `the dialog on reopen ${i + 1}/10`);
+        // The region holds the surface's iframe and NOTHING else: any
+        // text in it is chrome's mount `.catch` reporting a failure.
+        assertEquals(await regionText(page), "", `the panel region on reopen ${i + 1}/10`);
+      }
+      // Nothing anywhere reported a frame that died before it was ready
+      // — not the region (checked per iteration), not a pane's status,
+      // and not the console.
+      for (const pane of ["alice", "bob", "tablet"] as const) {
+        const status = await paneStatus(page, pane);
+        assert(
+          !status.includes("frame backend destroyed"),
+          `${pane}'s status reported a destroyed frame backend: ${JSON.stringify(status)}`,
+        );
+      }
+      const noisy = consoleLog(page).filter((l) => l.includes("frame backend destroyed"));
+      assertList(noisy, [], "console complaints about a destroyed frame backend");
+      // Leave the dialog closed, as the acts above found it.
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(
+        () => (document.getElementById("storage-dialog") as HTMLDialogElement).open === false,
+        undefined,
+        { timeout: UI_TIMEOUT },
+      );
     });
   },
 };

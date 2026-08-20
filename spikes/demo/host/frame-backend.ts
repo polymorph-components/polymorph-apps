@@ -34,10 +34,27 @@ const MIN_HEIGHT_PX = 48;
 
 export interface FrameBackend {
   /** Resolves once the port is live — i.e. once ops posted through the
-   * returned Backend are guaranteed to reach the frame's applier. */
+   * returned Backend are guaranteed to reach the frame's applier.
+   *
+   * REJECTS if the surface is destroyed before the handshake completes.
+   * That rejection is a CANCELLATION, not a fault: the only way to reach
+   * it is for somebody to have torn this surface down while it was
+   * coming up, and the caller is expected to recognise its own
+   * supersession rather than report a failure (see demo.ts's mountPanel,
+   * where the generation check is what tells the two apart). */
   backend: Promise<Backend>;
   frame: HTMLIFrameElement;
-  destroy(): void;
+  /** Tear the surface down, and RESOLVE WHEN IT IS ACTUALLY GONE.
+   *
+   * The completion signal is the point. Teardown is not over when
+   * `destroy()` returns: the frame's window may still have messages in
+   * flight toward us (a `frame-ready` posted a moment before the
+   * removal), and a caller that creates the NEXT surface synchronously
+   * is racing that queue. Awaiting this promise is what makes a
+   * remount-after-teardown ordered instead of hopeful.
+   *
+   * Idempotent: every call returns the same completion. */
+  destroy(): Promise<void>;
 }
 
 export function createFrameBackend(
@@ -61,6 +78,9 @@ export function createFrameBackend(
 
   let port: MessagePort | null = null;
   let destroyed = false;
+  /** The completion of the ONE teardown this surface ever gets — see
+   * `destroy()`. Non-null means teardown has started. */
+  let teardown: Promise<void> | null = null;
   const pendingDrains = new Map<number, () => void>();
   let drainId = 0;
 
@@ -151,7 +171,10 @@ export function createFrameBackend(
     backend,
     frame,
     destroy() {
-      if (destroyed) return;
+      // Idempotent, and idempotent in the SAME completion: a second
+      // caller must be able to await the teardown the first one started
+      // rather than get a promise that resolves on its own schedule.
+      if (teardown) return teardown;
       destroyed = true;
       globalThis.removeEventListener("message", onWindowMessage);
       globalThis.removeEventListener("message", onFault);
@@ -167,6 +190,18 @@ export function createFrameBackend(
         rejectBackend(new Error("frame backend destroyed before it was ready"));
       }
       frame.remove();
+      // WHY THE TURN. Everything above is synchronous, but the frame's
+      // window can already have posted toward us — `frame-ready` is
+      // delivered as a task, and removing the element does not unqueue a
+      // message that was posted before the removal. The listeners are
+      // gone so those messages hit nothing, but a caller that stands up
+      // the NEXT surface must not do so while they are still landing:
+      // that is the window in which a stale delivery gets attributed to
+      // the new frame. So completion is one macrotask out, which is
+      // exactly long enough for the queue this frame could still be
+      // holding to drain.
+      teardown = new Promise<void>((resolve) => setTimeout(resolve, 0));
+      return teardown;
     },
   };
 }
