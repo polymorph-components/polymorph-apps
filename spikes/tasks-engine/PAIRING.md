@@ -72,31 +72,39 @@ reject-on-unknown, per NOTES).
   generation → flush ops. ENROLL carries the new generation's
   partition-id. The joiner appears in `us-devices-list` on every device
   via normal sync.
-- **Doc regeneration at enrollment** (amended 2026-08-19 after the
-  rotation ruling was falsified; see README finding): at the pinned
-  keyhive rev, a post-seal add never yields the joiner a readable
-  epoch (forced PCS rotation included; op-order-dependent, the G3
-  wedge class), while freshly created partitions are stably readable.
-  So enrollment regenerates the doc: the adder CREATES a new
-  user-system doc (delegated to the user group, sealed immediately —
-  the joiner is a member from epoch 0), copies the current state
-  VALUES (all four maps, `created-at` metadata preserved), and writes
-  a forward pointer {superseded-by: new-doc-id} into the old
-  generation. Existing devices follow the pointer on next sync, adopt
-  the new generation, and value-reconcile: re-write only their OWN
-  values missing from the copy (by authorship + created-at), no
-  announcements for identical values. The joiner reads pre-join
-  history as copied state — the correct read-back window for
-  user-system data. Concurrent enrollments can fork generations:
-  winner = lexicographic smallest new-doc-id; the losing adder repeats
-  its finalization atop the winner (not gated in v1 — pairing is
-  humanly serialized; detect and report, don't solve).
-- The **post-add forced rotation stays** (harmless, correct once
-  upstream heals, and it is the right call for docs that do NOT get
-  regenerated).
-- History note, unchanged from G3: causal-key read-back for late
-  joiners requires the Envelope content format — recorded as the
-  production path on #36, out of scope at this rev.
+- **Doc regeneration at enrollment** (rationale corrected 2026-08-19
+  after the attribution investigation; see spikes/keyhive-addwedge and
+  the README finding): a post-seal add yields the joiner readable
+  epochs just fine — keyhive propagates the CGKA add, the bridge
+  delivers the event set, and post-join envelopes open (verified with
+  the rotation off and the ENROLL card suppressed; 10/10,
+  order-independent). What a late joiner cannot do is **materialize
+  pre-join automerge history**: every post-join change roots in
+  pre-join changes, which stay dark by designed non-retroactivity, and
+  automerge buffers changes with missing deps. Regeneration is
+  therefore the **state-handoff mechanism**, not a defect workaround:
+  the adder CREATES a new user-system doc (delegated to the user
+  group, sealed immediately — the joiner is a member from epoch 0),
+  copies the current state VALUES (all four maps, `created-at`
+  metadata preserved), and writes a forward pointer
+  {superseded-by: new-doc-id} into the old generation. Existing
+  devices follow the pointer on next sync, adopt the new generation,
+  and value-reconcile: re-write only their OWN values missing from the
+  copy (by authorship + created-at), no announcements for identical
+  values. The joiner reads pre-join history as copied state — the
+  correct read-back window for user-system data. When the Envelope
+  content format lands (#36), causal-key read-back replaces this and
+  the regeneration machinery can be retired. Concurrent enrollments
+  can fork generations: winner = lexicographic smallest new-doc-id;
+  the losing adder repeats its finalization atop the winner (not gated
+  in v1 — pairing is humanly serialized; detect and report, don't
+  solve).
+- The **post-add forced rotation stays** as defence in depth — a
+  deliberate epoch boundary at enrollment — not as the readability
+  mechanism (measured: post-join content opens with it disabled).
+- History note, corrected: causal-key read-back for late joiners
+  requires the Envelope content format — the production path on #36.
+  Until then, regenerated-state copy IS the history handoff.
 - After ENROLL the joiner pulls the user-system doc and adopts profile
   state; chrome announces the adoption (hue + name arriving is a
   remotely-caused change, #22: announced).

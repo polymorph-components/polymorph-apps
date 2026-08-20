@@ -479,6 +479,7 @@ async fn pairing_scenarios(
     let _ = engine;
 
     let mut outcomes: Vec<(&str, std::result::Result<(), String>)> = Vec::new();
+    let relay_for_post_seal = relay.clone();
 
     let mut store = make_store(&[]);
     let laptop = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
@@ -518,6 +519,22 @@ async fn pairing_scenarios(
             .run_concurrent(async move |acc| {
                 pairing_acts::expiry_act(acc, joiner, relay, TEST_TTL_MS).await
             })
+            .await?
+            .map_err(|e| e.to_string()),
+    ));
+
+    // Post-seal add on the ORIGINAL doc: regeneration off, so the
+    // event-delivery behaviour is what is under test.
+    let mut store = make_store(&[("PM_NO_REGEN", "1"), ("PM_EVENT_DIFF", "1")]);
+    let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let r = relay_for_post_seal;
+    outcomes.push((
+        "post-seal add readable on the original doc",
+        store
+            .run_concurrent(
+                async move |acc| pairing_acts::post_seal_add_act(acc, founder, joiner, r).await,
+            )
             .await?
             .map_err(|e| e.to_string()),
     ));

@@ -406,6 +406,7 @@ async fn regenerate() -> Result<Vec<u8>, String> {
                 applied,
                 revision: 1,
                 undecryptable: 0,
+                decrypted: 0,
             },
         );
     })?;
@@ -494,6 +495,7 @@ async fn follow_pointer() -> Result<Option<Vec<u8>>, String> {
                 applied: HashSet::new(),
                 revision: 0,
                 undecryptable: 0,
+                decrypted: 0,
             });
         s.us.doc = Some(winner.clone());
         s.us.generations.push(winner.clone());
@@ -934,6 +936,7 @@ pub(crate) async fn create(profile: UsProfile) -> Result<Vec<u8>, String> {
                 applied,
                 revision: 1,
                 undecryptable: 0,
+                decrypted: 0,
             },
         );
         s.us.doc = Some(id.clone());
@@ -963,6 +966,7 @@ pub(crate) async fn adopt(partition_id: &[u8], user_group_id: &[u8]) -> Result<(
                 applied: HashSet::new(),
                 revision: 0,
                 undecryptable: 0,
+                decrypted: 0,
             });
         s.us.doc = Some(partition_id.to_vec());
         s.us.user_group = Some(user_group_id.to_vec());
@@ -986,16 +990,44 @@ pub(crate) async fn enroll_device(
     // it must exist before the card is exported, or the card the joiner
     // ingests will not carry the delegation that makes it a member.
     crate::add_to_group(&group, joiner, "admin").await?;
-    // 2. A forced fresh epoch on every doc delegated to the user group.
-    // Kept per PAIRING.md §2: harmless, correct once upstream heals, and
-    // the right call for docs that are NOT regenerated below. It is not
-    // sufficient on its own — that ruling was falsified by measurement,
-    // which is why step 3 exists.
-    crate::rotate_docs_for_group(&group).await?;
-    // 3. Regenerate the user-system doc. The joiner is a member of the
-    // new generation from epoch 0, the only arrangement measured to be
-    // stably readable at this keyhive rev.
-    let partition = regenerate().await?;
+    // 2. A forced fresh epoch on every doc delegated to the user group,
+    // per PAIRING.md §2.
+    //
+    // Measured, and NOT load-bearing for readability: with this switched
+    // off (and with the ENROLL card suppressed too) a device added after
+    // the doc was sealed still reads content written afterwards, because
+    // keyhive's own `add_member` already propagates the CGKA add to every
+    // doc that transitively contains the group, and the next encryption
+    // derives from it. It is kept as defence in depth — a deliberate
+    // epoch boundary at the moment a device joins is a property worth
+    // having independently of whether readability needs it.
+    //
+    // `PM_NO_ROTATE` exists to keep that measurement re-runnable rather
+    // than a claim in a comment.
+    if std::env::var("PM_NO_ROTATE").is_err() {
+        crate::rotate_docs_for_group(&group).await?;
+    }
+    // 3. Regenerate the user-system doc: the STATE-HANDOFF mechanism
+    // (PAIRING.md §2).
+    //
+    // Not a workaround for a readability defect — that diagnosis was
+    // wrong (see the README finding). A late joiner decrypts post-join
+    // chunks fine; what it cannot do is MATERIALIZE them, because their
+    // automerge dependency chain roots in changes written before it
+    // joined, and automerge buffers changes whose deps are missing.
+    // Causal read-back would need the Envelope content format (#36), so
+    // until then the generation is what hands a new device the account's
+    // current state.
+    //
+    // The env switch exists for one gate only: the harness act that
+    // exercises a post-seal add on the ORIGINAL doc, which is how the
+    // event-delivery fix is verified directly rather than through the
+    // handoff that would mask it.
+    let partition = if std::env::var("PM_NO_REGEN").is_ok() {
+        doc_id()?
+    } else {
+        regenerate().await?
+    };
     // 4. The card, exported for the new INDIVIDUAL (the G3 finding: an
     // individual's card carries every membership the person can reach;
     // a group's card carries the memberships the GROUP reaches, which

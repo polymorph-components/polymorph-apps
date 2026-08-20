@@ -169,7 +169,8 @@ persisted bundle after authoring, or design a re-join path.
 
 `PAIRING.md` is the pinned contract; the engine implements §1–§4 and the
 headless acts in §6 run under `just pair` (relay only — no bucket is
-involved, so no MinIO).
+involved, so no MinIO). Twelve acts, including a post-seal-add act that
+guards the boundary the finding below corrects.
 
 The ceremony is interactive on BOTH devices: the new device displays a
 79-character `BASE32_NOPAD_VISUAL` code (version ‖ endpoint-id ‖ token),
@@ -200,65 +201,87 @@ which removes the write entirely on that path. `us-events` drains
 remotely-caused changes only; local writes update the diff baseline as
 they are made, so a device can never be announced its own work.
 
-### Finding: a device enrolled after a doc was sealed never becomes a reader of it
+### Finding: post-seal enrollment was never broken — the gate was measuring the wrong thing
 
-At the pinned keyhive rev, a member added to a group *after* a doc was
-sealed never obtains a usable epoch on that doc — not for existing
-content, and not for content written after it joined. Measured
-repeatedly, in single runs over one wire:
+This section previously reported that a device added to the user group
+*after* a document was sealed could never read that document, and blamed
+the pinned keyhive revision. **That attribution was wrong, and so was the
+framing.** `spikes/keyhive-addwedge` settled the upstream half — 140/140
+green across every legitimate shape, at the pin and at upstream `main`
+(which is the same commit) — and the engine-side measurement below
+settles the rest.
 
-- the joiner holds the same membership and CGKA op counts as the adder,
-  knows the group and the doc, and receives every chunk over subduction
-  — and every chunk stays `KeyNotFound`;
-- adding the joiner's individual **directly to the doc** does not help;
-- distributing the adder's contact card or self-card does not help;
-- `force_pcs_update` on every doc delegated to the user group, run right
-  after `kh-add-to-group` (verified to find and rotate the doc), does not
-  help — nor does running it again later with the peer already connected
-  and immediately before the write under test, which rules out the G4
-  event-cache timing hazard;
-- the failure is **directional**: the joiner CAN encrypt into the
-  partition (it derives an epoch of its own); the founder's writes stay
-  unreadable to it;
-- the control is stable: a partition the device was a member of from
-  epoch 0 is fully readable, same run, same wire.
+**What is actually true.** A late-joining device decrypts post-join
+content correctly. What it cannot do is *materialize* that content,
+because the automerge dependency chain of every post-join change roots in
+changes written before it joined, and automerge buffers changes whose
+dependencies are missing rather than erroring. The old gate asserted
+materialization (`us-profile-get` returning the name, a mark appearing in
+`us-marks-list`), so a joiner that was opening envelopes perfectly still
+presented as reading nothing at all. The `[decrypt] KeyNotFound` output
+was the pre-join chunks, which is designed non-retroactivity.
 
-Causal-key read-back is not the escape hatch at this rev either:
-`try_causal_decrypt_content` expects the plaintext to be an `Envelope`
-carrying ancestor keys, while `try_encrypt_content` — the API this spike
-uses — encrypts raw content. Reaching pre-join history that way means
-changing what the content layer encrypts (recorded as the production
-path on #36).
+The engine now measures the two separately: `stats` reports
+`us-decrypted` (envelopes opened) alongside `us-undecryptable` and
+`us-revision` (automerge state materialized). With that distinction
+visible, the picture is unambiguous.
 
-**Resolution: enrollment regenerates the user-system doc** (PAIRING.md
-§2). The adder creates a NEW user-system doc delegated to the user group
-and sealed immediately — the joiner is a member from epoch 0, the one
-arrangement measured to be stably readable — copies the current state
-VALUES across (all four maps, `created-at` preserved, since that field
-decides conflict winners), and writes a forward pointer
-`{superseded-by: {new-doc-id}}` into the old generation. Existing devices
-follow the pointer on their next sync, adopt the successor, and
-value-reconcile: they re-write only their OWN values that the copy
-predates, by authorship and `created-at`. Nothing is announced for values
-a device already rendered — the diff baseline is carried across the
-generation boundary, because moving documents is not a change the user
-can perceive.
+**Measurements** (act: post-seal add on the original doc, regeneration
+disabled — `just pair`, 10/10):
 
-Three details that are load-bearing rather than incidental:
+- the late joiner opens the chunk the founder writes after the add;
+- it opens that chunk with the forced epoch rotation **switched off**
+  (`PM_NO_ROTATE`) — so the rotation is defence in depth, not the
+  mechanism: keyhive's `add_member` already propagates the CGKA add to
+  every doc transitively containing the group;
+- it opens that chunk with the hand-delivered ENROLL card **suppressed**
+  (`PM_SKIP_ENROLL_CARD`) — so the subduction/keyhive bridge does deliver
+  the joiner's event set; enrollment does not depend on the out-of-band
+  card;
+- pre-join content stays dark in all configurations, which is design.
 
-- **The forward pointer is a MAP, not a scalar.** Two adders enrolling
-  concurrently would last-write-wins a scalar, and a fork that cannot be
-  seen is a fork that corrupts. With a map both successors survive the
-  merge; the winner is the lexicographically smallest id and the loser's
-  adder repeats its finalization atop it. Not gated in v1 (pairing is
-  humanly serialized) — the path detects and reports loudly.
-- **Subscriptions are engine-driven.** The `us-*` surface hides doc
-  identity, which is exactly what lets the generation change underneath
-  chrome; it also means the host cannot know which tree to subscribe to,
-  so the engine keeps a subscription open to the current generation with
-  every known peer.
-- **The forced post-add rotation stays.** It is harmless, correct once
-  upstream heals, and the right call for docs that are NOT regenerated.
+On the founder, the bridge computes 18 events reachable to the joiner and
+18 to itself, so the per-peer reachability the cache serves from is
+correct.
+
+**One measurement I could not resolve**, recorded rather than smoothed
+over: re-ingesting the founder's authoritative card late in the act
+reports every event in it as new to the joiner (`delegations+4
+prekeys-expanded+7 prekey-rotations+2 cgka-operations+5`), which sits
+badly with the joiner demonstrably having synced. The likeliest
+explanations are that the card at that instant contains ops created after
+the joiner's last sync round, or that keyhive's op counters are not
+idempotent across a duplicate ingest. It is no longer load-bearing for the
+attribution — the card-suppressed run settles delivery directly — but it
+is not explained, and anyone extending this should not treat that counter
+as a set difference.
+
+**A methodological note worth keeping.** An earlier version of this
+instrumentation hashed locally-reconstructed `StaticEvent`s and diffed the
+digests. Those digests are not stable across two instances' constructions,
+so it reported "everything missing" for an instance that provably held the
+ops — a measurement that looked like strong evidence and was noise. The
+current instrument counts through keyhive's own accounting instead. The
+original error this whole section corrects was of the same family:
+comparing op *counts* and reading equality as set equality.
+
+**What remains true by design**, and is now asserted as such rather than
+mistaken for a defect:
+
+- **Non-retroactivity.** BeeKEM adds are not retroactive; pre-join
+  ciphertext stays dark. The new act asserts this as EXPECTED-unreadable
+  so the boundary is documented, not folded into a pass.
+- **Causal read-back needs the Envelope content format.**
+  `try_causal_decrypt_content` expects plaintext to be an `Envelope`
+  carrying ancestor keys, while `try_encrypt_content` — what this spike
+  uses — encrypts raw content. That is the production path for late
+  joiners reading history (#36), not a bug.
+- **Regeneration stays**, reclassified. It is not a workaround for a
+  readability defect; it is the STATE-HANDOFF mechanism. Until the
+  Envelope format lands, a new device cannot materialize pre-join
+  history, and the generation is what hands it the account's current
+  state. Its other properties (the fork-detecting map pointer, the
+  carried diff baseline, engine-driven subscriptions) are unaffected.
 
 ## Findings
 

@@ -789,3 +789,174 @@ pub(crate) async fn expiry_act(
     println!("\nPAIRING ACT (offer expiry) PASSED");
     Ok(())
 }
+
+/// Post-seal add on the ORIGINAL document, with regeneration disabled.
+///
+/// This is the act that verifies the event-delivery fix directly. The
+/// enrollment path's doc regeneration would hand the joiner current state
+/// regardless, which is exactly why it must be switched off here: the
+/// question is whether a device added to the group AFTER the doc was
+/// sealed can read what the founder writes afterwards, on the doc it was
+/// late to.
+///
+/// Two assertions, and the boundary between them is the point:
+///
+/// - **post-rotation content is readable** — the joiner opens the
+///   envelope of a chunk the founder wrote after the add and the forced
+///   rotation. Asserted at the keyhive/envelope level, because that is
+///   where the access question lives.
+/// - **pre-join content stays dark, by design** — BeeKEM adds are not
+///   retroactive, and without the Envelope content format there are no
+///   causal keys to walk back through. Asserted as EXPECTED-unreadable so
+///   the act documents the boundary rather than leaving it folded into a
+///   pass.
+pub(crate) async fn post_seal_add_act(
+    acc: &Accessor<Ctx>,
+    founder: crate::bindings::Spike,
+    joiner: crate::bindings::Spike,
+    relay: String,
+) -> Result<()> {
+    let l: &Driver = founder.polymorph_engine_spike_driver();
+    let p: &Driver = joiner.polymorph_engine_spike_driver();
+
+    let l_id = l.call_init(acc, false).await?.map_err(|e| format_err!("founder init: {e}"))?;
+    let p_id = p.call_init(acc, false).await?.map_err(|e| format_err!("joiner init: {e}"))?;
+    let l_bytes = hex::decode(&l_id)?;
+    let p_bytes = hex::decode(&p_id)?;
+    let l_ep = l.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
+    p.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
+
+    l.call_user_create(
+        acc,
+        UsProfile { display_name: "Alice".into(), hue: 3, icon: None },
+    )
+    .await?
+    .map_err(|e| format_err!("user-create: {e}"))?;
+
+    // Pre-join content: written before the joiner exists at all.
+    l.call_us_mark_put(
+        acc,
+        UsMark {
+            provenance: "https://before.example/".into(),
+            petname: "Before".into(),
+            hue: 5,
+            nickname: None,
+            created_at: 1_000,
+            needs_reconfirm: false,
+        },
+    )
+    .await?
+    .map_err(|e| format_err!("pre-join mark: {e}"))?;
+
+    // Enrollment WITHOUT regeneration: same doc, joiner added after seal.
+    let (_sas, _group, partition) = pair(acc, l, p, "late device").await?;
+    wire_us(
+        acc,
+        (l, "founder", &l_bytes, l_ep.as_str()),
+        (p, "joiner", &p_bytes),
+        &partition,
+        &relay,
+    )
+    .await?;
+
+    // Baseline the joiner's envelope counter BEFORE the founder's
+    // post-join write, so the assertion is "it opened THAT chunk" rather
+    // than "it opened something at some point".
+    let mut before = 0u32;
+    for _ in 0..200 {
+        let _ = p.call_us_marks_list(acc).await?;
+        before = parse_stat(&p.call_stats(acc).await?, "us-decrypted");
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    println!("            joiner envelopes opened before the post-join write: {before}");
+
+    // Post-join content, written after the add and the forced rotation
+    // the enrollment path performs.
+    l.call_us_mark_put(
+        acc,
+        UsMark {
+            provenance: "https://after.example/".into(),
+            petname: "After".into(),
+            hue: 7,
+            nickname: None,
+            created_at: 2_000,
+            needs_reconfirm: false,
+        },
+    )
+    .await?
+    .map_err(|e| format_err!("post-join mark: {e}"))?;
+
+    // Assertion 1: the joiner opens envelopes written after it joined.
+    let t = Instant::now();
+    let mut opened = 0u32;
+    let mut last = String::new();
+    for _ in 0..POLLS {
+        // Any us-* read drives the apply pipeline.
+        let _ = p.call_us_marks_list(acc).await?;
+        last = p.call_stats(acc).await?;
+        opened = parse_stat(&last, "us-decrypted");
+        if opened > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    if opened <= before {
+        bail!(
+            "the late joiner never opened the post-rotation chunk on the \
+             original doc (envelopes opened stayed at {before}) — the \
+             event-delivery gap is back. joiner stats: {last}"
+        );
+    }
+    ok(
+        &format!(
+            "late joiner opened the post-rotation chunk ({before} -> {opened} envelopes)"
+        ),
+        t,
+    );
+    println!("            joiner: {last}");
+
+    // Set-level attribution (spikes/keyhive-addwedge): what the joiner
+    // HOLDS versus what the founder would offer it, computed on the
+    // founder at this instant. The earlier investigation compared op
+    // COUNTS and found them equal; counts are not sets, and this is that
+    // upgrade. Sampled AFTER the readability assertion above, so it can
+    // never be the thing that makes the act pass.
+    if std::env::var("PM_EVENT_DIFF").is_ok() {
+        let authoritative = l
+            .call_kh_export_card(acc, p_bytes.clone())
+            .await?
+            .map_err(|e| format_err!("founder export card: {e}"))?;
+        // Reported by the guest as kinds and counts (never contents).
+        p.call_kh_ingest_card(acc, authoritative)
+            .await?
+            .map_err(|e| format_err!("joiner ingest: {e}"))?;
+    }
+
+    // Assertion 2: the boundary. Pre-join automerge history does not
+    // materialize, and that is design, not regression.
+    let marks = p.call_us_marks_list(acc).await?.map_err(|e| format_err!("{e}"))?;
+    if marks.iter().any(|m| m.petname == "Before") {
+        // Not a failure of safety — but it would mean the boundary this
+        // act documents has moved, and the README finding with it.
+        bail!(
+            "UNEXPECTED: pre-join history materialized without the Envelope \
+             content format; the causal-read-back finding needs revisiting"
+        );
+    }
+    println!(
+        "            EXPECTED-unreadable: pre-join history did not materialize \
+         (no causal keys without the Envelope format) — {} mark(s) visible",
+        marks.len()
+    );
+    println!("\nPAIRING ACT (post-seal add, original doc) PASSED");
+    Ok(())
+}
+
+/// Pull one `name=<u32>` counter out of the driver's stats line.
+fn parse_stat(stats: &str, name: &str) -> u32 {
+    stats
+        .split([';', ' '])
+        .find_map(|field| field.strip_prefix(&format!("{name}=")))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0)
+}

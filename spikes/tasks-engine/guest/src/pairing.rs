@@ -574,7 +574,16 @@ async fn join_session(
 
     // 7. Ingest the card (it carries the delegation that makes this
     // device a member), adopt the user-system partition, sync.
-    crate::ingest_static_card(group_card).await?;
+    if std::env::var("PM_SKIP_ENROLL_CARD").is_ok() {
+        // Verification hook: suppress the hand-delivered card so the act
+        // measures what the BRIDGE delivers on its own.
+        eprintln!("[enroll] ENROLL card suppressed (bridge-only delivery test)");
+    } else {
+        let pending = crate::ingest_static_card(group_card).await?;
+        if std::env::var("PM_EVENT_DIFF").is_ok() {
+            eprintln!("[enroll] joiner ingested the ENROLL card: pending={pending}");
+        }
+    }
     crate::usdoc::adopt(&partition_id, &user_group_id).await?;
     set_join(generation, PairJoinState::Enrolled(PairEnrollment {
         user_group_id,

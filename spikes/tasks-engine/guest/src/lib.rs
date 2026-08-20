@@ -411,6 +411,12 @@ struct Partition {
     revision: u64,
     /// Chunks seen in the sedimentree but undecryptable under held epochs.
     undecryptable: u32,
+    /// Chunks whose ENVELOPE this replica has opened. Tracked separately
+    /// from `revision` because opening a chunk and materializing it are
+    /// different things: a late joiner can hold the epoch for a chunk
+    /// whose automerge dependencies it will never have, and conflating
+    /// the two hides exactly that boundary.
+    decrypted: u32,
 }
 
 /// S3-compatible store config: ADDRESSING ONLY. The signing credential
@@ -2233,6 +2239,9 @@ async fn apply_new_chunks(id: &[u8]) -> Result<(), String> {
                 .map_err(|e| format!("apply: {e}"))?;
             p.applied.extend(applied_now.iter().copied());
             p.revision += n;
+            // Envelopes opened, whether or not automerge could then
+            // materialize them (missing deps buffer silently).
+            p.decrypted += n as u32;
         }
         p.undecryptable = undecryptable;
         Ok(())
@@ -2319,17 +2328,108 @@ async fn ingest_contact_card(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     Ok(id)
 }
 
+/// Keyhive's own op accounting, by kind. Used to measure whether an
+/// authoritative event set actually delivers anything this instance did
+/// not already hold.
+///
+/// This replaced a hand-rolled digest diff, which was NOT a sound
+/// measurement: it hashed locally-reconstructed `StaticEvent`s, and those
+/// digests are not stable across two instances' constructions, so it
+/// reported "everything missing" for an instance that demonstrably held
+/// the ops. Counting through keyhive's own stats avoids inventing an
+/// identity scheme that the library does not use.
+async fn op_stats(kh: &Kh) -> (u64, u64, u64, u64, u64) {
+    let s = kh.stats().await;
+    (
+        s.delegations,
+        s.revocations,
+        s.prekeys_expanded,
+        s.prekey_rotations,
+        s.cgka_operations,
+    )
+}
+
+fn report_delta(label: &str, before: (u64, u64, u64, u64, u64), after: (u64, u64, u64, u64, u64), offered: usize) {
+    let names = [
+        "delegations",
+        "revocations",
+        "prekeys-expanded",
+        "prekey-rotations",
+        "cgka-operations",
+    ];
+    let deltas = [
+        after.0 as i64 - before.0 as i64,
+        after.1 as i64 - before.1 as i64,
+        after.2 as i64 - before.2 as i64,
+        after.3 as i64 - before.3 as i64,
+        after.4 as i64 - before.4 as i64,
+    ];
+    let shape: Vec<String> = (0..5)
+        .filter(|i| deltas[*i] != 0)
+        .map(|i| format!("{}+{}", names[i], deltas[i]))
+        .collect();
+    let total: i64 = deltas.iter().sum();
+    eprintln!(
+        "[eventdiff] {label}: {} event(s) offered by the founder; ops NEW to this \
+         instance: {} [{}]",
+        offered,
+        total,
+        if shape.is_empty() {
+            "none — the instance already held the authoritative set".to_string()
+        } else {
+            shape.join(" ")
+        }
+    );
+}
+
 async fn ingest_static_card(bytes: Vec<u8>) -> Result<u32, String> {
     let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
     let events: Vec<StaticEvent<T>> =
         bincode::deserialize(&bytes).map_err(|e| format!("bad card: {e}"))?;
+    let diagnose = std::env::var("PM_EVENT_DIFF").is_ok();
+    let offered = events.len();
+    let before = if diagnose {
+        Some(op_stats(&kh).await)
+    } else {
+        None
+    };
     let pending = kh.ingest_unsorted_static_events(events).await;
+    if let Some(before) = before {
+        report_delta("ingest-card", before, op_stats(&kh).await, offered);
+        eprintln!("[eventdiff]   pending-after-ingest={}", pending.len());
+    }
     refreshed_sync(&proto, None).await?;
     Ok(pending.len() as u32)
 }
 
 async fn export_static_card(agent_id: &[u8]) -> Result<Vec<u8>, String> {
     let kh = with_state(|s| s.kh.clone())?;
+    if std::env::var("PM_EVENT_DIFF").is_ok() {
+        // What would the BRIDGE offer this peer, versus what keyhive says
+        // is reachable to it? The two should agree; a gap here is the
+        // engine's, not keyhive's.
+        let proto = with_state(|s| s.proto.clone())?;
+        let peer = KeyhivePeerId::from_bytes(arr32(agent_id, "agent id")?);
+        let offerable = proto
+            .get_events_for_agent(&peer)
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.len());
+        let me = KeyhivePeerId::from_bytes(arr32(&own_agent_id()?, "own id")?);
+        let mine = proto
+            .get_events_for_agent(&me)
+            .await
+            .ok()
+            .flatten()
+            .map(|m| m.len());
+        eprintln!(
+            "[bridge] reachable-to-peer({})={:?} reachable-to-self={:?}",
+            &hex::encode(agent_id)[..8],
+            offerable,
+            mine
+        );
+    }
     let agent = kh
         .get_agent(identifier(agent_id)?)
         .await
@@ -2407,12 +2507,15 @@ async fn add_doc_member(doc_id: &[u8], agent_id: &[u8], level: &str) -> Result<(
 
 /// Force a fresh epoch on every doc delegated to `group`.
 ///
-/// The enrollment counterpart of the revocation rotation. Adding a member
-/// to a group registers its CGKA leaf on the docs that contain the group,
-/// but at the pinned keyhive rev that leaf is not usable until a new
-/// epoch is derived: without this, a device enrolled after a doc was
-/// sealed receives ciphertext it can never read — including content
-/// written after it joined. Every op this produces goes out through
+/// The enrollment counterpart of the revocation rotation: a deliberate
+/// epoch boundary at the moment a device joins.
+///
+/// It is NOT required for the new member to read post-join content —
+/// keyhive's `add_member` already propagates the CGKA add to every doc
+/// that transitively contains the group, and the measurement behind the
+/// README finding shows post-join content readable with this switched
+/// off. Kept per PAIRING.md §2 as defence in depth. Every op this
+/// produces goes out through
 /// `refreshed_sync`, because the bridge serves peers from a cache that
 /// upstream refreshes on a timer we do not run (the G4 finding: a
 /// rotation created locally and never refreshed is silently never
@@ -3117,6 +3220,7 @@ impl DriverGuest for Component {
                     applied: HashSet::new(),
                     revision: 0,
                     undecryptable: 0,
+                    decrypted: 0,
                 },
             );
             s.active = Some(payload.partition.clone());
@@ -3383,6 +3487,7 @@ impl DriverGuest for Component {
                     applied,
                     revision: 1,
                     undecryptable: 0,
+                    decrypted: 0,
                 },
             );
             s.pending.insert(id.clone(), (chunk, cref));
@@ -3407,6 +3512,7 @@ impl DriverGuest for Component {
                     applied: HashSet::new(),
                     revision: 0,
                     undecryptable: 0,
+                    decrypted: 0,
                 },
             );
             s.active = Some(id);
@@ -3521,9 +3627,24 @@ impl DriverGuest for Component {
             // Table sizes are part of the line on purpose: a growth bug
             // in any of these is invisible from outside the guest, and
             // one (the syncs map) already shipped.
+            // The user-system doc is never the "active" partition (that
+            // binding belongs to the tasks service), so its counters are
+            // reported separately — they are what the enrollment gates
+            // assert against.
+            let us = s
+                .us
+                .doc
+                .as_ref()
+                .and_then(|id| s.partitions.get(id))
+                .map(|p| (p.decrypted, p.undecryptable, p.revision))
+                .unwrap_or((0, 0, 0));
             format!(
                 "webcrypto sign calls: {}; iroh conns: {}; revision: {rev}; undecryptable: {undec}; \
+                 us-decrypted={} us-undecryptable={} us-revision={}; \
                  tables syncs={} conns={} parts={} pending={} buckets={} fetches={}",
+                us.0,
+                us.1,
+                us.2,
                 s.signer.0.sign_count.get(),
                 s.iroh_conns.len(),
                 s.syncs.len(),
