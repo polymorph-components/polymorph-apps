@@ -1,0 +1,124 @@
+# End-to-end scenarios for the demo chrome, in a real Chromium.
+#
+# The companion to pages.yml: that workflow proves the demo still BUILDS,
+# this one proves it still BEHAVES. Every scenario here was previously a
+# hand-drive performed once per session in an embedded webview — which,
+# among other things, does not deliver `<dialog>` close events, so one of
+# these claims (dialog-close-retirement) was literally unverifiable
+# before this workflow existed.
+#
+# The build half mirrors pages.yml exactly — same Deno, same sibling
+# checkouts, same cargo cache, same setup.sh — because `just e2e` depends
+# on `just site`, which builds the engine composite, the app guest and
+# both panels. Diverging on those steps would mean testing a differently
+# built artifact from the one that deploys.
+
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A superseded run is cancelled rather than queueing behind itself.
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # Same budget as the Pages build: a cold cargo cache dominates, and
+    # the scenarios themselves run in well under a minute.
+    timeout-minutes: 60
+    env:
+      IROH_CHECKOUT: ../../../polymorph-iroh
+      # ABSOLUTE, and it must be: a relative PLAYWRIGHT_BROWSERS_PATH is
+      # resolved against $HOME rather than the working directory, which
+      # silently installs the browser somewhere the cache never sees.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.deps/pw-browsers
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Deno (the deltic host; stock, no flags)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.9.5"
+
+      - name: Check out pinned siblings
+        # Before the cache restore, for the same reason as in pages.yml:
+        # rust-cache keys on the listed workspaces' lockfiles, and
+        # ../polymorph-iroh must exist to be keyed.
+        run: SIBLINGS_ONLY=1 ./scripts/setup.sh
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            spikes/tasks-engine
+            spikes/demo/guest-app
+            spikes/demo/guest-panel-s3
+            spikes/demo/guest-panel-dropbox
+            ../polymorph-iroh
+          cache-all-crates: true
+          cache-bin: false
+          key: ${{ hashFiles('scripts/setup.sh', '**/rust-toolchain.toml') }}
+          # Restore only on PRs; main owns the saved entry. The Pages
+          # workflow builds the same workspaces, so this job does not
+          # need to write the cache at all — it shares one.
+          save-if: false
+
+      - name: Set up tools and the endpoint component
+        run: ./scripts/setup.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Read the pinned Playwright version
+        # The pin lives in ONE place (spikes/demo/justfile) so the
+        # installed browser revision and the library that launches it
+        # cannot drift. The cache key follows it: a version bump is a
+        # different browser build and must not restore the old one.
+        id: pw
+        working-directory: spikes/demo
+        run: |
+          version=$(sed -n 's/^PLAYWRIGHT := "npm:playwright@\(.*\)"$/\1/p' justfile)
+          test -n "$version" || { echo "could not read the Playwright pin from the justfile" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pinned playwright: $version"
+
+      - name: Cache the Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps/pw-browsers
+          key: pw-${{ runner.os }}-${{ runner.arch }}-${{ steps.pw.outputs.version }}
+
+      - name: Cache the MinIO binary
+        # ~110 MB fetched from dl.min.io; the credential scenarios need a
+        # real S3 to talk to (and one of them needs it to stop answering).
+        uses: actions/cache@v4
+        with:
+          path: spikes/tasks-engine/.deps/minio
+          key: minio-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Install the browser and the store
+        # Probe-then-install: a restored cache makes this a no-op beyond
+        # the launch probe. `install-deps` (system libraries for Chromium)
+        # runs inside the recipe when CI is set.
+        working-directory: spikes/demo
+        run: just e2e-deps
+
+      - name: Run the scenarios
+        working-directory: spikes/demo
+        run: just e2e
+
+      - name: Source-level invariants (#22 ruling table)
+        # Cheap, and it fails for reasons the scenarios cannot see: these
+        # are properties of the SOURCE TEXT (the petname never crossing
+        # the frame seam, no key export path) rather than of a run.
+        working-directory: spikes/demo
+        run: just check

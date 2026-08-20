@@ -1,0 +1,475 @@
+// Shared helpers for the demo's end-to-end scenarios.
+//
+// The house style here is the tasks-engine act runner's: a scenario is a
+// sequence of ACTS, each one a named claim that either holds or does
+// not. `act` prints the claim and throws on failure, so a scenario reads
+// as the argument it is making and a failure names the beat that broke.
+
+import type { Browser, BrowserContext, Page } from "npm:playwright@1.57.0";
+
+/** What every scenario is handed: the page under test plus the levers
+ * that live OUTSIDE the page (a fresh browser context, the MinIO the
+ * credential beats need up — or down). */
+export interface Ctx {
+  /** Where the built `serve/` directory is being served from. */
+  readonly baseUrl: string;
+  readonly browser: Browser;
+  /** Open a brand-new browser context (cookies, localStorage and
+   * IndexedDB all empty) and boot the demo in it. */
+  fresh(opts?: FreshOptions): Promise<Page>;
+  /** Stop MinIO, for the beat that is ABOUT the store being unreachable. */
+  stopMinio(): Promise<void>;
+  /** Bring MinIO back up (a no-op when it is already running). */
+  startMinio(): Promise<void>;
+  readonly minioUrl: string;
+  readonly minioAccess: string;
+  readonly minioSecret: string;
+}
+
+export interface FreshOptions {
+  /** Seed localStorage before ANY page script runs. */
+  storage?: Record<string, string>;
+  /** Viewport, for the geometry beats. */
+  viewport?: { width: number; height: number };
+  /** Skip the boot wait — for the beats that watch booting itself. */
+  noWait?: boolean;
+  /** Let the demo pick (and ANNOUNCE) a fresh anchor colour. Off by
+   * default: see `seedHue`. */
+  freshAnchor?: boolean;
+}
+
+/** The demo's own storage keys, mirrored from host/demo.ts. Duplicated
+ * rather than imported because the browser-side module is bundled for
+ * the page and importing it here would drag the whole deltic graph into
+ * the harness. If a key is renamed there, the scenario that depends on
+ * it fails loudly — which is the point of a tripwire. */
+export const KEYS = {
+  hue: "pm-demo-chrome-hue",
+  identity: "pm-demo-identity",
+  marks: "pm-demo-surface-marks",
+  storage: "pm-demo-storage",
+  legacyS3: "pm-demo-s3",
+} as const;
+
+/** CONTRACT (host/demo.ts:1573-1576): a boot that finds NO stored anchor
+ * hue picks one and ANNOUNCES it for 15 seconds — and that announcement
+ * owns `.ctx-bottom`, which is the very line most scenarios assert on.
+ * The announcement is correct behaviour, so the harness does not fight
+ * it: it seeds a committed hue so a boot is the ordinary second-visit
+ * boot, and the one scenario that is about the fresh anchor opts in with
+ * `freshAnchor: true`. */
+const seedHue = "265";
+
+// --- act discipline --------------------------------------------------------
+
+let acts = 0;
+let failures = 0;
+
+export function actCount(): { acts: number; failures: number } {
+  return { acts, failures };
+}
+
+export function resetActs(): void {
+  acts = 0;
+  failures = 0;
+}
+
+/** Run one act: print the claim, run the body, print pass or fail. A
+ * throwing body fails the act AND the scenario — the sequence is an
+ * argument, and a broken step invalidates everything downstream. */
+export async function act(claim: string, body: () => Promise<void> | void): Promise<void> {
+  acts++;
+  const started = performance.now();
+  try {
+    await body();
+    const ms = Math.round(performance.now() - started);
+    console.log(`    ok   ${claim} (${ms}ms)`);
+  } catch (e) {
+    failures++;
+    console.log(`    FAIL ${claim}`);
+    console.log(`         ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
+  }
+}
+
+export function assert(cond: unknown, msg: string): asserts cond {
+  if (!cond) throw new Error(msg);
+}
+
+export function assertEquals<T>(actual: T, expected: T, msg: string): void {
+  if (actual !== expected) {
+    throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+export function assertIncludes(haystack: string, needle: string, msg: string): void {
+  if (!haystack.includes(needle)) {
+    throw new Error(`${msg}: ${JSON.stringify(needle)} not found in ${JSON.stringify(haystack)}`);
+  }
+}
+
+/** Element-wise, for the small string lists the strip is read as. */
+export function assertList(actual: string[], expected: string[], msg: string): void {
+  const same = actual.length === expected.length && actual.every((v, i) => v === expected[i]);
+  if (!same) {
+    throw new Error(`${msg}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
+// --- page helpers ----------------------------------------------------------
+
+/** Generous but BOUNDED: a wasm component graph booting under deltic in
+ * a cold headless browser is slow, and a scenario that hangs forever is
+ * worse than one that fails. */
+export const BOOT_TIMEOUT = 90_000;
+export const UI_TIMEOUT = 15_000;
+/** The strip's announcements last 8s (host/demo.ts `announce` default),
+ * so a revert-by-re-render lands just after. */
+export const ANNOUNCE_MS = 8_000;
+
+export async function newContext(
+  browser: Browser,
+  opts: FreshOptions = {},
+): Promise<BrowserContext> {
+  const context = await browser.newContext({
+    viewport: opts.viewport ?? { width: 1280, height: 900 },
+  });
+  const seed: Record<string, string> = { ...(opts.storage ?? {}) };
+  if (!opts.freshAnchor && seed[KEYS.hue] === undefined) seed[KEYS.hue] = seedHue;
+  if (Object.keys(seed).length > 0) {
+    await context.addInitScript((entries: [string, string][]) => {
+      // Runs before every document's own scripts, which is the only
+      // moment a seeded config is indistinguishable from one a previous
+      // visit left behind.
+      //
+      // SEED ONLY WHAT IS ABSENT. This script runs on EVERY document in
+      // the context, reloads included, so an unconditional write would
+      // silently undo whatever the page just committed — and a reload is
+      // precisely how several scenarios check that a commit persisted.
+      try {
+        for (const [k, v] of entries) {
+          if (localStorage.getItem(k) === null) localStorage.setItem(k, v);
+        }
+      } catch { /* storage unavailable: the demo tolerates it, so do we */ }
+    }, Object.entries(seed));
+  }
+  return context;
+}
+
+/** Wait for the demo to finish booting: `__demo` installed AND the
+ * banner saying so. Both, because `__demo` is assigned near the end of
+ * `boot` but the banner is the user-visible claim. */
+export async function waitForBoot(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => {
+      const d = (globalThis as Record<string, unknown>).__demo;
+      const banner = document.getElementById("banner")?.textContent ?? "";
+      return d !== undefined && banner.includes("ready");
+    },
+    undefined,
+    { timeout: BOOT_TIMEOUT },
+  );
+}
+
+/** The strip's two lines, as text. The whole harness reads the chrome
+ * through these — they are what a user sees. */
+export function stripText(page: Page): Promise<{ top: string; bottom: string }> {
+  return page.evaluate(() => {
+    const ctx = document.getElementById("chrome-context");
+    return {
+      top: (ctx?.querySelector(".ctx-top") as HTMLElement | null)?.textContent ?? "",
+      bottom: (ctx?.querySelector(".ctx-bottom") as HTMLElement | null)?.textContent ?? "",
+    };
+  });
+}
+
+/** Wait until the strip's bottom line satisfies a predicate on its text.
+ * DETERMINISTIC WAITING is the rule in this harness: the DOM is the
+ * clock, and a sleep is only used where the thing being tested IS a
+ * timer (the arming delay, the announcement revert). */
+export async function waitForBottom(
+  page: Page,
+  pred: (text: string) => boolean,
+  what: string,
+  timeout = UI_TIMEOUT,
+): Promise<string> {
+  const handle = await page.waitForFunction(
+    (src: string) => {
+      const fn = new Function("t", `return (${src})(t)`) as (t: string) => boolean;
+      const el = document.querySelector("#chrome-context .ctx-bottom");
+      const text = el?.textContent ?? "";
+      return fn(text) ? text : false;
+    },
+    pred.toString(),
+    { timeout },
+  ).catch(async (e) => {
+    const now = (await stripText(page)).bottom;
+    throw new Error(`waiting for ${what}: bottom line was ${JSON.stringify(now)} (${e.message})`);
+  });
+  return await handle.jsonValue() as string;
+}
+
+/** Is a chrome sheet of the given tenant open? Read through `__demo`,
+ * which is the demo's own account of its drawer state. */
+export function sheetOpen(page: Page, tenant: "naming" | "settings" | "drawer"): Promise<boolean> {
+  return page.evaluate((t: string) => {
+    const d = (globalThis as Record<string, unknown>).__demo as Record<
+      string,
+      { open?: () => boolean }
+    >;
+    return d[t].open?.() === true;
+  }, tenant);
+}
+
+export async function waitForSheet(
+  page: Page,
+  tenant: "naming" | "settings" | "drawer",
+  want: boolean,
+  timeout = UI_TIMEOUT,
+): Promise<void> {
+  await page.waitForFunction(
+    ({ t, want }: { t: string; want: boolean }) => {
+      const d = (globalThis as Record<string, unknown>).__demo as Record<
+        string,
+        { open?: () => boolean }
+      >;
+      return (d[t].open?.() === true) === want;
+    },
+    { t: tenant, want },
+    { timeout },
+  ).catch((e) => {
+    throw new Error(`waiting for the ${tenant} sheet to be ${want ? "open" : "closed"}: ${e.message}`);
+  });
+}
+
+/** Wait until the storage dialog's panel is not merely PRESENT but
+ * REGISTERED: chrome fetches the artifact, mounts it, asks it for its
+ * nickname and computes the DESTINATION it is bound to. An iframe in the
+ * region appears before all that finishes, so "the iframe is there" is a
+ * weaker claim — a Save clicked in between finds a panel with nothing to
+ * commit, and the scenario fails for a reason that is not the one under
+ * test.
+ *
+ * `boundDestination()` is the signal: it is null until chrome has bound
+ * the panel to an origin, and a non-null binding is exactly the
+ * precondition chrome's own Save re-validates against. Side-effect free.
+ *
+ * (The strip's context is NOT usable for this: closing a lightweight
+ * sheet restores the app context on a delayed timer, which can land
+ * AFTER the panel mounts and put the app's name back on the top line
+ * while the panel is up.) */
+export async function waitForPanelSurface(page: Page, timeout = UI_TIMEOUT): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll("#panel-region iframe").length > 0 &&
+      // deno-lint-ignore no-explicit-any
+      (globalThis as any).__demo.boundDestination() !== null,
+    undefined,
+    { timeout },
+  ).catch(async (e) => {
+    const region = await page.evaluate(() =>
+      document.getElementById("panel-region")?.textContent?.slice(0, 200) ?? ""
+    );
+    throw new Error(
+      `waiting for the panel surface to register: the region said ${JSON.stringify(region)} (${e.message})`,
+    );
+  });
+}
+
+/** The drawer HIDES on a transition (the sheet collapses its height
+ * first), so "the drawer is away" is a wait rather than a sample. */
+export async function waitForDrawerHidden(page: Page, timeout = UI_TIMEOUT): Promise<void> {
+  await page.waitForFunction(
+    () => (document.getElementById("chrome-drawer") as HTMLElement).hidden === true,
+    undefined,
+    { timeout },
+  ).catch((e) => {
+    throw new Error(`waiting for the drawer to be hidden: ${e.message}`);
+  });
+}
+
+/** The text of the sheet currently in the drawer. */
+export function sheetText(page: Page): Promise<string> {
+  return page.evaluate(() =>
+    document.getElementById("chrome-drawer-inner")?.textContent ?? ""
+  );
+}
+
+/** A pane's status line — where the engine's own words land. */
+export function paneStatus(page: Page, pane: "alice" | "bob" | "tablet"): Promise<string> {
+  return page.evaluate(
+    (p: string) => document.getElementById(`${p}-status`)?.textContent ?? "",
+    pane,
+  );
+}
+
+export async function waitForPaneStatus(
+  page: Page,
+  pane: "alice" | "bob" | "tablet",
+  pred: (text: string) => boolean,
+  what: string,
+  timeout = UI_TIMEOUT,
+): Promise<string> {
+  const handle = await page.waitForFunction(
+    ({ p, src }: { p: string; src: string }) => {
+      const fn = new Function("t", `return (${src})(t)`) as (t: string) => boolean;
+      const text = document.getElementById(`${p}-status`)?.textContent ?? "";
+      return fn(text) ? text : false;
+    },
+    { p: pane, src: pred.toString() },
+    { timeout },
+  ).catch(async (e) => {
+    const now = await paneStatus(page, pane);
+    throw new Error(
+      `waiting for ${what} on ${pane}: status was ${JSON.stringify(now)} (${e.message})`,
+    );
+  });
+  return await handle.jsonValue() as string;
+}
+
+/** Record every `localStorage` write from now on.
+ *
+ * Some commits are deliberately QUIET on screen: a pane's status line
+ * suppresses a non-sticky message while a sticky one is still holding
+ * (host/demo.ts:1132), so "chrome persisted the config" can be true and
+ * invisible at the same time. The durable write is the honest observable
+ * for those beats — and for a credential path it is also the one worth
+ * checking, because WHAT was written is the security claim. */
+export async function recordStorageWrites(
+  page: Page,
+): Promise<() => Promise<{ key: string; value: string }[]>> {
+  await page.evaluate(() => {
+    const store = ((globalThis as Record<string, unknown>).__e2e_writes = [] as unknown[]);
+    const proto = Object.getPrototypeOf(localStorage);
+    const original = proto.setItem;
+    proto.setItem = function (key: string, value: string) {
+      store.push({ key, value });
+      return original.call(this, key, value);
+    };
+  });
+  return () =>
+    page.evaluate(() =>
+      ((globalThis as Record<string, unknown>).__e2e_writes ?? []) as {
+        key: string;
+        value: string;
+      }[]
+    );
+}
+
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Record EVERY value a pane's status line takes from now on.
+ *
+ * Polling a status line is a sampling race: the demo's stats tick
+ * rewrites each pane's status every 4 seconds, so a transient step
+ * message ("configuring storage: grants…") can appear and be overwritten
+ * between two samples — and then a real beat looks like it never
+ * happened. An observer installed BEFORE the action cannot miss it. */
+export async function recordPaneStatus(
+  page: Page,
+  pane: "alice" | "bob" | "tablet",
+): Promise<{ seen(): Promise<string[]>; sawText(needle: string, timeout?: number): Promise<string> }> {
+  const slot = `__e2e_status_${pane}`;
+  await page.evaluate(({ p, slot }: { p: string; slot: string }) => {
+    const el = document.getElementById(`${p}-status`)!;
+    const store = ((globalThis as Record<string, unknown>)[slot] = [] as string[]);
+    store.push(el.textContent ?? "");
+    new MutationObserver(() => store.push(el.textContent ?? "")).observe(el, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  }, { p: pane, slot });
+  const seen = () =>
+    page.evaluate((s: string) => (globalThis as unknown as Record<string, string[]>)[s] ?? [], slot);
+  return {
+    seen,
+    async sawText(needle: string, timeout = UI_TIMEOUT) {
+      const handle = await page.waitForFunction(
+        ({ s, needle }: { s: string; needle: string }) => {
+          const store = (globalThis as unknown as Record<string, string[]>)[s] ?? [];
+          return store.find((t) => t.includes(needle)) ?? false;
+        },
+        { s: slot, needle },
+        { timeout },
+      ).catch(async (e) => {
+        throw new Error(
+          `${pane} never showed ${JSON.stringify(needle)}; it showed ${
+            JSON.stringify(await seen())
+          } (${e.message})`,
+        );
+      });
+      return await handle.jsonValue() as string;
+    },
+  };
+}
+
+// --- the demo's own driving hooks -----------------------------------------
+//
+// `__demo` (host/demo.ts, near the end of `boot`) is the demo's OWN
+// account of itself, installed for exactly this purpose. The harness
+// prefers it to DOM archaeology wherever the two agree — and prefers the
+// DOM wherever the claim is about what a user can SEE.
+
+/** One row of chrome's trust table, as chrome holds it. */
+export interface Surface {
+  name: string;
+  nickname: string;
+  petname?: string;
+  isNew: boolean;
+  hue: number;
+  firstSeen?: number;
+}
+
+export function appSurface(page: Page): Promise<Surface | null> {
+  // deno-lint-ignore no-explicit-any
+  return page.evaluate(() => (globalThis as any).__demo.appSurface()) as Promise<Surface | null>;
+}
+
+export function frameProbe(
+  page: Page,
+): Promise<{ appFrames: number; sameOriginReachable: boolean; sandbox: (string | null)[] }> {
+  // deno-lint-ignore no-explicit-any
+  return page.evaluate(() => (globalThis as any).__demo.frameProbe());
+}
+
+/** The persisted trust table (`loadMarks()` through the naming hook). */
+export function marks(page: Page): Promise<Record<string, unknown>> {
+  // deno-lint-ignore no-explicit-any
+  return page.evaluate(() => (globalThis as any).__demo.naming.marks());
+}
+
+/** The persisted chrome identity record (`loadIdentity()`). */
+export function identity(
+  page: Page,
+): Promise<{ name?: string; device?: string; icon?: string }> {
+  // deno-lint-ignore no-explicit-any
+  return page.evaluate(() => (globalThis as any).__demo.settings.identity());
+}
+
+/** The refusal/explanation line inside the App settings sheet. */
+export function namingReason(page: Page): Promise<string> {
+  // deno-lint-ignore no-explicit-any
+  return page.evaluate(() => (globalThis as any).__demo.naming.reason());
+}
+
+/** Call a `__demo` hook by path, e.g. `hook(page, "naming.save")`. Every
+ * one of these CLICKS a real control rather than calling a handler (see
+ * the comments on `__demo.drawer`), so a driver sees the arming delay
+ * exactly as a user does. */
+// deno-lint-ignore no-explicit-any
+export function hook(page: Page, path: string, ...args: any[]): Promise<any> {
+  return page.evaluate(
+    // deno-lint-ignore no-explicit-any
+    ({ path, args }: { path: string; args: any[] }) => {
+      // deno-lint-ignore no-explicit-any
+      let target: any = (globalThis as any).__demo;
+      const parts = path.split(".");
+      const last = parts.pop()!;
+      for (const p of parts) target = target[p];
+      return target[last](...args);
+    },
+    { path, args },
+  );
+}
+
