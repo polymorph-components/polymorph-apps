@@ -23,21 +23,18 @@
 # whatever polymorph-iroh commit is published next, never drift them
 # independently.
 #
-# STATUS (recorded 2026-08-19, see README.md "JSR pins" section for the
-# full account): the JSR-extracted endpoint wasm is byte-valid
-# (wasm-tools validate --features cm-async) but its `polymorph:iroh/types`
-# WIT has moved out from under this spike's vendored copy
-# (guest/wit/deps/polymorph-iroh/iroh.wit) — `error` grew from 5 variants
-# to 8 (u64-faithful reset codes, close-info, timed-out/not-supported/
-# in-use split out) in commits between f3d8990 and upstream HEAD. `wac
-# plug` refuses the mismatch. `compose`/`run`/`pair` below THEREFORE
-# STILL DEFAULT to IROH_CHECKOUT (unchanged behavior) until this spike's
-# guest WIT + host glue are rebased onto the published shape; the JSR
-# path is available and verified working as `fetch-endpoint-wasm` /
-# `compose-jsr` for that rebase work, but is NOT the default and NOT
-# exercised by `check`/`pair` today.
+# STATUS (updated 2026-08-19, see README.md "JSR pins" section): the
+# guest's vendored `polymorph:iroh` WIT
+# (guest/wit/deps/polymorph-iroh/) is now the published package's shape,
+# copied byte-for-byte from the f3d8990 publish tree — including the
+# 8-case `error` variant (closed, reset(u64), connect-failed, timed-out,
+# not-supported, in-use, invalid-argument, other) and the `close-info`
+# record. `compose`/`run`/`pair` DEFAULT to the JSR-extracted endpoint;
+# no sibling checkout is needed by any target here. `compose-checkout`
+# remains as a non-default escape hatch for local endpoint development.
 # ---------------------------------------------------------------------------
 
+# Only `compose-checkout` reads this; nothing default-path does.
 IROH_CHECKOUT := env_var_or_default("IROH_CHECKOUT", "../../../polymorph-iroh")
 IROH_RELAY_VERSION := "1.0.3"
 JSR_IROH_VERSION := "0.1.0"
@@ -57,8 +54,8 @@ relay-bin:
     fi
 
 # Materialize iroh_endpoint.wasm from jsr:@polymorph/iroh@{{JSR_IROH_VERSION}}
-# (see tools/fetch-endpoint-wasm.ts). Available now; NOT wired into the
-# default `compose` — see the STATUS note above.
+# (see tools/fetch-endpoint-wasm.ts). A dependency of the default
+# `compose`.
 fetch-endpoint-wasm:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -77,19 +74,23 @@ guest:
 # egress is now three NAMED world imports the host wires per instance
 # (#7/#11), so a single generic fetch implementation would defeat the
 # point. The crate stays in-tree as a reference implementation.
-compose: guest
-    wac plug target/wasm32-wasip2/release/spike_guest.wasm \
-        --plug {{IROH_CHECKOUT}}/target/wasm32-wasip2/release/iroh_endpoint.wasm \
-        -o target/composed.wasm
-
-# JSR-pinned equivalent of `compose`, for the guest-WIT rebase work
-# described in the PINS/STATUS header above. NOT the default: as of the
-# STATUS note, this currently fails with a `polymorph:iroh/types`
-# mismatch (the guest's vendored WIT predates the published error-variant
-# expansion).
-compose-jsr: guest fetch-endpoint-wasm
+#
+# DEFAULT: the endpoint comes from the JSR package. The guest's vendored
+# `polymorph:iroh` WIT is the published shape byte-for-byte, so no
+# sibling checkout is needed by any target here.
+compose: guest fetch-endpoint-wasm
     wac plug target/wasm32-wasip2/release/spike_guest.wasm \
         --plug .deps/iroh_endpoint.wasm \
+        -o target/composed.wasm
+
+# NON-DEFAULT escape hatch for local endpoint development: compose
+# against a sibling polymorph-iroh checkout instead of the published
+# package. Only meaningful while that checkout's `polymorph:iroh` WIT
+# matches the vendored one — a checkout behind (or ahead of) the publish
+# fails `wac plug` on the type mismatch, which is the correct outcome.
+compose-checkout: guest
+    wac plug target/wasm32-wasip2/release/spike_guest.wasm \
+        --plug {{IROH_CHECKOUT}}/target/wasm32-wasip2/release/iroh_endpoint.wasm \
         -o target/composed.wasm
 
 minio:

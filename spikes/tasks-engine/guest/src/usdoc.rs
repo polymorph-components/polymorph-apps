@@ -410,6 +410,23 @@ fn set_baseline() -> Result<(), String> {
     with_state(|s| s.us.last = Some(snap))
 }
 
+/// Re-baseline after a LOCAL write, without swallowing an invariant
+/// violation the write happened to complete.
+///
+/// A local write must not be echoed back to its author, which is what
+/// re-baselining is for. But whether a mark COLLIDES is a property of the
+/// whole document, not of this device's write: if the other device's
+/// half of the collision landed while this write was in flight, taking a
+/// fresh baseline would absorb the repair silently and the user would
+/// never be told their name choice now clashes. So everything is
+/// re-baselined except the repair set, which stays as it was before the
+/// write and is therefore still a delta for the next drain to announce.
+fn set_baseline_after_local_write(before: BTreeSet<(String, String)>) -> Result<(), String> {
+    let mut snap = read_us(snapshot)?;
+    snap.repairs = before;
+    with_state(|s| s.us.last = Some(snap))
+}
+
 /// Apply whatever synced, re-derive the invariants, queue the events, and
 /// persist this device's own losing repair (and only its own).
 pub(crate) async fn pump() -> Result<(), String> {
@@ -498,9 +515,15 @@ async fn repair_writes() -> Result<(), String> {
 /// then author, then re-baseline so the local write is never echoed.
 async fn write<R>(f: impl FnOnce(&mut AutoCommit) -> Result<R, String>) -> Result<R, String> {
     pump().await?;
+    let repairs_before = with_state(|s| {
+        s.us.last
+            .as_ref()
+            .map(|snap| snap.repairs.clone())
+            .unwrap_or_default()
+    })?;
     let id = doc_id()?;
     let out = crate::author(&id, f).await?;
-    set_baseline()?;
+    set_baseline_after_local_write(repairs_before)?;
     Ok(out)
 }
 
