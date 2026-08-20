@@ -165,6 +165,101 @@ only in the archive**: a stale bundle predating the device's own
 authoring cannot reach epochs its own rotations created — refresh the
 persisted bundle after authoring, or design a re-join path.
 
+## Device pairing + the user-system partition (#10 G6, #36)
+
+`PAIRING.md` is the pinned contract; the engine implements §1–§4 and the
+headless acts in §6 run under `just pair` (relay only — no bucket is
+involved, so no MinIO).
+
+The ceremony is interactive on BOTH devices: the new device displays a
+79-character `BASE32_NOPAD_VISUAL` code (version ‖ endpoint-id ‖ token),
+the trusted device consumes it, and one bidi stream on a pairing-only
+ALPN carries length-framed bincode. Two properties carry it:
+
+- **Commitment ordering.** The adder commits to its nonce before the
+  joiner reveals one, so it cannot search the transcript for a chosen
+  short authentication string. The joiner verifies on REVEAL.
+- **Reject-on-unknown.** Every step has exactly one legal next message;
+  an unknown kind, an undecodable frame, an out-of-order message, or a
+  peer that closes the stream ends the session.
+
+Plus single-claim (a second claim refuses with a distinct error and
+BURNS the offer — a code that reached a second party has leaked) and a
+120 s expiry. Enrollment writes in a pinned order: group membership at
+**admin** first, then the card export, so the delegation rides the card.
+
+The user-system doc backs `profile`/`marks`/`contacts`/`devices` behind a
+WIT surface that hides the partitioning — including which document holds
+them, which is what lets enrollment regenerate the doc underneath chrome
+(see the finding below). Petname (case-insensitive) and
+hue uniqueness are repaired deterministically after every remote apply —
+older `created-at` wins, ties broken by lexicographic provenance — and
+every device computes the same outcome, so only the device whose OWN
+write lost persists it. `needs-reconfirm` is derived rather than stored,
+which removes the write entirely on that path. `us-events` drains
+remotely-caused changes only; local writes update the diff baseline as
+they are made, so a device can never be announced its own work.
+
+### Finding: a device enrolled after a doc was sealed never becomes a reader of it
+
+At the pinned keyhive rev, a member added to a group *after* a doc was
+sealed never obtains a usable epoch on that doc — not for existing
+content, and not for content written after it joined. Measured
+repeatedly, in single runs over one wire:
+
+- the joiner holds the same membership and CGKA op counts as the adder,
+  knows the group and the doc, and receives every chunk over subduction
+  — and every chunk stays `KeyNotFound`;
+- adding the joiner's individual **directly to the doc** does not help;
+- distributing the adder's contact card or self-card does not help;
+- `force_pcs_update` on every doc delegated to the user group, run right
+  after `kh-add-to-group` (verified to find and rotate the doc), does not
+  help — nor does running it again later with the peer already connected
+  and immediately before the write under test, which rules out the G4
+  event-cache timing hazard;
+- the failure is **directional**: the joiner CAN encrypt into the
+  partition (it derives an epoch of its own); the founder's writes stay
+  unreadable to it;
+- the control is stable: a partition the device was a member of from
+  epoch 0 is fully readable, same run, same wire.
+
+Causal-key read-back is not the escape hatch at this rev either:
+`try_causal_decrypt_content` expects the plaintext to be an `Envelope`
+carrying ancestor keys, while `try_encrypt_content` — the API this spike
+uses — encrypts raw content. Reaching pre-join history that way means
+changing what the content layer encrypts (recorded as the production
+path on #36).
+
+**Resolution: enrollment regenerates the user-system doc** (PAIRING.md
+§2). The adder creates a NEW user-system doc delegated to the user group
+and sealed immediately — the joiner is a member from epoch 0, the one
+arrangement measured to be stably readable — copies the current state
+VALUES across (all four maps, `created-at` preserved, since that field
+decides conflict winners), and writes a forward pointer
+`{superseded-by: {new-doc-id}}` into the old generation. Existing devices
+follow the pointer on their next sync, adopt the successor, and
+value-reconcile: they re-write only their OWN values that the copy
+predates, by authorship and `created-at`. Nothing is announced for values
+a device already rendered — the diff baseline is carried across the
+generation boundary, because moving documents is not a change the user
+can perceive.
+
+Three details that are load-bearing rather than incidental:
+
+- **The forward pointer is a MAP, not a scalar.** Two adders enrolling
+  concurrently would last-write-wins a scalar, and a fork that cannot be
+  seen is a fork that corrupts. With a map both successors survive the
+  merge; the winner is the lexicographically smallest id and the loser's
+  adder repeats its finalization atop it. Not gated in v1 (pairing is
+  humanly serialized) — the path detects and reports loudly.
+- **Subscriptions are engine-driven.** The `us-*` surface hides doc
+  identity, which is exactly what lets the generation change underneath
+  chrome; it also means the host cannot know which tree to subscribe to,
+  so the engine keeps a subscription open to the current generation with
+  every known peer.
+- **The forced post-add rotation stays.** It is harmless, correct once
+  upstream heals, and the right call for docs that are NOT regenerated.
+
 ## Findings
 
 - **Cards must be distributed to every member instance; the wire will

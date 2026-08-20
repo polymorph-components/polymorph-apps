@@ -56,3 +56,17 @@ check:
     cargo clippy --target wasm32-wasip2 -p spike-fetcher -- -D warnings
     cargo clippy --target wasm32-wasip2 -p spike-guest -- -D warnings
     cargo clippy -p spike-host -- -D warnings
+
+# The PAIRING.md §6 acts: device pairing + the user-system partition.
+# Relay only — no bucket is involved, so no MinIO.
+pair: compose
+    #!/usr/bin/env bash
+    set -euo pipefail
+    relay="{{IROH_CHECKOUT}}/.deps/iroh/target/release/iroh-relay"
+    [ -x "$relay" ] || { echo "iroh-relay not built at $relay" >&2; exit 1; }
+    "$relay" --dev &
+    relay_pid=$!
+    trap 'kill $relay_pid 2>/dev/null || true' EXIT
+    sleep 0.5
+    cargo run --release -p spike-host -- target/composed.wasm \
+        --acts pairing --relay http://127.0.0.1:3340

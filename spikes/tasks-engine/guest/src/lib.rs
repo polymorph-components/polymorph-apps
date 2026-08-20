@@ -21,6 +21,9 @@ wit_bindgen::generate!({
     generate_all,
 });
 
+mod pairing;
+mod usdoc;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -83,7 +86,10 @@ use subduction_keyhive::protocol::KeyhiveProtocol;
 use subduction_keyhive::signed_message::SignedMessage;
 use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
-use exports::polymorph::engine_spike::driver::{Guest as DriverGuest, StoreConfig};
+use exports::polymorph::engine_spike::driver::{
+    Guest as DriverGuest, PairAddState, PairJoinState, PairOffer, StoreConfig, UsDevice, UsEvent,
+    UsMark, UsProfile,
+};
 use exports::polymorph_data::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
 use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
 use polymorph::iroh::identity_generate;
@@ -466,6 +472,9 @@ struct State {
     conn_results: HashMap<u32, Result<String, String>>,
     syncs: HashMap<u32, Result<String, String>>,
     endpoint: Option<Rc<Endpoint>>,
+    /// The relay this endpoint bound to. Pairing has no relay hint in the
+    /// code (PAIRING.md §1), so both sides use their configured one.
+    relay_url: Option<String>,
     iroh_identity: Option<Rc<polymorph::iroh::identity::Identity>>,
     iroh_conns: HashMap<u32, Rc<polymorph::iroh::endpoint::Connection>>,
     partitions: HashMap<Vec<u8>, Partition>,
@@ -477,6 +486,10 @@ struct State {
     kh_nudge: u32,
     store: Option<StoreCfg>,
     buckets: HashMap<Vec<u8>, BucketState>,
+    /// Device pairing (#10).
+    pair: pairing::PairState,
+    /// The user-system partition (#36).
+    us: usdoc::UsDoc,
     fetches: u32,
     next_id: u32,
 }
@@ -2262,6 +2275,220 @@ fn active_partition() -> Result<Vec<u8>, String> {
     with_state(|s| s.active.clone())?.ok_or("no partition bound (seal or adopt first)".into())
 }
 
+// --- keyhive operations shared by the driver surface and the pairing /
+// --- user-system modules. The driver methods below delegate here so the
+// --- ceremony performs exactly the same writes a host call would.
+
+fn now_ms_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn own_agent_id() -> Result<Vec<u8>, String> {
+    with_state(|s| s.my_peer.as_bytes().to_vec())
+}
+
+/// Refresh the bridge's event cache and offer everything to every peer.
+async fn flush_keyhive() -> Result<(), String> {
+    let proto = with_state(|s| s.proto.clone())?;
+    refreshed_sync(&proto, None).await
+}
+
+async fn contact_card_bytes() -> Result<Vec<u8>, String> {
+    let kh = with_state(|s| s.kh.clone())?;
+    let card = kh
+        .contact_card()
+        .await
+        .map_err(|e| format!("contact card: {e:?}"))?;
+    bincode::serialize(&card).map_err(|e| e.to_string())
+}
+
+/// Ingest a contact card and return the individual it materializes. The
+/// id comes from the card itself, which is signed — the sender does not
+/// get to name a different principal than the one it proves it holds.
+async fn ingest_contact_card(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+    let card: ContactCard = bincode::deserialize(&bytes).map_err(|e| format!("bad card: {e}"))?;
+    let id = card.id().to_bytes().to_vec();
+    kh.receive_contact_card(&card)
+        .await
+        .map_err(|e| format!("receive contact card: {e:?}"))?;
+    refreshed_sync(&proto, None).await?;
+    Ok(id)
+}
+
+async fn ingest_static_card(bytes: Vec<u8>) -> Result<u32, String> {
+    let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+    let events: Vec<StaticEvent<T>> =
+        bincode::deserialize(&bytes).map_err(|e| format!("bad card: {e}"))?;
+    let pending = kh.ingest_unsorted_static_events(events).await;
+    refreshed_sync(&proto, None).await?;
+    Ok(pending.len() as u32)
+}
+
+async fn export_static_card(agent_id: &[u8]) -> Result<Vec<u8>, String> {
+    let kh = with_state(|s| s.kh.clone())?;
+    let agent = kh
+        .get_agent(identifier(agent_id)?)
+        .await
+        .ok_or("agent not found".to_string())?;
+    let events: Vec<StaticEvent<T>> = kh
+        .static_events_for_agent(&agent)
+        .await
+        .into_values()
+        .collect();
+    bincode::serialize(&events).map_err(|e| format!("serialize card: {e}"))
+}
+
+async fn create_user_group() -> Result<Vec<u8>, String> {
+    let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+    let group = kh
+        .generate_group(vec![])
+        .await
+        .map_err(|e| format!("generate group: {e:?}"))?;
+    let id = { group.lock().await.group_id().to_bytes().to_vec() };
+    refreshed_sync(&proto, None).await?;
+    Ok(id)
+}
+
+async fn add_to_group(group_id: &[u8], member: &[u8], level: &str) -> Result<(), String> {
+    let access = parse_access(level)?;
+    let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+    let gid = GroupId::new(identifier(group_id)?);
+    let group = kh
+        .get_group(gid)
+        .await
+        .ok_or("group not found".to_string())?;
+    let agent = kh
+        .get_agent(identifier(member)?)
+        .await
+        .ok_or("member agent not found (no card yet)".to_string())?;
+    kh.add_member(agent, &Membered::Group(gid, group), access, &[])
+        .await
+        .map_err(|e| format!("add to group: {e:?}"))?;
+    refreshed_sync(&proto, None).await?;
+    Ok(())
+}
+
+async fn revoke_from_group(group_id: &[u8], member: &[u8]) -> Result<(), String> {
+    let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+    let gid = GroupId::new(identifier(group_id)?);
+    let group = kh
+        .get_group(gid)
+        .await
+        .ok_or("group not found".to_string())?;
+    kh.revoke_member(identifier(member)?, true, &Membered::Group(gid, group))
+        .await
+        .map_err(|e| format!("revoke from group: {e:?}"))?;
+    refreshed_sync(&proto, None).await?;
+    Ok(())
+}
+
+async fn add_doc_member(doc_id: &[u8], agent_id: &[u8], level: &str) -> Result<(), String> {
+    let access = parse_access(level)?;
+    let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+    let did = kh_doc_id(doc_id)?;
+    let agent = kh
+        .get_agent(identifier(agent_id)?)
+        .await
+        .ok_or("agent not found (bridge has not synced its card yet)".to_string())?;
+    let doc = kh
+        .get_document(did)
+        .await
+        .ok_or("doc not found".to_string())?;
+    kh.add_member(agent, &Membered::Document(did, doc), access, &[])
+        .await
+        .map_err(|e| format!("add member: {e:?}"))?;
+    refreshed_sync(&proto, None).await?;
+    Ok(())
+}
+
+/// Force a fresh epoch on every doc delegated to `group`.
+///
+/// The enrollment counterpart of the revocation rotation. Adding a member
+/// to a group registers its CGKA leaf on the docs that contain the group,
+/// but at the pinned keyhive rev that leaf is not usable until a new
+/// epoch is derived: without this, a device enrolled after a doc was
+/// sealed receives ciphertext it can never read — including content
+/// written after it joined. Every op this produces goes out through
+/// `refreshed_sync`, because the bridge serves peers from a cache that
+/// upstream refreshes on a timer we do not run (the G4 finding: a
+/// rotation created locally and never refreshed is silently never
+/// offered, and the peer waits on epoch material forever).
+async fn rotate_docs_for_group(group_id: &[u8]) -> Result<(), String> {
+    let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
+    let group_identifier = identifier(group_id)?;
+    let docs: Vec<_> = kh.reachable_docs().await.into_values().collect();
+    let mut rotated = 0u32;
+    for ability in docs {
+        let doc = ability.doc().clone();
+        let contains_group = {
+            let locked = doc.lock().await;
+            locked
+                .transitive_members()
+                .await
+                .contains_key(&group_identifier)
+        };
+        if !contains_group {
+            continue;
+        }
+        kh.force_pcs_update(doc)
+            .await
+            .map_err(|e| format!("forced epoch rotation: {e:?}"))?;
+        rotated += 1;
+    }
+    if rotated > 0 {
+        refreshed_sync(&proto, None).await?;
+    }
+    Ok(())
+}
+
+/// Peers this instance has completed a subduction handshake with.
+fn known_peers() -> Result<Vec<Vec<u8>>, String> {
+    with_state(|s| {
+        s.conn_results
+            .values()
+            .filter_map(|r| r.as_ref().ok())
+            .filter_map(|hex_peer| hex::decode(hex_peer).ok())
+            .collect()
+    })
+}
+
+/// Subscribe to a tree with one peer, fire-and-forget.
+///
+/// Engine-driven on purpose: the user-system surface hides doc identity
+/// (PAIRING.md §4), and generations change it, so the host cannot be the
+/// thing that knows which tree to subscribe to.
+fn subscribe_tree(peer: Vec<u8>, tree: Vec<u8>) -> Result<(), String> {
+    let peer = PeerId::new(arr32(&peer, "peer")?);
+    let tree = tree_id(&tree)?;
+    let sd = with_state(|s| s.sd.clone())?;
+    wit_bindgen::spawn_local(async move {
+        if let Err(e) = sd
+            .sync_with_peer(&peer, tree, true, CallTimeout::Default)
+            .await
+        {
+            eprintln!("[us subscribe] {e:?}");
+        }
+    });
+    Ok(())
+}
+
+/// Mint a keyhive doc whose first content head is `cref`. Held unsealed:
+/// the caller adds members before the first encryption, because BeeKEM
+/// adds are not retroactive.
+async fn create_doc_for(cref: [u8; 32]) -> Result<Vec<u8>, String> {
+    let kh = with_state(|s| s.kh.clone())?;
+    let doc = kh
+        .generate_doc(vec![], nonempty::nonempty![cref])
+        .await
+        .map_err(|e| format!("generate doc: {e:?}"))?;
+    let id = { doc.lock().await.doc_id().as_slice().to_vec() };
+    Ok(id)
+}
+
 fn todos_object(am: &AutoCommit) -> Result<automerge::ObjId, String> {
     match am.get(ROOT, "todos").map_err(|e| format!("get todos: {e}"))? {
         Some((Value::Object(ObjType::Map), id)) => Ok(id),
@@ -2346,6 +2573,7 @@ fn finish_init(signer: WebcryptoSigner, verifying: DalekVerifyingKey, kh: Kh) ->
             conn_results: HashMap::new(),
             syncs: HashMap::new(),
             endpoint: None,
+            relay_url: None,
             iroh_identity: None,
             iroh_conns: HashMap::new(),
             partitions: HashMap::new(),
@@ -2354,6 +2582,8 @@ fn finish_init(signer: WebcryptoSigner, verifying: DalekVerifyingKey, kh: Kh) ->
             kh_nudge: 0,
             store: None,
             buckets: HashMap::new(),
+            pair: pairing::PairState::default(),
+            us: usdoc::UsDoc::default(),
             fetches: 0,
             next_id: 0,
         })
@@ -2427,14 +2657,7 @@ impl DriverGuest for Component {
     }
 
     async fn kh_create_group() -> Result<Vec<u8>, String> {
-        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
-        let group = kh
-            .generate_group(vec![])
-            .await
-            .map_err(|e| format!("generate group: {e:?}"))?;
-        let id = { group.lock().await.group_id().to_bytes().to_vec() };
-        refreshed_sync(&proto, None).await?;
-        Ok(id)
+        create_user_group().await
     }
 
     async fn kh_add_to_group(
@@ -2442,78 +2665,23 @@ impl DriverGuest for Component {
         member: Vec<u8>,
         level: String,
     ) -> Result<(), String> {
-        let access = parse_access(&level)?;
-        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
-        let gid = GroupId::new(identifier(&group_id)?);
-        let group = kh
-            .get_group(gid)
-            .await
-            .ok_or("group not found".to_string())?;
-        let agent = kh
-            .get_agent(identifier(&member)?)
-            .await
-            .ok_or("member agent not found (no card yet)".to_string())?;
-        kh.add_member(agent, &Membered::Group(gid, group), access, &[])
-            .await
-            .map_err(|e| format!("add to group: {e:?}"))?;
-        refreshed_sync(&proto, None).await?;
-        Ok(())
+        add_to_group(&group_id, &member, &level).await
     }
 
     async fn kh_revoke_from_group(group_id: Vec<u8>, member: Vec<u8>) -> Result<(), String> {
-        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
-        let gid = GroupId::new(identifier(&group_id)?);
-        let group = kh
-            .get_group(gid)
-            .await
-            .ok_or("group not found".to_string())?;
-        kh.revoke_member(identifier(&member)?, true, &Membered::Group(gid, group))
-            .await
-            .map_err(|e| format!("revoke from group: {e:?}"))?;
-        refreshed_sync(&proto, None).await?;
-        Ok(())
+        revoke_from_group(&group_id, &member).await
     }
 
     async fn kh_export_card(agent_id: Vec<u8>) -> Result<Vec<u8>, String> {
-        let kh = with_state(|s| s.kh.clone())?;
-        let agent = kh
-            .get_agent(identifier(&agent_id)?)
-            .await
-            .ok_or("agent not found".to_string())?;
-        let events: Vec<StaticEvent<T>> = kh
-            .static_events_for_agent(&agent)
-            .await
-            .into_values()
-            .collect();
-        bincode::serialize(&events).map_err(|e| format!("serialize card: {e}"))
+        export_static_card(&agent_id).await
     }
 
     async fn kh_ingest_card(card: Vec<u8>) -> Result<u32, String> {
-        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
-        let events: Vec<StaticEvent<T>> =
-            bincode::deserialize(&card).map_err(|e| format!("bad card: {e}"))?;
-        let pending = kh.ingest_unsorted_static_events(events).await;
-        refreshed_sync(&proto, None).await?;
-        Ok(pending.len() as u32)
+        ingest_static_card(card).await
     }
 
     async fn kh_add_member(doc_id: Vec<u8>, agent_id: Vec<u8>, level: String) -> Result<(), String> {
-        let access = parse_access(&level)?;
-        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
-        let did = kh_doc_id(&doc_id)?;
-        let agent = kh
-            .get_agent(identifier(&agent_id)?)
-            .await
-            .ok_or("agent not found (bridge has not synced its card yet)".to_string())?;
-        let doc = kh
-            .get_document(did)
-            .await
-            .ok_or("doc not found".to_string())?;
-        kh.add_member(agent, &Membered::Document(did, doc), access, &[])
-            .await
-            .map_err(|e| format!("add member: {e:?}"))?;
-        refreshed_sync(&proto, None).await?;
-        Ok(())
+        add_doc_member(&doc_id, &agent_id, &level).await
     }
 
     async fn kh_revoke_member(doc_id: Vec<u8>, agent_id: Vec<u8>) -> Result<(), String> {
@@ -2531,22 +2699,11 @@ impl DriverGuest for Component {
     }
 
     async fn kh_contact_card() -> Result<Vec<u8>, String> {
-        let kh = with_state(|s| s.kh.clone())?;
-        let card = kh
-            .contact_card()
-            .await
-            .map_err(|e| format!("contact card: {e:?}"))?;
-        bincode::serialize(&card).map_err(|e| e.to_string())
+        contact_card_bytes().await
     }
 
     async fn kh_ingest_contact(card: Vec<u8>) -> Result<(), String> {
-        let (kh, proto) = with_state(|s| (s.kh.clone(), s.proto.clone()))?;
-        let card: ContactCard = bincode::deserialize(&card).map_err(|e| format!("bad card: {e}"))?;
-        kh.receive_contact_card(&card)
-            .await
-            .map_err(|e| format!("receive contact card: {e:?}"))?;
-        refreshed_sync(&proto, None).await?;
-        Ok(())
+        ingest_contact_card(card).await.map(|_| ())
     }
 
     async fn init_store(config: StoreConfig) -> Result<(), String> {
@@ -2973,6 +3130,9 @@ impl DriverGuest for Component {
             .map_err(|e| format!("identity-generate: {e:?}"))?;
         let options = EndpointOptions::new(&identity);
         options.add_alpn(ALPN);
+        // Pairing runs on its own ALPN, so a pairing dial can never be
+        // consumed by the sync acceptor (or the reverse).
+        options.add_alpn(pairing::PAIR_ALPN);
         options.relay_url(&relay_url);
         let endpoint = Endpoint::bind(options)
             .await
@@ -2980,6 +3140,7 @@ impl DriverGuest for Component {
         let id = endpoint.id();
         with_state(|s| {
             s.endpoint = Some(Rc::new(endpoint));
+            s.relay_url = Some(relay_url.clone());
             s.iroh_identity = Some(Rc::new(identity));
         })?;
         Ok(hex::encode(id))
@@ -3037,7 +3198,16 @@ impl DriverGuest for Component {
                         (k_send, k_recv, Vec::new()),
                     ))
                 } else {
-                    let conn = endpoint.accept().await.map_err(|e| format!("accept: {e:?}"))?;
+                    // Skip anything that is not a sync dial: a pairing
+                    // connection belongs to the pairing acceptor, and
+                    // swallowing it here would strand both ceremonies.
+                    let conn = loop {
+                        let conn =
+                            endpoint.accept().await.map_err(|e| format!("accept: {e:?}"))?;
+                        if conn.alpn() == ALPN {
+                            break conn;
+                        }
+                    };
                     let mut s_stream = None;
                     let mut k_stream = None;
                     for _ in 0..2 {
@@ -3255,6 +3425,89 @@ impl DriverGuest for Component {
             .max()
             .unwrap_or(0);
         Ok((chunks, max_parents))
+    }
+
+    // --- device pairing (#10; PAIRING.md §1–§2) ---
+
+    async fn pair_join_start() -> Result<PairOffer, String> {
+        pairing::join_start().await
+    }
+
+    async fn pair_join_status() -> Result<PairJoinState, String> {
+        breathe().await;
+        pairing::join_status()
+    }
+
+    async fn pair_join_confirm() -> Result<(), String> {
+        pairing::join_confirm().await
+    }
+
+    async fn pair_add_start(code: String) -> Result<(), String> {
+        pairing::add_start(code).await
+    }
+
+    async fn pair_add_status() -> Result<PairAddState, String> {
+        breathe().await;
+        pairing::add_status()
+    }
+
+    async fn pair_add_confirm(device_name: String) -> Result<(), String> {
+        pairing::add_confirm(device_name).await
+    }
+
+    async fn pair_abort() -> Result<(), String> {
+        pairing::abort_all();
+        Ok(())
+    }
+
+    // --- the user-system partition (#36; PAIRING.md §4) ---
+
+    async fn user_create(profile: UsProfile) -> Result<Vec<u8>, String> {
+        usdoc::create(profile).await
+    }
+
+    async fn us_profile_get() -> Result<UsProfile, String> {
+        usdoc::profile_get().await
+    }
+
+    async fn us_profile_set(profile: UsProfile) -> Result<(), String> {
+        usdoc::profile_set(profile).await
+    }
+
+    async fn us_marks_list() -> Result<Vec<UsMark>, String> {
+        usdoc::marks_list().await
+    }
+
+    async fn us_mark_put(mark: UsMark) -> Result<(), String> {
+        usdoc::mark_put(mark).await
+    }
+
+    async fn us_mark_forget(provenance: String) -> Result<(), String> {
+        usdoc::mark_forget(provenance).await
+    }
+
+    async fn us_mark_confirm(provenance: String) -> Result<(), String> {
+        usdoc::mark_confirm(provenance).await
+    }
+
+    async fn us_contacts_list() -> Result<Vec<(Vec<u8>, String)>, String> {
+        usdoc::contacts_list().await
+    }
+
+    async fn us_contact_put(card: Vec<u8>, petname: String) -> Result<(), String> {
+        usdoc::contact_put(card, petname).await
+    }
+
+    async fn us_devices_list() -> Result<Vec<UsDevice>, String> {
+        usdoc::devices_list().await
+    }
+
+    async fn us_device_revoke(agent_id: Vec<u8>) -> Result<(), String> {
+        usdoc::device_revoke(agent_id).await
+    }
+
+    async fn us_events() -> Result<Vec<UsEvent>, String> {
+        usdoc::events().await
     }
 
     async fn stats() -> String {
