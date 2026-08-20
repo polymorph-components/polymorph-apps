@@ -935,7 +935,183 @@ peers can wake your service worker directly, payloads E2E on top of
 RFC 8291's transport encryption. Metadata cost: contacts learn your
 push endpoint; the push service sees sender IPs. Open sub-question:
 *who decides to notify* — peer-side decision logic covers
-peer-triggered events; anything else needs something always-on.
+peer-triggered events; anything else needs something always-on. Taken
+up in
+[Wake hints and the notification broker](#wake-hints-and-the-notification-broker),
+which also relocates the endpoint: registered with the user's chosen
+broker rather than replicated across the contact graph (smaller
+spread, one revocation point).
+
+## Wake hints and the notification broker
+
+Recorded 2026-08-19 from design discussion (triggered by the
+Holepunch/Pear investigation — blind-peer / protomux-wakeup are the
+deployed prior art for the relay-shaped half). Leaning, not ruling.
+Extends [Compute placement and push](#compute-placement-and-push); the
+relay role from the
+[provisional plan](#provisional-plan-group-crypto-and-sync) gains a
+second function: matching opaque wake tags against registered push
+capabilities, alongside pull policy. Still ciphertext-blind.
+
+**Three delivery regimes, one vocabulary.** "Tell a peer something
+changed" splits by device state, with different cost models:
+
+| regime | channel | hint form | false-positive budget |
+|---|---|---|---|
+| online | gossip topics / existing iroh conns | keyed tags; busy-window summaries may be AMQ | generous — a wasted dial |
+| dormant | broker → Web Push → SW wake | exact, author-minted, wake-worthy only | ~zero — platform silent-push budgets |
+| neither | — | maintenance defers to next wake/open | — |
+
+Web Push is a notification channel, not a sync channel: every
+SW-waking push must render a real notification (iOS strictly; Chrome
+tolerates a trickle of silent ones), so **wake-worthiness is
+author-declared at mint time** — the blind broker cannot classify;
+the author can, for free. Every visible push is a full-reconcile
+opportunity (the `waitUntil` window syncs *everything* pending, not
+just the triggering doc): maintenance piggybacks on user-visible
+events, and pure-maintenance latency is bounded by (next visible
+event, next app open, periodic background sync where granted) —
+acceptable by the local-first bet. Honest loss, stated: a dormant
+device with a quiet social graph stays stale.
+
+**Hint tags.** `tag = HMAC(k, class:value ‖ window)`. Keyed, or the
+tiny attribute vocabulary makes the broker a dictionary oracle;
+window-nonced, or tags are linkable across windows. Authors mint at
+multiple granularities (doc, partition/service, scope) — the
+hierarchy is load-bearing, not garnish: doc-as-ACL-unit puts
+doc-granularity coverage at 10^3–10^5 tags, and per-recipient keying
+(below) is affordable only at coarse granularity (O(scopes ×
+recipients) per window, amortized over the window's events;
+O(docs × recipients) is dead). Conjunctions are precomposed compound
+atoms (bounded — tags-per-event is small; depth 2 has sufficed in
+every case worked); general subset matching is not needed so far;
+negation is inexpressible in positive tags — parked as an extension.
+
+**Keying tiers and the clustering leak.** Scope-keyed tags (one key
+shared by a group) let the broker cluster co-subscribers by identical
+match history — contact-graph-shaped leakage. Pairwise per-recipient
+tags are unlinkable and removal-free (removal = author stops minting
+that recipient's tags; nobody else's registrations move) but cost
+O(recipients) per mint. Leaning: **pairwise on the push path** (the
+coarse tier makes it affordable), **scope-keyed on the gossip path**
+(members are mutually known; the leak adds nothing). Broadcast-shaped
+uses (power-law head, many-follower feeds) sit fine on scope keys —
+following a head author is the least-secret fact in the graph — and
+their fan-out economics (budgets force digest cadence; muting matters
+most exactly where volume is highest) are the worked example behind
+several rulings here.
+
+**The wake tier gets its own rotation clock — the laxest one.**
+Derived-tag registrations parked at the broker go stale on epoch
+rotation, and a device asleep through rotation misses the very wake
+that would tell it to re-register: epoch-coupled wake tags are
+self-defeating for exactly their target devices (the dormant-wake
+gap). BeeKEM makes read rotation O(log N), but that efficiency does
+not extend to broker-parked derived state (N lazy re-registrations
+plus the gap). So the tier table becomes: **read** — rotate on
+removal, hard, O(log N); **pull** — per the name-key design; **wake**
+— stable across removals, slow background rotation. A removed member
+whose wake tags keep matching learns activity timing only — already
+inside the metadata non-goal. Pairwise push tags are epoch-independent
+by construction.
+
+**The broker: minimal by force — the storage-floor collapse applied
+again.** Everything sophisticated is expressible above an
+equality-match primitive *if the broker makes scarcity explicit*.
+Platform push budgets are the real constraint; the broker quota
+propagates that scarcity upstream instead of simulating abundance the
+browser will deny anyway. Quotas are the forcing function that pushes
+throughput-heavy uses into richer layers, not ops hygiene. Irreducible
+core: (1) fire push capabilities — dormant devices cannot wake
+themselves; (2) exact-match opaque tags; (3) price abuse — verify
+submissions against enrolled mint-keys with per-source and
+per-registration budgets (unsigned submission = wake-bombing that
+burns the victim's platform budget until the browser revokes the
+subscription). Contract sketch:
+
+```
+register(tag, push-capability, budget-request, ttl) -> registration
+unregister(registration)
+enroll-mint-key(scope-key, rate-policy)
+submit(tags[], signature)   // matches set per-registration dirty bits
+```
+
+Fire when dirty ∧ budget available; payload = matched tags up to a
+small cap, else "something matched". No retention, no replay, no
+ordering; at-most-once; lossy under budget — the guarantee class
+declared in the contract (the `store-revoke` discipline). Sync
+correctness never leans on wakes; reconciliation is the backstop.
+Registration TTL is load-bearing: it bounds broker storage and imposes
+a small re-registration heartbeat on live devices — a standing
+liveness requirement, stated here rather than discovered as churn.
+Budgets are subscriber-requested, broker-capped, cap discoverable
+(the provider capability-profile shape).
+
+**What the broker does NOT do, and where each job lands:**
+
+- **Digests/batching** — author-side window-cadence minting, or a
+  digest data service on an always-on node under the compute-placement
+  powerbox (holds keys, filters for real, mints one exact wake). The
+  budget forces high-volume feeds there.
+- **Mutes/exclusion** — service-side filtering after a coarse wake, or
+  channel-sharded tags minted upstream; the budget caps the
+  wasted-wake cost of client-side discard.
+- **Priority** — registration granularity: a pairwise high-priority
+  tag with a generous budget beside bulk tags with stingy ones.
+  Multiple registrations with independent budgets *are* the priority
+  system; no broker feature.
+- **Presence, read-state, ordering, replay** — data services and the
+  sync layer, where they always belonged.
+
+**Forward compatibility: degrade-to-floor.** v1 payload = exact tags
+or the bit. One type byte inside the decrypted payload; unknown
+encoding ⇒ "something changed" ⇒ over-sync. Invariant for every future
+encoding: **narrowing hints only** — anything whose safe default is
+not "sync all" (suppressions, obligations) is banned from this
+channel. Recorded as the general rule alongside the subduction
+posture: **reject-on-unknown for load-bearing state, degrade-to-floor
+for advisory optimization** — misinterpreting state corrupts;
+misinterpreting advice wastes a fetch.
+
+**Extensions parked for re-examination, each with its trigger:**
+
+- **Compressed payload middle tier** (Golomb/Bloom over matched tags,
+  ~1.2 B/element vs 8): semantically inert, ships without a flag day
+  under degrade-to-floor. Trigger: sustained overflow of the exact-tag
+  cap — but instrument overflow as a client-side smell first (it
+  usually means fine-grained registrations on the tier designed to
+  exclude them; a comfortable overflow path would subsidize the
+  misuse). Pad payloads to size buckets regardless — push services
+  see ciphertext length.
+- **Broker-side suppress-sets** (negation/mutes at the matcher): the
+  first feature whose semantics depend on subscriber *intent* rather
+  than tag equality — the camel's nose; priorities, digests, and
+  read-state have equal claim once it's in. Trigger: evidence that
+  service-side muting burns real budget at scale.
+- **Conjunctive (subset) matching at the broker**: precomposed
+  compound atoms have sufficed at depth 2 (e.g. author × tag).
+  Trigger: a real consumer needing dynamic conjunctions an author
+  cannot pre-mint.
+- **Cross-scope atoms** ("author:X anywhere"): fundamental tension —
+  cross-scope testability needs broadly shared keys, which collapse
+  toward dictionary-testable. Revisit only with a mechanism in hand,
+  not a wish.
+- **AMQ window summaries on the gossip path**: already the right call
+  where windows are busy (fixed size also hides activity cardinality);
+  belongs to the gossip design rather than the broker contract.
+
+**Metadata position (for #1).** The broker sees tags, timing, volume,
+and match fan-out shape; with pairwise push tags it cannot link
+recipients into groups beyond timing correlation. Within the declared
+non-goal. Push services additionally see wake timing and unpadded
+payload sizes — hence the bucket padding. The wake-worthy bit itself
+leaks "this event was notification-grade" to the broker: one more bit
+inside the same concession.
+
+Prior art: blind-peer / blind-peering (Holepunch) — the deployed
+ciphertext-blind always-on peer, with disk budgets and authorized
+announce; protomux-wakeup — connection-scoped activity hinting; DP5 —
+PRF-keyed presence queries against an untrusted server.
 
 ## Developer experience
 
@@ -1140,6 +1316,19 @@ owns.
 - remoteStorage / unhosted — same era and weakness as Solid.
 - [Ink & Switch](https://www.inkandswitch.com/local-first/) — the
   local-first canon; [Keyhive](https://www.inkandswitch.com/keyhive/).
+- [Holepunch / Pear](https://docs.pears.com) — hypercore-family stack
+  (signed single-writer logs, Autobase multiwriter linearization,
+  Hyperswarm DHT); browser-incapable by construction, so roles and
+  protocols transfer, not code. Mined 2026-08-19:
+  [blind-peer](https://github.com/holepunchto/blind-peer)
+  (ciphertext-blind availability peers → the relay role),
+  protomux-wakeup (activity hints → wake tier), quorum-multisig
+  release lines (→ #3), Keet identity keys (mnemonic-attested device
+  keys — weaker shape than the device-group design, kept as
+  validation).
+- [DP5](https://cacr.uwaterloo.ca/techreports/2014/cacr2014-10.pdf) —
+  private presence via PRF-keyed queries against an untrusted server;
+  the wake-tag trick's citation trail.
 - [Isolated Web Apps](https://github.com/WICG/isolated-web-apps) —
   Chromium signed web bundles; install-time code integrity, not
   cross-platform.
