@@ -35,8 +35,15 @@ JUST_VERSION="${JUST_VERSION:-1.54.0}"
 # spike's default `compose` target consumes the endpoint from
 # jsr:@polymorph/iroh (spikes/tasks-engine/justfile's PINS block), so no
 # sibling clone/cargo-build of it is needed by any default-path target.
-WEBCRYPTO_REPO=https://github.com/polymorph-components/polymorph-webcrypto.git
-WEBCRYPTO_PIN=b13d25230d34bbb65ba657be906fd59151a201f7
+#
+# polymorph-webcrypto is likewise NOT checked out here (jsr-pins branch):
+# the demo's deno.json now resolves it from jsr:@polymorph/webcrypto@0.2.0
+# (see spikes/demo/README.md's "deltic ports ... JSR pins now, no sibling
+# checkout" note), and every Rust consumer (dropbox/keyhive/storage/
+# skeleton/subduction/tasks-engine) pulls it as a `git = "...", rev = "..."`
+# Cargo dependency, not a sibling path. polymorph-webrtc-datachannels is
+# still a live sibling consumer (spikes/demo/deno.json maps it there) and
+# stays checked out below.
 WEBRTC_REPO=https://github.com/polymorph-components/polymorph-webrtc-datachannels.git
 WEBRTC_PIN=8a8347766df9035747fb87f85f13eee16c14c1f4
 
@@ -56,7 +63,6 @@ pin_repo() { # url pin dir
 }
 
 mkdir -p "$SIBLINGS_DIR"
-pin_repo "$WEBCRYPTO_REPO" "$WEBCRYPTO_PIN" "$SIBLINGS_DIR/polymorph-webcrypto"
 pin_repo "$WEBRTC_REPO" "$WEBRTC_PIN" "$SIBLINGS_DIR/polymorph-webrtc-datachannels"
 
 if [ "${SIBLINGS_ONLY:-0}" = "1" ]; then
