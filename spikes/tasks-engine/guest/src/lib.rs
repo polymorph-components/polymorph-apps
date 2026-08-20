@@ -687,10 +687,7 @@ async fn subduction_handshake(
 
 async fn iroh_writer(out_rx: async_channel::Receiver<Vec<u8>>, send: SendStream) {
     while let Ok(frame) = out_rx.recv().await {
-        let mut buf = Vec::with_capacity(4 + frame.len());
-        buf.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&frame);
-        if send.write(buf).await.is_err() {
+        if send.write(pairing::frame_bytes(&frame)).await.is_err() {
             break;
         }
     }

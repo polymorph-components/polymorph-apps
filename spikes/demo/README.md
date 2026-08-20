@@ -75,8 +75,8 @@ per pane (×3, one browser page):
         │  (import wired DIRECTLY to the engine instance's export —
         │   same embedder, same value conventions, same exception brand)
   deltic runtime (jsr @deltic/runtime 0.1.0) + @deltic/wasi (incl. the
-  fetch-backed wasi:http fragment) + sibling deltic ports
-  (webcrypto / websocket [vendored, migrated] / webrtc) + sockets stub
+  fetch-backed wasi:http fragment) + deltic ports from JSR
+  (webcrypto / websocket / webrtc, all `jsr:@polymorph/*@0.1.0`) + sockets stub
 ```
 
 - The engine composite is byte-identical to `spikes/tasks-engine`'s
@@ -237,9 +237,12 @@ the app console for the Connect path. Hosted build:
 https://polymorph-components.github.io/polymorph-apps/spike-demo/
 — same story: public relay out of the box, bring your own bucket.
 
-Requires sibling checkouts
-(`polymorph-iroh` built, `polymorph-{webcrypto,websocket,webrtc-datachannels}`)
-and the `spikes/tasks-engine` MinIO fetch (run that spike once).
+Requires `spikes/tasks-engine`'s pinned iroh-relay + endpoint wasm
+(`just -f ../tasks-engine/justfile relay-bin`; endpoint wasm still via
+`IROH_CHECKOUT` — see that spike's README "JSR pins" section for why)
+and its MinIO fetch (run that spike once). The deltic ports
+(webcrypto/websocket/webrtc-datachannels) are JSR pins now, no sibling
+checkout (see `deno.json`'s header comment).
 
 Headless bring-up phases (`just bringup solo|wire|bucket`) retire the
 platform layers one at a time under Deno; `wire soak` runs a 30 s
@@ -262,13 +265,17 @@ reports background queue depth and per-timer skip counts.
 
 - **deltic 0.1.0 renamed the embedder conventions** (`WitError` →
   `ComponentException`; variant envelopes `{tag, val}` → `{kind,
-  value}`). The sibling port modules still pin the pre-release embedder
-  through their own `deno.json` — a silent module-identity violation
-  when consumed from a 0.1.0 graph: values from the old module meet the
-  new runtime's strict lowering. The websocket port is **vendored here
-  with a mechanical migration** (`host/ports/websocket.ts`); webcrypto
-  and webrtc happen to be shape-compatible on the engine's paths.
-  Upstream migration of all three ports retires the vendored copy.
+  value}`). This USED TO be a problem: earlier sibling-checkout pins of
+  the three deltic ports predated the rename, so websocket was vendored
+  here with a mechanical migration while webcrypto/webrtc happened to be
+  shape-compatible on the engine's paths. Resolved (jsr-pins branch):
+  `jsr:@polymorph/{webcrypto,websocket,webrtc-datachannels}@0.1.0` all
+  publish against `@deltic/runtime@^0.1.0` — confirmed by reading each
+  package's source, including `websocket.ts`, which already imports
+  `ComponentException` (the exact migration the vendored copy was
+  performing by hand). All three now come straight from JSR; the
+  vendored `host/ports/websocket.ts` is retired (deno.json's import map
+  points at the JSR package instead).
 - **Browser bundling of the webrtc port** drags its lazy node backend
   (`node:*` statics from werift) into the bundle; `--external
   node-datachannel --external werift` keeps the lazy import lazy — the

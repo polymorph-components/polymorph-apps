@@ -36,7 +36,6 @@ jobs:
     # the scenarios themselves run in well under a minute.
     timeout-minutes: 60
     env:
-      IROH_CHECKOUT: ../../../polymorph-iroh
       # ABSOLUTE, and it must be: a relative PLAYWRIGHT_BROWSERS_PATH is
       # resolved against $HOME rather than the working directory, which
       # silently installs the browser somewhere the cache never sees.
@@ -52,8 +51,7 @@ jobs:
 
       - name: Check out pinned siblings
         # Before the cache restore, for the same reason as in pages.yml:
-        # rust-cache keys on the listed workspaces' lockfiles, and
-        # ../polymorph-iroh must exist to be keyed.
+        # rust-cache keys on the listed workspaces' lockfiles.
         run: SIBLINGS_ONLY=1 ./scripts/setup.sh
 
       - name: Cache cargo
@@ -64,7 +62,6 @@ jobs:
             spikes/demo/guest-app
             spikes/demo/guest-panel-s3
             spikes/demo/guest-panel-dropbox
-            ../polymorph-iroh
           cache-all-crates: true
           cache-bin: false
           key: ${{ hashFiles('scripts/setup.sh', '**/rust-toolchain.toml') }}

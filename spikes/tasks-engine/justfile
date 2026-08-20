@@ -1,10 +1,68 @@
 # Engine spike: automerge-DAG tasks engine over keyhive + subduction +
 # component-iroh (realtime) and an S3-compatible bucket (non-realtime).
 #
-# Needs a polymorph-iroh checkout (endpoint component + relay built);
 # MinIO is fetched once into .deps/ and run as a user process.
+#
+# ---------------------------------------------------------------------------
+# PINS (jsr-pins branch: replaces the IROH_CHECKOUT sibling-checkout
+# convention with two independently-versioned, recorded artifacts).
+#
+#   JSR endpoint package : jsr:@polymorph/iroh@0.1.0
+#     (published from polymorph-iroh @ f3d8990, "jsr: publish
+#     @polymorph/iroh"; endpoint component ships base64-embedded in the
+#     package and is extracted verbatim by `just fetch-endpoint-wasm` —
+#     see tools/fetch-endpoint-wasm.ts for the extraction path and
+#     integrity story.)
+#   iroh-relay binary    : 1.0.3
+#     (`cargo install --locked iroh-relay@1.0.3`; matches the .deps/iroh
+#     vendor checkout inside the SAME f3d8990 publish tree, upstream
+#     n0-computer/iroh @ f2eb930dda / tag v1.0.3 — the endpoint and the
+#     relay speak the same wire version by construction of that publish.)
+#
+# These two are recorded as a PAIR: bump one, re-derive the other from
+# whatever polymorph-iroh commit is published next, never drift them
+# independently.
+#
+# STATUS (updated 2026-08-19, see README.md "JSR pins" section): the
+# guest's vendored `polymorph:iroh` WIT
+# (guest/wit/deps/polymorph-iroh/) is now the published package's shape,
+# copied byte-for-byte from the f3d8990 publish tree — including the
+# 8-case `error` variant (closed, reset(u64), connect-failed, timed-out,
+# not-supported, in-use, invalid-argument, other) and the `close-info`
+# record. `compose`/`run`/`pair` DEFAULT to the JSR-extracted endpoint;
+# no sibling checkout is needed by any target here. `compose-checkout`
+# remains as a non-default escape hatch for local endpoint development.
+# ---------------------------------------------------------------------------
 
+# Only `compose-checkout` reads this; nothing default-path does.
 IROH_CHECKOUT := env_var_or_default("IROH_CHECKOUT", "../../../polymorph-iroh")
+IROH_RELAY_VERSION := "1.0.3"
+JSR_IROH_VERSION := "0.1.0"
+
+# Pinned relay binary, installed once into a repo-local bin dir (no
+# sibling checkout needed). `--locked` honors iroh-relay's own Cargo.lock
+# at that release, so the resolved dependency graph matches what n0
+# shipped for 1.0.3.
+relay-bin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .deps/relay
+    if [ ! -x .deps/relay/bin/iroh-relay ] || \
+       [ "$(.deps/relay/bin/iroh-relay --version 2>/dev/null | awk '{print $2}')" != "{{IROH_RELAY_VERSION}}" ]; then
+        echo "installing iroh-relay {{IROH_RELAY_VERSION}} into .deps/relay ..."
+        cargo install --locked --root .deps/relay --features server iroh-relay@{{IROH_RELAY_VERSION}}
+    fi
+
+# Materialize iroh_endpoint.wasm from jsr:@polymorph/iroh@{{JSR_IROH_VERSION}}
+# (see tools/fetch-endpoint-wasm.ts). A dependency of the default
+# `compose`.
+fetch-endpoint-wasm:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p .deps
+    deno run --allow-read --allow-write --allow-net \
+        --lock=tools/deno.lock --frozen \
+        tools/fetch-endpoint-wasm.ts .deps/iroh_endpoint.wasm
 
 fetcher:
     cargo build --target wasm32-wasip2 --release -p spike-fetcher
@@ -16,7 +74,21 @@ guest:
 # egress is now three NAMED world imports the host wires per instance
 # (#7/#11), so a single generic fetch implementation would defeat the
 # point. The crate stays in-tree as a reference implementation.
-compose: guest
+#
+# DEFAULT: the endpoint comes from the JSR package. The guest's vendored
+# `polymorph:iroh` WIT is the published shape byte-for-byte, so no
+# sibling checkout is needed by any target here.
+compose: guest fetch-endpoint-wasm
+    wac plug target/wasm32-wasip2/release/spike_guest.wasm \
+        --plug .deps/iroh_endpoint.wasm \
+        -o target/composed.wasm
+
+# NON-DEFAULT escape hatch for local endpoint development: compose
+# against a sibling polymorph-iroh checkout instead of the published
+# package. Only meaningful while that checkout's `polymorph:iroh` WIT
+# matches the vendored one — a checkout behind (or ahead of) the publish
+# fails `wac plug` on the type mismatch, which is the correct outcome.
+compose-checkout: guest
     wac plug target/wasm32-wasip2/release/spike_guest.wasm \
         --plug {{IROH_CHECKOUT}}/target/wasm32-wasip2/release/iroh_endpoint.wasm \
         -o target/composed.wasm
@@ -31,11 +103,11 @@ minio:
         chmod +x .deps/minio
     fi
 
-run: compose minio
+run: compose minio relay-bin
     #!/usr/bin/env bash
     set -euo pipefail
-    relay="{{IROH_CHECKOUT}}/.deps/iroh/target/release/iroh-relay"
-    [ -x "$relay" ] || { echo "iroh-relay not built at $relay" >&2; exit 1; }
+    relay=".deps/relay/bin/iroh-relay"
+    [ -x "$relay" ] || { echo "iroh-relay not installed at $relay (run: just relay-bin)" >&2; exit 1; }
     "$relay" --dev &
     relay_pid=$!
     data="$(mktemp -d /tmp/pm-tasks-minio.XXXXXX)"
@@ -59,11 +131,11 @@ check:
 
 # The PAIRING.md §6 acts: device pairing + the user-system partition.
 # Relay only — no bucket is involved, so no MinIO.
-pair: compose
+pair: compose relay-bin
     #!/usr/bin/env bash
     set -euo pipefail
-    relay="{{IROH_CHECKOUT}}/.deps/iroh/target/release/iroh-relay"
-    [ -x "$relay" ] || { echo "iroh-relay not built at $relay" >&2; exit 1; }
+    relay=".deps/relay/bin/iroh-relay"
+    [ -x "$relay" ] || { echo "iroh-relay not installed at $relay (run: just relay-bin)" >&2; exit 1; }
     "$relay" --dev &
     relay_pid=$!
     trap 'kill $relay_pid 2>/dev/null || true' EXIT

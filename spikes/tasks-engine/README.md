@@ -419,14 +419,103 @@ mistaken for a defect:
 
 ## Running
 
-Needs a `polymorph-iroh` checkout with the endpoint component and relay
-built (see that repo); override with `IROH_CHECKOUT=…`. MinIO is
-fetched once into `.deps/` and run as a user process.
+No sibling checkout is needed. The endpoint component comes from
+`jsr:@polymorph/iroh` and the relay from a pinned `cargo install`, both
+materialized into `.deps/` on demand (see "JSR pins" below); MinIO is
+fetched the same way and run as a user process.
 
 ```
-just run    # build guest+fetcher, compose, run vs local relay + MinIO
+just run    # compose vs the JSR endpoint, run against local relay + MinIO
+just pair   # the PAIRING.md §6 acts (relay only, no bucket)
 just check  # clippy, all three crates
 ```
+
+`IROH_CHECKOUT` is read by `compose-checkout` alone — a non-default
+target for working against a local endpoint build.
+
+## JSR pins (jsr-pins branch)
+
+The `IROH_CHECKOUT` sibling-checkout convention above is being replaced
+by two independently-versioned, recorded artifacts (justfile header
+block is the source of truth; this is the narrative account):
+
+- **Endpoint wasm** from `jsr:@polymorph/iroh@0.1.0` — published from
+  `polymorph-iroh @ f3d8990`. `just fetch-endpoint-wasm` extracts the
+  component bytes the package embeds (`tools/fetch-endpoint-wasm.ts`
+  calls the package's own `loadArtifacts()`, which is also how the
+  package's browser consumers reach the wasm — no ad-hoc parsing of
+  `endpoint_component.ts`'s base64). Integrity rides `tools/deno.lock`
+  (`--frozen`); JSR's own content-addressing is the checksum.
+- **iroh-relay** pinned at `1.0.3` via
+  `cargo install --locked iroh-relay@1.0.3` into `.deps/relay/` (`just
+  relay-bin`) — the version vendored at `.deps/iroh` inside that same
+  `f3d8990` publish tree (upstream `n0-computer/iroh` tag `v1.0.3`, rev
+  `f2eb930dda`), so endpoint and relay are known to speak the same wire
+  version.
+
+**Recon finding worth flagging**: the local dev checkout
+(`/home/lmartin/p/polymorph/polymorph-iroh` at `1808ccc`, PR #41) is
+NOT ahead of the publish commit — `git merge-base f3d8990 HEAD` on that
+checkout returns `1808ccc` itself, i.e. `1808ccc` is an *ancestor* of
+`f3d8990`. The publish commit is 63 commits further along (u62-faithful
+close codes, per-path datagram ceiling, event-driven wakeups, JSR-deltic
+convergence for the ports, …). So JSR 0.1.0 is authoritative/newer, not
+a snapshot behind this spike.
+
+**Rebase done (2026-08-19).** Those 63 commits included a
+`polymorph:iroh/types` change this spike had not followed — `variant
+error` grew from 5 cases to 8 (`closed, reset(u64), connect-failed,
+timed-out, not-supported, in-use, invalid-argument, other`), plus a
+`close-info` record for QUIC application close codes and reasons.
+`guest/wit/deps/polymorph-iroh/` is now the published tree copied
+byte-for-byte from `f3d8990`, so `wac plug` composes and **no
+tasks-engine gate needs the sibling checkout any more**:
+`compose`/`run`/`pair` default to the JSR-extracted endpoint (sha256
+`4baea7df…`, 2045830 bytes) against relay `1.0.3`. `compose-checkout`
+survives as a clearly-marked non-default escape hatch for local endpoint
+development.
+
+What the rebase cost in guest code was not the error variant — nothing
+matches on it structurally; errors are formatted — but the **close
+semantics**, and it was worth having:
+
+- The endpoint is now faithful about closing a connection when the
+  resource drops. That turned a latent bug into a deterministic failure:
+  the adder queued `ENROLL`, returned, and dropped the connection, and a
+  QUIC connection close **discards stream bytes the peer has not read
+  yet**. Every enrollment act failed with the joiner waiting on a closed
+  stream. Writing is not delivery: the adder now drains the write pump,
+  finishes the stream, and stays open until the JOINER hangs up — the
+  peer's departure is the completion signal.
+- The refusal path was rebuilt on the same principle and got simpler.
+  It writes `REFUSED` directly on the send half (so the ordering is
+  observable), finishes, and then closes the connection with a distinct
+  application code and reason. The dialer reads the in-band frame if it
+  arrived and otherwise reads the reason off `wait-closed` — two
+  independent channels for one fact, which retires the truncated-refusal
+  race the previous hold-open workaround papered over.
+- Audited and unchanged: the one-in-flight-`read`/`write` rules
+  (`error.in-use`) are satisfied by construction — each stream half is
+  owned by exactly one pump task that awaits each operation — and
+  `finish` is only ever called with no write outstanding.
+
+Two flakes surfaced under the faster delivery and were fixed, one engine
+and one test:
+
+- **engine**: a local write re-baselined the announcement diff wholesale,
+  so if the other device's half of a name collision landed while the
+  write was in flight, the repair was absorbed silently and the user was
+  never told. The repair set is now carried across a local re-baseline —
+  whether a mark collides is a property of the document, not of this
+  device's write.
+- **test**: `act_adoption` drained announcements twice and asserted
+  against each drain separately, which assumed adoption and the first
+  remote mark arrive in different rounds. They now often arrive in one
+  apply. The act accumulates across the act instead.
+
+`relay-bin`'s pin is independent of the endpoint's WIT (the relay binary
+doesn't touch it) and is the default for every target that needs a relay;
+see the justfile.
 
 Pins: keyhive `efe6ccf3`, subduction `2401102`, automerge 0.11.0,
 wasmtime 47, wit-bindgen 0.59 (`async`, `async-spawn`,

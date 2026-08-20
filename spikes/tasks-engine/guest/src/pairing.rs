@@ -45,7 +45,28 @@ pub(crate) const PAIR_ALPN: &[u8] = b"engine-spike/pair/0";
 /// Code payload version (PAIRING.md §1).
 const CODE_VERSION: u8 = 0x01;
 
-/// Offer expiry (PAIRING.md §1).
+/// QUIC application close codes this protocol uses.
+///
+/// The endpoint carries application close codes and reasons faithfully
+/// (u62, plus the peer's reason string, read through
+/// `connection.wait-closed`), so a refusal can travel as a property of
+/// the CONNECTION as well as an in-band message. That redundancy is the
+/// point: the in-band `REFUSED` remains the contract's mechanism
+/// (PAIRING.md §2), and the close carries the same fact on a channel that
+/// cannot be truncated by the frame racing the teardown.
+const PAIR_CLOSE_ALREADY_CLAIMED: u64 = 1;
+
+/// The words the visor shows when a code was already claimed.
+///
+/// OURS, always. The peer that says so is whatever endpoint the scanned
+/// code named — an attacker who controls the code controls the peer, so
+/// any string it sends is attacker text. The FACT is identified by the
+/// close code (or by the `Refused` variant itself); the wording is
+/// substituted here. The peer's own bytes are diagnostics at most, and
+/// never become state the visor renders as its own voice.
+const REFUSED_ALREADY_CLAIMED: &str =
+    "this pairing code was already claimed by another device";
+
 /// Offer expiry (PAIRING.md §1). Overridable ONLY so the headless
 /// harness can exercise the expiry path without a two-minute wait; the
 /// contract value is what ships.
@@ -271,6 +292,26 @@ fn set_add(generation: u64, state: PairAddState) {
 
 // --- framing helpers ---
 
+/// Run the write pump and report when it has finished flushing.
+///
+/// The returned receiver fires after the channel drained and the stream
+/// was finished. Callers need this before dropping the connection:
+/// dropping it implies `close(0, "")`, and a QUIC connection close
+/// DISCARDS pending stream data — so a message queued and not yet
+/// written is simply lost. The last message a side sends before it
+/// returns must therefore be flushed explicitly, not merely queued.
+fn spawn_writer(
+    out_rx: async_channel::Receiver<Vec<u8>>,
+    send: crate::polymorph::iroh::endpoint::SendStream,
+) -> async_channel::Receiver<()> {
+    let (done_tx, done_rx) = async_channel::bounded(1);
+    wit_bindgen::spawn_local(async move {
+        iroh_writer(out_rx, send).await;
+        let _ = done_tx.send(()).await;
+    });
+    done_rx
+}
+
 /// Forward wire frames into the session's event channel, and report the
 /// stream's end rather than letting the session wait on a dead peer.
 fn pump_frames(in_rx: async_channel::Receiver<Vec<u8>>, ev_tx: async_channel::Sender<Ev>) {
@@ -282,6 +323,37 @@ fn pump_frames(in_rx: async_channel::Receiver<Vec<u8>>, ev_tx: async_channel::Se
         }
         let _ = ev_tx.send(Ev::Closed).await;
     });
+}
+
+/// The peer's application close reason, when it sent one.
+///
+/// `wait-closed` resolves with the peer's `close-info` only if its
+/// application close actually arrived; a connection that ended any other
+/// way has none, and the endpoint never invents one — so `None` here
+/// means "no stated reason", not "no close".
+async fn close_reason(conn: &Connection) -> Option<String> {
+    let info = conn.wait_closed().await?;
+    if info.code == PAIR_CLOSE_ALREADY_CLAIMED {
+        // The peer's reason is logged, never returned: what the user is
+        // shown comes from the CODE.
+        if !info.reason.is_empty() {
+            eprintln!(
+                "[pair] peer close reason (diagnostic, not shown): {:?}",
+                info.reason
+            );
+        }
+        return Some(REFUSED_ALREADY_CLAIMED.to_string());
+    }
+    None
+}
+
+/// Length-prefix one frame. The wire framing has exactly one definition;
+/// `iroh_writer` and the direct-write refusal path both go through it.
+pub(crate) fn frame_bytes(payload: &[u8]) -> Vec<u8> {
+    let mut framed = Vec::with_capacity(4 + payload.len());
+    framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    framed.extend_from_slice(payload);
+    framed
 }
 
 async fn send_msg(tx: &async_channel::Sender<Vec<u8>>, msg: &PairMsg) -> Result<(), String> {
@@ -310,6 +382,7 @@ fn unexpected(got: &PairMsg, want: &str) -> String {
 async fn next_frame(
     ev_rx: &async_channel::Receiver<Ev>,
     early_confirm: &mut Option<String>,
+    want: &str,
 ) -> Result<PairMsg, String> {
     loop {
         match ev_rx
@@ -320,7 +393,9 @@ async fn next_frame(
             Ev::Frame(f) => return decode(&f),
             Ev::Confirm(name) => *early_confirm = Some(name),
             Ev::Abort => return Err("aborted".to_string()),
-            Ev::Closed => return Err("the peer closed the pairing stream".to_string()),
+            Ev::Closed => {
+                return Err(format!("the peer closed the pairing stream awaiting {want}"))
+            }
         }
     }
 }
@@ -439,11 +514,6 @@ async fn handle_pair_conn(conn: Connection, claim: Option<Claim>, my_ep: [u8; 32
         }
         return;
     };
-    let (out_tx, out_rx) = async_channel::unbounded::<Vec<u8>>();
-    let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
-    wit_bindgen::spawn_local(iroh_writer(out_rx, send));
-    wit_bindgen::spawn_local(iroh_reader(in_tx, recv, Vec::new()));
-
     match claim {
         Some(Claim {
             generation,
@@ -451,6 +521,10 @@ async fn handle_pair_conn(conn: Connection, claim: Option<Claim>, my_ep: [u8; 32
             ev_rx: Some(ev_rx),
             expires_ms,
         }) => {
+            let (out_tx, out_rx) = async_channel::unbounded::<Vec<u8>>();
+            let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
+            wit_bindgen::spawn_local(iroh_writer(out_rx, send));
+            wit_bindgen::spawn_local(iroh_reader(in_tx, recv, Vec::new()));
             pump_frames(in_rx, ev_tx);
             let token = match with_state(|s| s.pair.token) {
                 Ok(Some(t)) => t,
@@ -470,13 +544,21 @@ async fn handle_pair_conn(conn: Connection, claim: Option<Claim>, my_ep: [u8; 32
             );
         }
         None => {
-            let _ = send_msg(
-                &out_tx,
-                &PairMsg::Refused(
-                    "this pairing code was already claimed by another device".into(),
-                ),
-            )
-            .await;
+            // Write the refusal DIRECTLY rather than through the writer
+            // pump: owning the send half here makes the ordering
+            // observable, so the frame is known to be accepted and the
+            // stream finished BEFORE the connection close. A QUIC
+            // connection close discards pending stream data, so
+            // "send then close" without this ordering is exactly the
+            // truncated-refusal race — a refusal indistinguishable from
+            // a timeout, which is the ambiguity the distinct error
+            // exists to remove.
+            let refusal = PairMsg::Refused(REFUSED_ALREADY_CLAIMED.into());
+            if let Ok(bytes) = bincode::serialize(&refusal) {
+                if send.write(frame_bytes(&bytes)).await.is_ok() {
+                    let _ = send.finish();
+                }
+            }
             let generation =
                 with_state(|s| s.pair.join.as_ref().map(|j| j.generation)).ok().flatten();
             if let Some(generation) = generation {
@@ -492,12 +574,9 @@ async fn handle_pair_conn(conn: Connection, claim: Option<Claim>, my_ep: [u8; 32
                     ),
                 );
             }
-            // Hold the connection open until the refused dialer hangs up.
-            // Closing it ourselves races the refusal off the wire, and a
-            // truncated refusal is indistinguishable from a timeout —
-            // which is precisely the ambiguity the distinct error exists
-            // to remove. The dialer closes as soon as it reads it.
-            conn.wait_closed().await;
+            // The same fact, as a connection close the dialer can read
+            // even if it never saw the frame.
+            conn.close(PAIR_CLOSE_ALREADY_CLAIMED, REFUSED_ALREADY_CLAIMED);
         }
     }
 }
@@ -517,7 +596,7 @@ async fn join_session(
     let mut early_confirm: Option<String> = None;
 
     // 1. CLAIM.
-    let (their_token, commit) = match next_frame(&ev_rx, &mut early_confirm).await? {
+    let (their_token, commit) = match next_frame(&ev_rx, &mut early_confirm, "CLAIM").await? {
         PairMsg::Claim { token, commit } => (token, commit),
         other => return Err(unexpected(&other, "CLAIM")),
     };
@@ -543,7 +622,7 @@ async fn join_session(
 
     // 3. REVEAL — verify the adder was bound to this nonce before it
     // could see nonce_j.
-    let nonce_a = match next_frame(&ev_rx, &mut early_confirm).await? {
+    let nonce_a = match next_frame(&ev_rx, &mut early_confirm, "REVEAL").await? {
         PairMsg::Reveal { nonce_a } => nonce_a,
         other => return Err(unexpected(&other, "REVEAL")),
     };
@@ -563,7 +642,7 @@ async fn join_session(
 
     // 6. ENROLL.
     let (user_group_id, group_card, partition_id) =
-        match next_frame(&ev_rx, &mut early_confirm).await? {
+        match next_frame(&ev_rx, &mut early_confirm, "ENROLL").await? {
             PairMsg::Enroll {
                 user_group_id,
                 group_card,
@@ -670,7 +749,7 @@ async fn add_session(
         .map_err(|e| format!("pairing open-bi: {e:?}"))?;
     let (out_tx, out_rx) = async_channel::unbounded::<Vec<u8>>();
     let (in_tx, in_rx) = async_channel::unbounded::<Vec<u8>>();
-    wit_bindgen::spawn_local(iroh_writer(out_rx, send));
+    let flushed = spawn_writer(out_rx, send);
     wit_bindgen::spawn_local(iroh_reader(in_tx, recv, Vec::new()));
     pump_frames(in_rx, ev_tx.clone());
 
@@ -682,13 +761,25 @@ async fn add_session(
 
     // 2. ACCEPT.
     let mut early_confirm: Option<String> = None;
-    let (nonce_j, contact_card) = match next_frame(&ev_rx, &mut early_confirm).await? {
-        PairMsg::Accept {
+    let (nonce_j, contact_card) = match next_frame(&ev_rx, &mut early_confirm, "ACCEPT").await {
+        Ok(PairMsg::Accept {
             nonce_j,
             contact_card,
-        } => (nonce_j, contact_card),
-        PairMsg::Refused(why) => return Err(why),
-        other => return Err(unexpected(&other, "ACCEPT")),
+        }) => (nonce_j, contact_card),
+        // Same rule as the close path: the variant is the fact, the
+        // payload is the peer's text and is not shown.
+        Ok(PairMsg::Refused(why)) => {
+            if !why.is_empty() {
+                eprintln!("[pair] peer REFUSED text (diagnostic, not shown): {why:?}");
+            }
+            return Err(REFUSED_ALREADY_CLAIMED.to_string());
+        }
+        Ok(other) => return Err(unexpected(&other, "ACCEPT")),
+        // The stream ended without an answer. The peer's application
+        // close carries WHY when it set one, so a refusal whose in-band
+        // frame was missed still reaches the user as the distinct error
+        // rather than as an unexplained timeout.
+        Err(e) => return Err(close_reason(&conn).await.unwrap_or(e)),
     };
 
     // 3. REVEAL, then the string both users will read out.
@@ -758,8 +849,46 @@ async fn add_session(
         },
     )
     .await?;
+
+    // ENROLL is the last thing this side says, and returning drops the
+    // connection. Two separate hazards, both of which have to be closed:
+    //
+    // 1. a message merely QUEUED is lost when the connection closes, so
+    //    the write pump is drained and the stream finished first;
+    // 2. writing is still not delivery. A QUIC connection close discards
+    //    stream bytes the peer has not read yet, so closing promptly
+    //    after the FIN can take the payload with it. The endpoint is
+    //    faithful about closing when the resource drops, which turns
+    //    that into a reliable loss rather than a rare one.
+    //
+    // So this side stays open until the JOINER hangs up, which it does
+    // once it has ingested the enrollment. The peer's departure is the
+    // completion signal; there is nothing to guess at.
+    out_tx.close();
+    let _ = flushed.recv().await;
     set_add(generation, PairAddState::Enrolled);
+    linger_until_peer_closes(&conn).await;
     Ok(())
+}
+
+/// Wait for the peer to hang up, but do not wait forever.
+///
+/// This is task-leak hygiene, not a protocol timeout: the state is
+/// already `Enrolled` and latched before this runs, so overshooting or
+/// giving up early is invisible to the visor either way. What it prevents
+/// is a joiner that vanishes leaving this task alive for the life of the
+/// instance. The bound is wall-clock-checked between yields rather than
+/// timer-driven — the guest holds no clock capability in this world.
+async fn linger_until_peer_closes(conn: &Connection) {
+    const LINGER_MS: u64 = 30_000;
+    let deadline = now_ms() + LINGER_MS;
+    let closed = Box::pin(conn.wait_closed());
+    let budget = Box::pin(async move {
+        while now_ms() < deadline {
+            crate::breathe().await;
+        }
+    });
+    let _ = futures::future::select(closed, budget).await;
 }
 
 pub(crate) fn add_status() -> Result<PairAddState, String> {

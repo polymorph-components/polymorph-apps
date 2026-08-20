@@ -487,31 +487,51 @@ async fn act_adoption(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()>
     }
     ok("joiner adopted the profile (name + hue)", t);
 
-    let p_events = p.call_us_events(acc).await?.map_err(|e| format_err!("{e}"))?;
-    if !p_events.iter().any(|e| matches!(e, UsEvent::ProfileChanged)) {
-        bail!(
-            "adoption was not announced to the joiner: {:?}",
-            describe_events(&p_events)
-        );
-    }
+    // Drains are destructive, and adoption plus the mark can land in the
+    // SAME apply — so the announcements are ACCUMULATED across the act
+    // rather than asserted against whichever drain happens to catch them.
+    // (Splitting them was a latent assumption that the two arrive in
+    // separate rounds; faster delivery merges them.)
+    let mut announced: Vec<UsEvent> = Vec::new();
+    announced.extend(p.call_us_events(acc).await?.map_err(|e| format_err!("{e}"))?);
+
     let devices = p.call_us_devices_list(acc).await?.map_err(|e| format_err!("{e}"))?;
     if !devices.iter().any(|d| d.name == "alice phone" && !d.revoked) {
         bail!("the joiner does not see itself in us-devices-list");
     }
-    wait_marks(acc, p, "mark written on the laptop reaches the phone", |m| {
-        m.iter().any(|x| x.petname == "Recipes")
-    })
-    .await?;
-    let p_events = p.call_us_events(acc).await?.map_err(|e| format_err!("{e}"))?;
-    if !p_events
+
+    let t = Instant::now();
+    let mut seen_mark = false;
+    for _ in 0..POLLS {
+        let marks = p.call_us_marks_list(acc).await?.map_err(|e| format_err!("{e}"))?;
+        announced.extend(p.call_us_events(acc).await?.map_err(|e| format_err!("{e}"))?);
+        if marks.iter().any(|m| m.petname == "Recipes") {
+            seen_mark = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    if !seen_mark {
+        bail!("the mark written on the laptop never reached the phone");
+    }
+    ok("mark written on the laptop reaches the phone", t);
+
+    if !announced.iter().any(|e| matches!(e, UsEvent::ProfileChanged)) {
+        bail!(
+            "adoption was not announced to the joiner: {:?}",
+            describe_events(&announced)
+        );
+    }
+    if !announced
         .iter()
         .any(|e| matches!(e, UsEvent::MarkAdded(prov) if prov == "https://recipes.example/"))
     {
         bail!(
             "the remote mark was not announced: {:?}",
-            describe_events(&p_events)
+            describe_events(&announced)
         );
     }
+    println!("            joiner announcements: {:?}", describe_events(&announced));
     Ok(())
 }
 
