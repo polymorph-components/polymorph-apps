@@ -36,6 +36,21 @@ Three layers, one trust story:
   (`#visor-strip` and friends) are fixed — position is a trust anchor.
   `visor.css` carries the visor-owned styles both pages link.
 
+  Device pairing lives here too (`pairing.ts`, PAIRING.md §5): the join
+  flow's QR and 79-char code, the SAS screens, the add flow's heavy
+  ceremony (statement of consequence, the drawer host's own `ARM_MS`
+  arming delay, a device name the user types and nothing ever
+  prefills), and the user-system machinery around them — the
+  `us-events` drain that makes remote changes announced-never-silent,
+  and the localStorage boot cache that reconciles against the partition
+  and announces the diff. It is here rather than in a consumer because
+  that is what the invariant claims: a pairing code or a SAS renders
+  only in visor pixels, and `renderPairingCode`/`renderSas` are defined
+  exactly once, in this file. What a backend must provide is
+  `pairing-driver.ts` — a contract the UI states and the demo satisfies
+  twice (a mock, an engine adapter); the announcement sink and the
+  storage keys are the consumer's, as everywhere else here.
+
 Consumers: `spikes/demo` (full flows: petnames, credentials, storage
 dialog, pairing) and `spikes/todomvc` (consent/kill tenants, frame
 backend by default). Source-level invariants for all of it are

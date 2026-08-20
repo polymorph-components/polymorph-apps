@@ -1,14 +1,19 @@
 // Standalone host page for the pairing visor (Track B gate surface):
 // two mock "devices" sharing one in-page network (host/pairing-mock.ts),
-// each driving the join/add visor (host/pairing-visor.ts). This is
+// each driving the visor's pairing UI (../../../visor/ui/pairing.ts).
+// This is
 // deliberately NOT wired into host/demo.ts's three-pane engine
 // choreography — that demo requires the real engine composite (Track A,
 // in progress in parallel) and sibling wasm/relay/bucket infra neither
 // available nor relevant to developing/gating the visor's pairing UI.
 // Swapping the mock for the real composite is an integration step that
 // touches this file's driver construction only (see pairing-mock.ts's
-// header comment) — host/pairing-visor.ts does not know the
-// difference.
+// header comment) — visor/ui/pairing.ts does not know the difference.
+//
+// It is also this page that supplies the visor UI's two consumer-owned
+// things: the ANNOUNCEMENT SINKS (per-pane status lines here, because
+// this page has no strip; a visor-integrated consumer passes
+// `visorAnnounceSink(visor)` instead) and the boot-cache STORAGE KEYS.
 import { createMockDriver, MockPairingNetwork } from "./pairing-mock.ts";
 import {
   loadBootCache,
@@ -17,7 +22,8 @@ import {
   paletteAngle,
   reconcileFromDriver,
   statusWriter,
-} from "./pairing-visor.ts";
+  usCacheKeys,
+} from "../../../visor/ui/pairing.ts";
 
 const net = new MockPairingNetwork();
 
@@ -39,7 +45,9 @@ const joinStatus = statusWriter(joinStatusEl, "join");
 
 // Boot-cache reconcile for the pane that already has a partition
 // (§5: render from cache, reconcile after driver init, announce diffs).
-await reconcileFromDriver(alice, addStatus);
+// The keys are this page's, per visor/ui convention — `pm-demo-us-*`.
+const CACHE_KEYS = usCacheKeys("pm-demo");
+await reconcileFromDriver(alice, CACHE_KEYS, addStatus);
 
 const addPaneEl = document.getElementById("add-pane")!;
 const joinPaneEl = document.getElementById("join-pane")!;
@@ -48,8 +56,8 @@ const addHandle = mountAddPane(addPaneEl, alice, addStatus);
 const joinHandle = mountJoinPane(joinPaneEl, tablet, joinStatus, (profile) => {
   // The hue-adoption beat (§5): repaint SOMETHING visibly on the join
   // pane so Playwright (and a human) can see the synced colour land.
-  // The visor, not pairing-visor.ts, owns painting its own strip/pane —
-  // pairing-visor.ts only reports the value (see its mountJoinPane doc
+  // The consuming page, not visor/ui/pairing.ts, owns painting its own
+  // pane — pairing.ts only reports the value (see its mountJoinPane doc
   // comment), consistent with the anchor-colour discipline in
   // host/demo.ts (applyVisorHue is host-page code, not shared code).
   // `profile.hue` is a palette INDEX; `paletteAngle` is the one place

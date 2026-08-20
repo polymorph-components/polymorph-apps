@@ -1,13 +1,25 @@
-// Visor-owned pairing + user-system UI (Track B; PAIRING.md §5, #22
+// The visor's device-pairing + user-system UI (PAIRING.md §5, #22
 // rulings). This is THE module that may render a pairing code or a SAS
-// — scripts/check-invariants.sh greps for that property, so a
-// refactor that moves this rendering elsewhere must move the grep
-// marker too (documented at the marker, below).
+// — spikes/demo/scripts/check-invariants.sh (f) greps for that
+// property, so a refactor that moves this rendering elsewhere must move
+// the grep marker too (documented at the marker, below).
 //
-// Everything in this file is visor pixels: no component frame imports
-// it, and it never crosses the frame seam (same discipline as the
-// petname/identity code in host/demo.ts — see check-invariants.sh (a)
-// and (e), which this file's new check (f) extends).
+// It lives in visor/ui/ because that is what the invariant CLAIMS: "a
+// pairing code or SAS renders only in visor pixels" should be a fact
+// about the framework's own trusted-UI layer, not a fact about which
+// file of a demo happens to hold the code today. Nothing here crosses
+// the frame seam and no component frame can reach it, by construction
+// (same discipline as the identity/petname code next door in visor.ts —
+// see check-invariants.sh (a) and (e), which this file's check (f)
+// extends).
+//
+// WHAT IS NOT HERE: any backend. The UI is written against
+// `./pairing-driver.ts`'s `PairingDriver` and nothing wider; the demo
+// supplies either a mock (spikes/demo/host/pairing-mock.ts) or an
+// engine adapter (spikes/demo/host/pairing-engine.ts). Nor does it own
+// any pane's own chrome: a consumer passes in the container, the
+// announcement sink, and the storage keys, exactly as the rest of
+// visor/ui/ takes its consumer's keys.
 //
 // #22 rulings this file must keep, restated so a future edit here has
 // them to hand:
@@ -18,39 +30,37 @@
 //     the visor's voice because the user typed it — never prefilled from
 //     a string the joiner or the peer sent.
 //   - ceremony weight classes: the ADD ceremony is heavy (consequential
-//     grant: the new device becomes admin of everything) and reuses the
-//     arming-delay mechanism from host/demo.ts's credential drawer. The
-//     JOIN ceremony's local confirm is light (nothing secret is typed;
-//     the worst mis-tap outcome is a cancelled join) and must stay
-//     light — no arming tax on it.
+//     grant: the new device becomes admin of everything) and pays the
+//     drawer host's arming delay (`ARM_MS`, imported from visor.ts —
+//     ONE arming duration in the framework, not a second one users
+//     would have to learn). The JOIN ceremony's local confirm is light
+//     (nothing secret is typed; the worst mis-tap outcome is a
+//     cancelled join) and must stay light — no arming tax on it.
 //   - status/rule-line priority over ambient telemetry: announcements
-//     use the same STICKY pattern as host/demo.ts's beat statuses.
+//     are STICKY for a window (see `AnnounceSink`), so a consequential
+//     one-shot is not erased by the next ambient tick.
 
 import { QrCode } from "./vendor/qrcodegen.ts";
-import type {
-  PairingDriver,
-  UsDevice,
-  UsEvent,
-  UsMark,
-  UsProfile,
-} from "./pairing-mock.ts";
+import { ARM_MS, VISOR_HUES } from "./visor.ts";
+import type { Visor } from "./visor.ts";
+import type { PairingDriver, UsEvent, UsMark, UsProfile } from "./pairing-driver.ts";
 
 // --- the palette: index -> OKLCH angle (PAIRING.md §4) ---------------------
 //
 // `us-profile.hue` / `us-mark.hue` are PALETTE INDICES (u16, 0-9), not
 // raw angles — the engine only ever compares/stores indices, and the
-// angle is purely a visor rendering choice. This mirrors host/demo.ts's
-// VISOR_HUES array exactly (host/demo.ts:112 — read-only reference,
-// never imported: that file's array is the pre-partition, device-local
-// palette this migration is retiring, and the two must simply agree on
-// values, not share code).
-const PALETTE: readonly number[] = [265, 210, 175, 140, 95, 60, 35, 10, 330, 300];
+// angle is purely a visor rendering choice. The table is the visor's
+// own `VISOR_HUES` (visor.ts:46): one palette in the framework, so a
+// hue that arrives from the partition and a hue rolled locally cannot
+// disagree about what index 3 looks like. (This file used to carry a
+// duplicate array that merely had to AGREE with it; agreement by
+// import is cheaper to keep true.)
 
 /** Index -> displayable OKLCH angle. Out-of-range indices (a palette
  * bigger than this visor build knows about) fall back to the first
  * entry rather than producing an invalid colour. */
 export function paletteAngle(index: number): number {
-  return PALETTE[index] ?? PALETTE[0];
+  return VISOR_HUES[index] ?? VISOR_HUES[0];
 }
 
 // --- THE GREP MARKER (invariant (f), scripts/check-invariants.sh) ---------
@@ -58,8 +68,9 @@ export function paletteAngle(index: number): number {
 // Both a pairing CODE and a SAS are rendered ONLY through the two
 // functions below. The invariant script asserts that the literal
 // substrings "renderPairingCode(" and "renderSas(" appear ONLY in this
-// file (never in ../../../visor/frame/frame.ts, ../../../visor/frame/frame-backend.ts,
-// ../../../visor/frame/frame.html, or any guest-*/**). That is a stronger, cheaper property than trying
+// file (never in the frame seam — visor/frame/frame.ts,
+// frame-backend.ts, frame.html — nor in any guest-*/**, nor in any
+// other visor/ui/*.ts or demo host file). That is a stronger, cheaper property than trying
 // to grep the word "SAS" itself (which would also fire on comments
 // elsewhere): it pins the RENDERING CALL SITE, and a component frame
 // has no way to reach a host-side function call at all, so the
@@ -99,6 +110,7 @@ function ensureStyles() {
     .pm-qr { image-rendering: pixelated; border: 1px solid #999; }
     .pm-status { min-height: 1.4em; font-weight: 600; }
     .pm-status.pm-consequential { color: #7a3b00; }
+    .pm-waiting { padding: .4em 0; }
     .pm-consequence { background: #fff3cd; border: 1px solid #e0b23c;
       border-radius: 4px; padding: .6em; margin: .5em 0; }
     .pm-devices { list-style: none; padding: 0; margin: .3em 0; }
@@ -114,7 +126,7 @@ function ensureStyles() {
 // --- QR rendering (data-URL, per §5) ---------------------------------------
 
 /** Render `text` as a QR data-URL. Vendored self-contained encoder (see
- * host/vendor/qrcodegen.ts) — no new dependency for one image. */
+ * ./vendor/qrcodegen.ts) — no new dependency for one image. */
 function qrDataUrl(text: string, scale = 4): string {
   const qr = QrCode.encodeText(text, QrCode.Ecc.MEDIUM);
   const size = qr.size;
@@ -134,23 +146,62 @@ function qrDataUrl(text: string, scale = 4): string {
 
 // --- announcements: drained us-events, priority over ambient ticks --------
 
-/** Same shape as host/demo.ts's beat-status stickiness (STICKY_MS):
- * a consequential, one-shot announcement must not be erased by an
- * ambient tick within its window. Each pane gets its own sticky-until
- * clock, keyed by the status element's id. */
+/** THE ANNOUNCEMENT SINK. Everything this module has to say goes
+ * through one of these; nothing below writes to a status surface
+ * directly. `consequential` marks the announcements #22 says an
+ * ambient tick must not erase (a remotely-caused identity change, a
+ * device added or revoked, a repaired naming conflict, a failure the
+ * user must act on).
+ *
+ * A FUNCTION, not an object, on purpose: the two consumers are shaped
+ * differently and both have to be trivial to satisfy. The standalone
+ * pairing page owns a per-pane status line and passes `statusWriter(el,
+ * key)`; a visor-integrated consumer owns no such element and passes
+ * `visorAnnounceSink(visor)`, which speaks on the strip's rule line in
+ * the visor's own voice. Neither shape has to know about the other, and
+ * a test double is one arrow function. */
+export type AnnounceSink = (line: string, consequential?: boolean) => void;
+
+/** How long a consequential announcement holds the surface against
+ * ambient traffic (the revocation-note-erased-by-a-stats-tick lesson,
+ * #22). Same duration as host/demo.ts's beat statuses. */
 const STICKY_MS = 12_000;
 const stickyUntil = new Map<string, number>();
 
-export function statusWriter(el: HTMLElement, key: string): (line: string, sticky?: boolean) => void {
-  return (line, sticky = false) => {
-    if (!sticky && (stickyUntil.get(key) ?? 0) > performance.now()) return;
-    if (sticky) {
+/** A sink over a caller-owned status ELEMENT (the standalone pairing
+ * page's per-pane lines). `key` names the sticky clock — one per
+ * surface, so two panes on one page do not suppress each other. */
+export function statusWriter(el: HTMLElement, key: string): AnnounceSink {
+  return (line, consequential = false) => {
+    if (!consequential && (stickyUntil.get(key) ?? 0) > performance.now()) return;
+    if (consequential) {
       stickyUntil.set(key, performance.now() + STICKY_MS);
       el.classList.add("pm-consequential");
     } else {
       el.classList.remove("pm-consequential");
     }
     el.textContent = line;
+  };
+}
+
+/** A sink over THE STRIP: the visor-integrated consumer's half of the
+ * same interface. `visor.announce` re-renders the live context when the
+ * window elapses (never restores a saved string — see its doc comment),
+ * which is precisely the behaviour a pairing announcement wants: by the
+ * time a "device added" line expires, the thing the line was about may
+ * have moved on.
+ *
+ * The stickiness is enforced HERE rather than delegated, because
+ * `announce` has no notion of priority: an ambient line arriving inside
+ * a consequential line's window is DROPPED, not queued (it is ambient —
+ * the next tick will bring another). `key` defaults to the strip, which
+ * is a singleton per page. */
+export function visorAnnounceSink(visor: Visor, key = "visor-strip"): AnnounceSink {
+  return (line, consequential = false) => {
+    const now = performance.now();
+    if (!consequential && (stickyUntil.get(key) ?? 0) > now) return;
+    if (consequential) stickyUntil.set(key, now + STICKY_MS);
+    visor.announce(line, consequential ? STICKY_MS : undefined);
   };
 }
 
@@ -181,7 +232,7 @@ function describeEvent(ev: UsEvent): string {
  * consequential (sticky) — an ambient tick must not erase them. */
 export async function drainAnnouncements(
   driver: PairingDriver,
-  status: (line: string, sticky?: boolean) => void,
+  status: AnnounceSink,
 ): Promise<UsEvent[]> {
   const res = await driver.usEvents();
   if (!res.ok) return [];
@@ -191,9 +242,27 @@ export async function drainAnnouncements(
 
 // --- boot cache: hue / display-name / marks, demoted from source of truth --
 
-const HUE_CACHE_KEY = "pm-demo-us-hue-cache";
-const NAME_CACHE_KEY = "pm-demo-us-name-cache";
-const MARKS_CACHE_KEY = "pm-demo-us-marks-cache";
+/** The cache's three storage keys. The KEYS are the consumer's, as
+ * everywhere else in visor/ui (see visor.ts's `hueKey`/`identityKey`):
+ * two spikes sharing an origin must not share a boot cache, and the
+ * framework has no business naming a consumer's storage. Build them
+ * with `usCacheKeys(prefix)` unless you have a reason not to. */
+export interface UsCacheKeys {
+  hue: string;
+  name: string;
+  marks: string;
+}
+
+/** The conventional key set: `<prefix>-us-{hue,name,marks}-cache`
+ * (`usCacheKeys("pm-demo")` reproduces the keys this cache shipped
+ * with, so an existing page keeps its cache across this refactor). */
+export function usCacheKeys(prefix: string): UsCacheKeys {
+  return {
+    hue: `${prefix}-us-hue-cache`,
+    name: `${prefix}-us-name-cache`,
+    marks: `${prefix}-us-marks-cache`,
+  };
+}
 
 export interface BootCache {
   /** A palette INDEX (see `paletteAngle`/`PALETTE`, above), not an angle. */
@@ -206,11 +275,11 @@ export interface BootCache {
  * source of truth (the us-* partition is). Reconciliation happens once
  * the driver is up (see `reconcileFromDriver`); this only lets the visor
  * paint something before that completes instead of a blank frame. */
-export function loadBootCache(): BootCache {
+export function loadBootCache(keys: UsCacheKeys): BootCache {
   try {
-    const hueRaw = localStorage.getItem(HUE_CACHE_KEY);
-    const nameRaw = localStorage.getItem(NAME_CACHE_KEY);
-    const marksRaw = localStorage.getItem(MARKS_CACHE_KEY);
+    const hueRaw = localStorage.getItem(keys.hue);
+    const nameRaw = localStorage.getItem(keys.name);
+    const marksRaw = localStorage.getItem(keys.marks);
     return {
       hue: hueRaw !== null ? Number(hueRaw) : undefined,
       displayName: nameRaw ?? undefined,
@@ -221,11 +290,11 @@ export function loadBootCache(): BootCache {
   }
 }
 
-function saveBootCache(cache: BootCache) {
+function saveBootCache(keys: UsCacheKeys, cache: BootCache) {
   try {
-    if (cache.hue !== undefined) localStorage.setItem(HUE_CACHE_KEY, String(cache.hue));
-    if (cache.displayName !== undefined) localStorage.setItem(NAME_CACHE_KEY, cache.displayName);
-    if (cache.marks !== undefined) localStorage.setItem(MARKS_CACHE_KEY, JSON.stringify(cache.marks));
+    if (cache.hue !== undefined) localStorage.setItem(keys.hue, String(cache.hue));
+    if (cache.displayName !== undefined) localStorage.setItem(keys.name, cache.displayName);
+    if (cache.marks !== undefined) localStorage.setItem(keys.marks, JSON.stringify(cache.marks));
   } catch { /* nothing durable to write to */ }
 }
 
@@ -235,10 +304,11 @@ function saveBootCache(cache: BootCache) {
  * visor-hue code already carries), then refresh the cache to match. */
 export async function reconcileFromDriver(
   driver: PairingDriver,
-  status: (line: string, sticky?: boolean) => void,
+  keys: UsCacheKeys,
+  status: AnnounceSink,
   onProfile?: (profile: UsProfile) => void,
 ): Promise<void> {
-  const cache = loadBootCache();
+  const cache = loadBootCache(keys);
   const profileRes = await driver.usProfileGet();
   if (profileRes.ok) {
     const p = profileRes.value;
@@ -248,11 +318,11 @@ export async function reconcileFromDriver(
     if (cache.displayName !== undefined && cache.displayName !== p.displayName) {
       status(`your name is now "${p.displayName}" (synced from your account)`, true);
     }
-    saveBootCache({ hue: p.hue, displayName: p.displayName });
+    saveBootCache(keys, { hue: p.hue, displayName: p.displayName });
     onProfile?.(p);
   }
   const marksRes = await driver.usMarksList();
-  if (marksRes.ok) saveBootCache({ marks: marksRes.value });
+  if (marksRes.ok) saveBootCache(keys, { marks: marksRes.value });
 }
 
 // --- join flow: new device (§5) --------------------------------------------
@@ -274,7 +344,7 @@ export interface JoinPaneHandle {
 export function mountJoinPane(
   container: HTMLElement,
   driver: PairingDriver,
-  status: (line: string, sticky?: boolean) => void,
+  status: AnnounceSink,
   onAdopt: (profile: { hue: number; displayName: string }) => void,
 ): JoinPaneHandle {
   ensureStyles();
@@ -380,23 +450,81 @@ export function mountJoinPane(
 // --- add flow: trusted device (§5) — the HEAVY ceremony ---------------------
 
 export interface AddPaneHandle {
+  /** Advance the flow by one driver read. Returns true once the session
+   * has ENROLLED. See `settled` for the "stop polling" question, which
+   * is not the same one: a failed session is finished too. */
   tick(): Promise<boolean>;
+  /** True once this session can make no further progress — enrolled or
+   * failed. A caller polling from a timer stops on this, NOT on the
+   * visibility of whatever surface the pane was mounted in: after the
+   * grant the session outlives its own UI (`AddPaneOptions.onGranted`). */
+  settled(): boolean;
+  /** True once the grant has been made and accepted — i.e. the user has
+   * nothing further to do on this device. */
+  granted(): boolean;
 }
 
-/** The #22 arming delay, ported verbatim (host/demo.ts:~2315's
- * comment): the TIMER is the enforcement, an animation is only its
- * visible form. 700ms matches the credential-drawer constant so the
- * demo has one arming duration, not two the user has to learn. */
-const ARM_MS = 700;
+// The arming delay is the framework's ONE constant, imported from
+// visor.ts (`ARM_MS`, visor.ts:254 — the drawer host's own arming and
+// deferred-teardown delay). This file used to redeclare 700ms with a
+// comment saying it must match; importing removes the "must".
 
-/** Mounts the add flow: strip-menu entry ("add a device") → code entry
- * → SAS screen → HEAVY ceremony (statement of consequence + arming
- * delay + never-prefilled device-name field) → devices list. */
+/** How the add flow is ENTERED.
+ *
+ * `"button"` (default) draws the flow's own "add a device" button and
+ * waits for it — what a bare pane wants, and what the standalone
+ * pairing page uses.
+ *
+ * `"immediate"` starts at code entry, for a consumer whose OWN visor
+ * pixels were the entry: the demo reaches this ceremony through the
+ * settings sheet's "add a device…" action, and a sheet that opened
+ * because the user pressed "add a device…" must not then ask them to
+ * press "add a device" again. The distinction is only about which
+ * visor-owned surface carried the affordance — there is no path here
+ * that a component can start, either way. */
+export type AddEntry = "button" | "immediate";
+
+export interface AddPaneOptions {
+  /** How the flow is entered (see `AddEntry`). Default `"button"`. */
+  entry?: AddEntry;
+  /** THE GRANT IS THE USER'S LAST REQUIRED ACT ON THIS DEVICE.
+   *
+   * Called once, immediately after `pair-add-confirm` is accepted. A
+   * consumer that put this flow in a SURFACE THAT HOLDS THE SCREEN — the
+   * demo mounts it in a drawer sheet, over a dimmed page — must take
+   * that surface down here, because everything after the grant is the
+   * OTHER device's turn: the adder is waiting on a confirm it cannot
+   * make. Keeping the sheet up until the peer acts is wrong on real
+   * hardware (you put the laptop down after granting, and it sits there
+   * holding its own screen hostage) and, on a one-page demo where both
+   * devices are on one screen, it is a pointer DEADLOCK: the dim over
+   * the "other device" intercepts the very click the ceremony is
+   * waiting for. (Found by driving the demo with real clicks; the
+   * regression guard is the `device-pairing` e2e scenario's
+   * pointer-path act.)
+   *
+   * WHAT MUST NOT STOP when the surface goes: the session. The caller
+   * keeps calling `tick()` until the handle reports a terminal state,
+   * and the announcements — completion AND failure — go to the
+   * `AnnounceSink`, which is a surface that outlives any sheet. */
+  onGranted?: () => void;
+}
+
+/** Mounts the add flow: entry ("add a device", or the consumer's own —
+ * see `AddEntry`) → code entry → SAS screen → HEAVY ceremony
+ * (statement of consequence + arming delay + never-prefilled
+ * device-name field) → grant → devices list.
+ *
+ * After the grant the flow keeps running with no UI of its own to speak
+ * through (see `AddPaneOptions.onGranted`): everything it has left to
+ * say, it says through `status`. */
 export function mountAddPane(
   container: HTMLElement,
   driver: PairingDriver,
-  status: (line: string, sticky?: boolean) => void,
+  status: AnnounceSink,
+  options: AddPaneOptions = {},
 ): AddPaneHandle {
+  const entry = options.entry ?? "button";
   ensureStyles();
   container.classList.add("pm-pane");
   container.replaceChildren();
@@ -413,6 +541,7 @@ export function mountAddPane(
   let started = false;
   let armTimer = 0;
   let armed = false;
+  let granted = false;
 
   const entryBtn = document.createElement("button");
   entryBtn.textContent = "add a device";
@@ -434,7 +563,7 @@ export function mountAddPane(
     }
   };
 
-  entryBtn.onclick = () => {
+  const beginCodeEntry = () => {
     phase = "code-entry";
     entryBtn.hidden = true;
     body.replaceChildren();
@@ -462,6 +591,11 @@ export function mountAddPane(
     };
     body.append(label, input, submitBtn);
   };
+  entryBtn.onclick = beginCodeEntry;
+  // The consumer's own surface was the entry: go straight to the step
+  // the user asked for. The button stays in the DOM but hidden, so the
+  // two paths converge on exactly one implementation of the flow.
+  if (entry === "immediate") beginCodeEntry();
 
   const renderSasScreen = (sas: string) => {
     phase = "sas";
@@ -504,7 +638,7 @@ export function mountAddPane(
     armed = false;
     // THE ARMING DELAY: the enforcement is the timer, not the visible
     // countdown text (which is just a courtesy here; the drawer's own
-    // slide animation is the "visible form" in host/demo.ts and drops
+    // slide animation is the "visible form" in visor.ts and drops
     // under prefers-reduced-motion without dropping the timer).
     armTimer = setTimeout(() => {
       armed = true;
@@ -529,12 +663,27 @@ export function mountAddPane(
         return;
       }
       phase = "waiting-peer";
+      granted = true;
       status("waiting for the new device to finish joining…");
+      // The ceremony's own surface has nothing left to ASK for, so it
+      // stops looking like a form that wants something: whatever is
+      // still to come is reported on the announcement surface, and the
+      // consumer is told it may take this surface down (see
+      // `AddPaneOptions.onGranted`).
+      body.replaceChildren();
+      const waiting = document.createElement("div");
+      waiting.className = "pm-waiting";
+      waiting.textContent =
+        "granted — finish on the new device. You can put this one down.";
+      body.append(waiting);
+      options.onGranted?.();
     };
     body.append(warn, nameLabel, confirmBtn);
   };
 
   const handle: AddPaneHandle = {
+    settled: () => phase === "done" || phase === "failed",
+    granted: () => granted,
     async tick() {
       if (!started || phase === "done" || phase === "failed") return phase === "done";
       const res = await driver.pairAddStatus();

@@ -150,35 +150,43 @@ else
 fi
 
 # --- (f) pairing code and SAS render only in visor-owned surfaces --------
-# PAIRING.md §5's new CI invariant: "the pairing code and SAS render
+# PAIRING.md §5's CI invariant: "the pairing code and SAS render
 # only in visor-owned surfaces, never inside a component frame". The
 # grep-enforceable marker (chosen by Track B, per that section): both
 # are rendered EXCLUSIVELY through two named functions,
 # `renderPairingCode(` and `renderSas(`, defined once in
-# host/pairing-visor.ts (see that file's own comment at the
+# ../../visor/ui/pairing.ts (see that file's own comment at the
 # definitions for the reasoning — pinning the RENDERING CALL SITE is a
 # stronger property than grepping the word "SAS", which would also fire
 # on comments). A component frame has no path to a host-side function
-# call at all, so if either name ever appeared outside pairing-visor.ts
-# the architecture itself would have grown a new seam-crossing path.
+# call at all, so if either name ever appeared outside that module the
+# architecture itself would have grown a new seam-crossing path.
+#
+# The check got STRONGER when the pairing UI moved out of the demo and
+# into visor/ui/ (2026-08-20): the exclusivity is now a property of the
+# framework layer rather than of one demo file, so the definer scan
+# covers BOTH the visor's own UI modules and every demo host file —
+# a rogue definition anywhere on either side fails here.
 echo "[6/6] pairing code and SAS render only in visor-owned surfaces"
-echo "      (renderPairingCode()/renderSas() are defined and called only in host/pairing-visor.ts)"
+echo "      (renderPairingCode()/renderSas() are defined and called only in ../../visor/ui/pairing.ts)"
 outside=$(grep -rln "renderPairingCode(\|renderSas(" \
   ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts ../../visor/frame/frame.html web/frame.js \
   guest-app guest-panel-s3 guest-panel-dropbox \
   2>/dev/null)
 if [ -n "$outside" ]; then
-  bad "renderPairingCode()/renderSas() referenced outside host/pairing-visor.ts:"
+  bad "renderPairingCode()/renderSas() referenced outside ../../visor/ui/pairing.ts:"
   printf '%s\n' "$outside" | sed 's/^/       /'
 else
-  ok "no reference to renderPairingCode()/renderSas() outside host/pairing-visor.ts"
+  ok "no reference to renderPairingCode()/renderSas() outside ../../visor/ui/pairing.ts"
 fi
-definers=$(grep -rl "^function renderPairingCode(\|^function renderSas(" host/*.ts 2>/dev/null | grep -v 'host/pairing-visor.ts$')
+# shellcheck disable=SC2086
+definers=$(grep -rl "^function renderPairingCode(\|^function renderSas(" \
+  host/*.ts ../../visor/ui/*.ts 2>/dev/null | grep -v '/visor/ui/pairing.ts$')
 if [ -n "$definers" ]; then
-  bad "renderPairingCode()/renderSas() defined somewhere other than host/pairing-visor.ts:"
+  bad "renderPairingCode()/renderSas() defined somewhere other than ../../visor/ui/pairing.ts:"
   printf '%s\n' "$definers" | sed 's/^/       /'
 else
-  ok "renderPairingCode()/renderSas() are defined only in host/pairing-visor.ts"
+  ok "renderPairingCode()/renderSas() are defined only in ../../visor/ui/pairing.ts"
 fi
 
 echo

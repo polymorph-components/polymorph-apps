@@ -35,6 +35,28 @@ import {
 // about what it drew), so they are the framework's, and a second spike
 // consumes exactly this implementation instead of a lookalike.
 import { createSurfaceMarks, registerVisorSheets } from "../../../visor/ui/sheets.ts";
+// The visor's pairing + user-system UI (PAIRING.md §5): the join and add
+// ceremonies, the us-events announcement drain and the boot-cache
+// reconcile. It is framework code — this file supplies the driver, the
+// containers, the announcement sink and the storage keys, and never
+// renders a pairing code or a SAS itself (invariant (f)).
+import {
+  type AddPaneHandle,
+  type AnnounceSink,
+  drainAnnouncements,
+  mountAddPane,
+  mountJoinPane,
+  reconcileFromDriver,
+  usCacheKeys,
+  visorAnnounceSink,
+} from "../../../visor/ui/pairing.ts";
+import { VISOR_HUES } from "../../../visor/ui/visor.ts";
+import type { PairingDriver } from "../../../visor/ui/pairing-driver.ts";
+// The two PairingDriver implementations. Which one this page uses is a
+// URL choice — see PAIRING_BACKEND below for why the default is the
+// mock and what is blocking the engine path.
+import { createEnginePairingDriver } from "./pairing-engine.ts";
+import { createMockDriver, MockPairingNetwork } from "./pairing-mock.ts";
 import type { UiEvent } from "../../../visor/surface/events.ts";
 import {
   type Driver,
@@ -61,6 +83,42 @@ import {
 // a local `iroh-relay --dev` at http://127.0.0.1:3340.
 const params = new URLSearchParams(location.search);
 const RELAY = params.get("relay") ?? "https://use1-1.relay.n0.iroh.link";
+
+// --- which pairing backend this page drives (PAIRING.md §5/§6) ---------------
+//
+// `?pairing=engine` runs the ceremony against the REAL engine composite
+// (host/pairing-engine.ts over each pane's own instance); the default
+// runs it against the in-page mock (host/pairing-mock.ts). The UI, the
+// wiring, the announcements and the write-through below are IDENTICAL
+// either way — the only difference is which object implements
+// `PairingDriver`.
+//
+// WHY THE DEFAULT IS THE MOCK (measured 2026-08-20, real headless
+// Chromium, and recorded in PAIRING.md §6):
+//   - `pair-join-start` (79-char code), `us-events` and the WIT error
+//     path all work against the real engine in the browser;
+//   - `user-create` TRAPS the guest deterministically — a panic inside
+//     wit-bindgen's async support (`async_support.rs:578: assertion
+//     failed: !state.is_null()`), reproduced on an otherwise IDLE pane
+//     with a single sequential call, so it is engine-internal and not a
+//     host-concurrency artefact of this file's queueing;
+//   - without `user-create` there is no user group, so the ENROLL step
+//     (PAIRING.md §2 step 6) cannot complete at all.
+// The same call also traps under Deno (host/pairing-bringup.ts), where
+// the BASELINE `just bringup wire` — no pairing in it — reproduces the
+// identical host trap, which is what places that fault outside this
+// track too.
+//
+// This is a DESCOPE, recorded rather than hidden: the demo must not
+// claim a ceremony it did not perform. The pane's status line and the
+// PAIRING.md §6 status note both say which backend is live.
+const PAIRING_BACKEND: "mock" | "engine" = params.get("pairing") === "engine"
+  ? "engine"
+  : "mock";
+
+/** The us-* boot cache keys (PAIRING.md §5's demotion: same keys, same
+ * formats, no longer the source of truth). */
+const US_CACHE_KEYS = usCacheKeys("pm-demo");
 
 // --- the OAuth redirect landing (visor-owned; #22 × #7) ------------------------
 //
@@ -1168,6 +1226,24 @@ async function boot() {
     bg = next;
     return next;
   };
+  /** `enqueue` for a call whose ANSWER the caller needs: same one chain,
+   * same ordering guarantee, but the returned promise carries the value
+   * (and the failure) instead of the swallowing tail the chain itself
+   * rides on. The pairing driver goes through this — every pairing and
+   * user-system call is serialized against every sync, poll and stats tick on the
+   * page, which is the strongest form of the discipline this file
+   * already keeps (one chain across ALL instances, not one per
+   * instance). */
+  const enqueueValue = <T>(f: () => Promise<T>): Promise<T> => {
+    bgDepth++;
+    const run = bg.then(f);
+    // The chain itself must never carry a rejection forward, or one
+    // failed pairing call would poison every job queued behind it.
+    bg = run.catch(() => {}).finally(() => {
+      bgDepth--;
+    });
+    return run;
+  };
   /** Periodic work must never QUEUE: if the previous tick is still
    * running (consumer-API syncs take seconds, well past these periods),
    * appending another job grows the chain without bound — the queue
@@ -1812,6 +1888,23 @@ async function boot() {
    * configuration). `dialog` and `teardownPanel` are declared further
    * down this same function; the arrows are only ever called after that
    * point, exactly as `contextOverride`'s `activePanel` is. */
+  /** Installed by the pairing block near the end of `boot` — the
+   * settings sheet's "add a device…" action calls through here. A
+   * forward reference because the ceremony needs the engine panes and
+   * the background queue, both of which come later, while the sheet
+   * that offers it is registered here. Until then the action is a
+   * no-op rather than a missing button: the sheet's shape must not
+   * depend on how far boot has got. */
+  let openAddDevice: () => void = () => {};
+  /** Write-through of a naming/settings commit into the user-system
+   * partition (PAIRING.md §5's demotion). Installed with the pairing
+   * block; a no-op until the driver exists, since localStorage — the
+   * boot cache — has already been written by the visor itself either
+   * way. */
+  let writeThroughMark: (provenance: string, petname: string, hue: number) => void = () => {};
+  let forgetThroughMark: (provenance: string) => void = () => {};
+  let writeThroughProfile: (displayName: string, hue: number) => void = () => {};
+
   const sheets = registerVisorSheets(visor, {
     marksKey: MARKS_KEY,
     canOpen: () => !credentialTenant.isOpen(),
@@ -1826,6 +1919,9 @@ async function boot() {
     // would leave the anchor showing yesterday's answer. FIRST SIGHT IS
     // OVER on a name: `isNew` is cleared with it.
     onNamed: (provenance, petname, hue) => {
+      // §5: the marks live in the partition now; localStorage (which
+      // `SurfaceMarks` has already written) is the boot cache.
+      writeThroughMark(provenance, petname, hue);
       if (appSurface && appSurface.name === provenance) {
         appSurface = { ...appSurface, petname, hue, isNew: false };
       }
@@ -1838,10 +1934,26 @@ async function boot() {
     // longer holds. (`isNew` stays as it is — this session has seen the
     // component; the NEXT mount is the one that is genuinely new again.)
     onForgotten: (provenance) => {
+      forgetThroughMark(provenance);
       if (appSurface && appSurface.name === provenance) {
         appSurface = { ...appSurface, petname: undefined };
       }
     },
+    // The profile half of the same demotion: the user's name and their
+    // anchor colour are account state now, not device state.
+    onIdentityCommitted: (rec, hue) => {
+      writeThroughProfile(rec.name ?? "", hue);
+    },
+    // THE ENTRY TO THE ADD CEREMONY (PAIRING.md §5: "strip menu -> add
+    // a device"). It is a visor-drawn button on a visor-owned sheet
+    // reached from the strip, which is the only place a grant this
+    // consequential may start from.
+    extraActions: [{
+      key: "add-device",
+      label: "add a device…",
+      hint: "pairs another device with this account — it will have full access",
+      onSelect: () => openAddDevice(),
+    }],
   });
 
   /** PUT THE STRIP BACK IN THE HANDS OF WHOEVER ACTUALLY OWNS IT NOW —
@@ -2551,6 +2663,329 @@ async function boot() {
     }
   });
 
+  // --- device pairing + the user-system partition (PAIRING.md §5) -----------
+  //
+  // WHAT THE USER SEES. Two ceremonies, in the two places §5 puts them:
+  //   - ADD (heavy): "Your visor" sheet -> "add a device…" -> a visor
+  //     drawer sheet with the code field, the SAS, the statement of
+  //     consequence, the arming delay and the never-prefilled device
+  //     name. It is a grant of admin over everything in the account, so
+  //     it is the most consequential thing this demo can do from the
+  //     strip, and it pays the full ceremony.
+  //   - JOIN (light): a pane-local affordance in the TABLET pane —
+  //     "join existing account" -> QR + grouped code -> SAS -> a single
+  //     confirm. Nothing secret is typed and the worst mis-tap is a
+  //     cancelled join, so there is no arming tax on it (#22 weight
+  //     classes).
+  // Both are rendered by visor/ui/pairing.ts. Not one line of this file
+  // draws a pairing code or a SAS — that is invariant (f), and it is now
+  // a property of the framework layer rather than of this file's good
+  // behaviour.
+  //
+  // WHAT IS DEMOTED (the §5 half that is not a ceremony): the marks, the
+  // display name and the anchor hue are ACCOUNT state now. localStorage
+  // keeps exactly the keys and formats it had — that IS the demotion:
+  // the same bytes, no longer the source of truth. Boot renders from
+  // them, `reconcileFromDriver` compares them against the partition and
+  // ANNOUNCES any difference, and every later commit is written through.
+  const pairingNet = new MockPairingNetwork();
+  /** One pane's driver, wrapped so every call rides the page's single
+   * background chain (see `enqueueValue`). The wrapper is mechanical: it
+   * cannot forget a method, because it is built from the object it
+   * wraps. */
+  const serializedDriver = (raw: PairingDriver): PairingDriver => {
+    const out = {} as Record<string, unknown>;
+    for (const key of Object.keys(raw) as (keyof PairingDriver)[]) {
+      const fn = raw[key];
+      if (typeof fn !== "function") continue;
+      out[key as string] = (...args: unknown[]) =>
+        enqueueValue(() => (fn as (...a: unknown[]) => Promise<unknown>).apply(raw, args));
+    }
+    return out as unknown as PairingDriver;
+  };
+  const pairingDriverFor = (pane: Pane): PairingDriver =>
+    serializedDriver(
+      PAIRING_BACKEND === "engine"
+        ? createEnginePairingDriver(pane.engine.driver)
+        : createMockDriver(pane.name, pairingNet),
+    );
+  const aliceUs = pairingDriverFor(alice);
+  const tabletUs = pairingDriverFor(tablet);
+
+  /** SERIALIZE IN EXACTLY ONE PLACE. `serializedDriver` already puts
+   * every pairing call on the page's one background chain, so a CALLER
+   * of the driver must never ALSO wrap itself in `enqueue`/`periodic`:
+   * the outer job would sit on the chain awaiting an inner job queued
+   * BEHIND it, and the chain would deadlock — permanently, silently, and
+   * for every later job too. (Observed exactly once, here, while wiring
+   * this in: the join pane's poll went through `periodic`, and from its
+   * first tick onward nothing on the page's background chain ever
+   * completed again.)
+   *
+   * So pairing's periodic work uses this instead: the same
+   * skip-a-tick-if-the-last-one-is-still-running discipline as
+   * `periodic`, and no queueing of its own. */
+  const poll = (name: string, everyMs: number, f: () => Promise<unknown>) => {
+    let running = false;
+    let skipped = 0;
+    setInterval(() => {
+      if (running) {
+        skipped++;
+        return;
+      }
+      running = true;
+      f().catch(() => {}).finally(() => {
+        running = false;
+      });
+    }, everyMs);
+    return { name, skips: () => skipped };
+  };
+
+  // The tablet has NO WIRE in the demo's own choreography (its cards are
+  // pasted, see boot's contact-card step). Real pairing rides iroh
+  // (guest/src/pairing.rs refuses an unbound instance), so the engine
+  // path — and only the engine path — binds it here. In mock mode this
+  // is skipped entirely: the mock's "network" is an in-page object, and
+  // a relay round-trip the demo does not need is a flake the e2e suite
+  // does not need either.
+  if (PAIRING_BACKEND === "engine") {
+    await enqueue(async () => {
+      try {
+        await tablet.engine.driver.irohBind(RELAY);
+      } catch (e) {
+        tablet.status(`pairing transport unavailable: ${err(e)}`, true);
+      }
+    });
+  }
+
+  /** THE ANNOUNCEMENT SINK. Remotely-caused identity changes belong on
+   * the STRIP, in the visor's own voice, with priority over the ambient
+   * stats tick — which is exactly what `visorAnnounceSink` builds out of
+   * `visor.announce` (visor/ui/pairing.ts). The standalone pairing page
+   * passes per-pane status writers instead; the UI does not know the
+   * difference. */
+  const usAnnounce: AnnounceSink = visorAnnounceSink(visor);
+
+  // The palette index the account stores, out of the angle the visor
+  // paints (PAIRING.md §4: `hue` is an INDEX into the framework palette,
+  // never a raw angle). An angle the palette does not contain — there is
+  // no way to pick one in the settings sheet — falls back to index 0
+  // rather than writing a number the other device cannot render.
+  const hueIndexOf = (angle: number) => {
+    const i = VISOR_HUES.indexOf(angle);
+    return i < 0 ? 0 : i;
+  };
+
+  /** Boot-time user-system setup on the OWNER pane (the laptop): if this
+   * account has no partition yet, create one seeded from what the user
+   * has already told the visor — their name and their committed anchor
+   * colour. There is no invention here: an unset name stays the empty
+   * string (the same NO-FABRICATION rule the identity record follows).
+   *
+   * Failure is REPORTED, never fatal: with `?pairing=engine` this is the
+   * call that trips the guest panic recorded at PAIRING_BACKEND, and a
+   * demo that died in boot over it would take nine unrelated scenarios
+   * with it. */
+  const usReady = await (async () => {
+    const probe = await aliceUs.usProfileGet();
+    if (probe.ok) return true;
+    const created = await aliceUs.userCreate({
+      displayName: visor.identity().name ?? "",
+      hue: hueIndexOf(visor.committedHue()),
+    });
+    if (!created.ok) {
+      alice.status(`user-system unavailable (${PAIRING_BACKEND}): ${created.error}`, true);
+      console.warn(`[us] user-create failed: ${created.error}`);
+      return false;
+    }
+    return true;
+  })();
+
+  if (usReady) {
+    // Write-through (§5). The visor has ALREADY written the boot cache
+    // and repainted by the time these run — the partition write is the
+    // authoritative copy catching up, so a failed write leaves the two
+    // out of step and the next reconcile announces it rather than
+    // silently papering over it.
+    writeThroughMark = (provenance, petname, hue) => {
+      void (async () => {
+        const res = await aliceUs.usMarkPut({
+          provenance,
+          petname,
+          // A mark's hue is a palette INDEX in the partition, an angle
+          // on the strip — the same split as the profile's.
+          hue: hueIndexOf(hue),
+          createdAt: Date.now(),
+          needsReconfirm: false,
+        });
+        if (!res.ok) alice.status(`could not record the name in your account: ${res.error}`, true);
+      })();
+    };
+    forgetThroughMark = (provenance) => {
+      void (async () => {
+        const res = await aliceUs.usMarkForget(provenance);
+        if (!res.ok) alice.status(`could not forget it in your account: ${res.error}`, true);
+      })();
+    };
+    writeThroughProfile = (displayName, hue) => {
+      void (async () => {
+        const res = await aliceUs.usProfileSet({ displayName, hue: hueIndexOf(hue) });
+        if (!res.ok) alice.status(`could not save your profile: ${res.error}`, true);
+      })();
+    };
+
+    // RECONCILE, then announce the diff. This is the moment the boot
+    // cache stops being the truth: whatever the partition says wins, and
+    // a hue or a name that changed underneath the user is announced on
+    // the strip rather than quietly applied (#22).
+    await reconcileFromDriver(aliceUs, US_CACHE_KEYS, usAnnounce, (profile) => {
+      const angle = VISOR_HUES[profile.hue] ?? VISOR_HUES[0];
+      if (angle !== visor.committedHue()) visor.commitHue(angle);
+    });
+
+    // Announced-never-silent, continuously: every remotely-caused change
+    // the account makes is drained onto the strip. Both panes drain their
+    // own driver — an event is addressed to a DEVICE, and the tablet is a
+    // device of this account once it has joined.
+    poll("us-events", 3000, async () => {
+      await drainAnnouncements(aliceUs, usAnnounce);
+      await drainAnnouncements(tabletUs, usAnnounce);
+    });
+  }
+
+  /** THE ADD SHEET. Its own drawer tenant, registered last so it cannot
+   * outrank the credential sheet, and EXCLUSIVE: while a device is being
+   * granted admin over the account, a click on the strip must not be
+   * able to slide something else over the ceremony. The tenant is NOT
+   * `armed` — the arming delay that matters here is the one
+   * visor/ui/pairing.ts puts on the grant button itself, and two
+   * different arming delays in one sheet would teach the user that the
+   * delay means nothing. */
+  const addDeviceTenant = visor.drawer.tenant<{ container: HTMLElement }>({
+    name: "add-device",
+    exclusive: true,
+    dim: true,
+    context: () => ({ kind: "settings" }),
+  });
+  /** THE ADD SESSION'S LIFECYCLE IS NOT THE SHEET'S.
+   *
+   * The ceremony outlives the surface it was started from: the grant is
+   * the user's last required act here, the sheet comes down on it (see
+   * `onGranted`), and the session then runs to ENROLLED-or-FAILED with
+   * nothing on screen at all. So the poll lives out here, keyed to the
+   * SESSION, and stops on `handle.settled()` — never on the sheet being
+   * closed, torn down or evicted.
+   *
+   * Everything it still has to say goes to `usAnnounce`, i.e. the strip,
+   * which is the one surface that cannot be closed. */
+  let addTicker = 0;
+  let addWatchdog = 0;
+  const stopAddSession = () => {
+    clearInterval(addTicker);
+    clearTimeout(addWatchdog);
+    addTicker = 0;
+    addWatchdog = 0;
+  };
+  const runAddSession = (handle: AddPaneHandle) => {
+    stopAddSession();
+    addTicker = setInterval(() => {
+      handle.tick().catch(() => {}).finally(() => {
+        if (handle.settled()) stopAddSession();
+      });
+    }, 200) as unknown as number;
+  };
+  /** A grant that is never answered must not be a silence. The driver
+   * reports `failed` for a session that breaks; it has no state for a
+   * peer that simply never confirms, so the deadline is the visor's.
+   * PAIRING.md §1 puts the offer's own expiry at 120s; this waits a
+   * little past it before saying so. */
+  const ADD_PEER_DEADLINE_MS = 150_000;
+  const armAddWatchdog = (handle: AddPaneHandle) => {
+    clearTimeout(addWatchdog);
+    addWatchdog = setTimeout(() => {
+      if (!handle.settled()) {
+        usAnnounce("the new device never finished joining — nothing was added", true);
+        stopAddSession();
+      }
+    }, ADD_PEER_DEADLINE_MS) as unknown as number;
+  };
+
+  openAddDevice = () => {
+    if (credentialTenant.isOpen()) return;
+    const container = document.createElement("div");
+    container.className = "cred-sheet";
+    container.id = "pair-add-sheet";
+    container.style.maxWidth = "72rem";
+    container.style.marginLeft = "auto";
+    container.style.marginRight = "auto";
+    const session = { container };
+    const opened = addDeviceTenant.open(session, () => {
+      const heading = document.createElement("h2");
+      heading.textContent = "Add a device";
+      const body = document.createElement("div");
+      container.replaceChildren(heading, body);
+      // The visor's UI does the whole ceremony; this file supplies the
+      // node, the sink and the two lifecycle answers, and gets out of
+      // the way.
+      const handle = mountAddPane(body, aliceUs, usAnnounce, {
+        // "immediate": the settings sheet's "add a device…" WAS the
+        // entry affordance, so the sheet opens on the step the user
+        // asked for (visor/ui/pairing.ts's `AddEntry`).
+        entry: "immediate",
+        // THE GRANT CLOSES THE SHEET. The user has nothing left to do on
+        // this device, and the sheet is modal-ish: it dims the page. On
+        // this one-page demo the dim sits over the "other device", so a
+        // sheet that stayed up would make the joiner's confirm —
+        // literally the next click the ceremony waits for —
+        // unclickable. The session keeps running without it.
+        onGranted: () => {
+          if (addDeviceTenant.owns(session)) addDeviceTenant.close();
+          armAddWatchdog(handle);
+        },
+      });
+      runAddSession(handle);
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "Close";
+      // Closing BEFORE the grant abandons nothing that was granted; the
+      // session is still polled (a peer may yet fail, and that is
+      // announced) and the user simply stopped watching.
+      close.onclick = () => {
+        if (addDeviceTenant.owns(session)) addDeviceTenant.close();
+      };
+      container.append(close);
+      return { root: container };
+    });
+    if (!opened) stopAddSession();
+  };
+
+  // THE JOIN AFFORDANCE, in the tablet pane. Built here rather than in
+  // web/index.html because it is the visor's, not the page's: the pane
+  // is a place the visor drew a device, and this is the visor offering
+  // that device a way into the account.
+  const tabletPane = document.getElementById("tablet-pane")!;
+  const joinHost = document.createElement("div");
+  joinHost.id = "tablet-join";
+  tabletPane.append(joinHost);
+  const joinHandle = mountJoinPane(joinHost, tabletUs, usAnnounce, (profile) => {
+    // THE ADOPTION BEAT (§5): the tablet takes the account's colour and
+    // name. The value arrives from the visor's UI; painting the pane is
+    // this page's job, exactly as `applyVisorHue` is (the UI reports,
+    // the consumer paints).
+    const angle = VISOR_HUES[profile.hue] ?? VISOR_HUES[0];
+    joinHost.style.setProperty("--pm-join-hue", String(angle));
+    joinHost.style.background = `oklch(92% .03 ${angle})`;
+    tablet.status(
+      `this device now follows your profile: ${profile.displayName || "(unnamed)"}, your colour`,
+      true,
+    );
+  });
+  // The join pane polls its driver on the ONE chain like everything else
+  // (mountJoinPane's `tick` is a single driver read per call).
+  const joinTick = poll("pair-join", 250, async () => {
+    await joinHandle.tick();
+  });
+
   // Debug/validation handles (the paseo browser driver uses these).
   (globalThis as unknown as Record<string, unknown>).__demo = {
     alice,
@@ -2571,6 +3006,7 @@ async function boot() {
         reconcile: reconcile.skips(),
         autoSync: autoSync.skips(),
         stats: statsTick.skips(),
+        pairJoin: joinTick.skips(),
         poll: Object.fromEntries(panes.map((p) => [p.name, p.pollSkips ?? 0])),
       },
     }),
@@ -2686,6 +3122,121 @@ async function boot() {
           | HTMLButtonElement
           | null)?.click(),
       identity: () => visor.identity(),
+    },
+    /** The pairing ceremonies, for driving. Every one of these CLICKS a
+     * real control — the arming delay, the disabled grant button and the
+     * empty device-name field are seen exactly as a user sees them. The
+     * two SAS readers are DOM reads on purpose: the claim under test is
+     * that the same six digits are on both surfaces, which is a claim
+     * about pixels, not about the driver. */
+    pairing: {
+      backend: () => PAIRING_BACKEND,
+      /** Open the add ceremony the way a user does: the strip's settings
+       * button, then the sheet's own "add a device…" action. */
+      openAdd: () => {
+        (document.getElementById("visor-settings") as HTMLButtonElement | null)?.click();
+        (drawerInner.querySelector(
+          '.settings-extra-action[data-action="add-device"]',
+        ) as HTMLButtonElement | null)?.click();
+      },
+      addOpen: () => addDeviceTenant.isOpen(),
+      /** Close it the way a user does: the sheet's own Close button. */
+      closeAdd: () => {
+        const btns = Array.from(
+          drawerInner.querySelectorAll("#pair-add-sheet button"),
+        ) as HTMLButtonElement[];
+        btns.find((b) => b.textContent === "Close")?.click();
+      },
+      /** The tablet's own affordance. */
+      joinStart: () =>
+        (joinHost.querySelector("button") as HTMLButtonElement | null)?.click(),
+      /** The 79-char code as the JOIN pane renders it, ungrouped. */
+      code: () =>
+        (joinHost.querySelector(".pm-code") as HTMLElement | null)?.textContent?.replace(
+          /\s+/g,
+          "",
+        ) ?? "",
+      pasteCode: (code: string) => {
+        const ta = drawerInner.querySelector("#pair-add-sheet textarea") as
+          | HTMLTextAreaElement
+          | null;
+        if (!ta) return false;
+        ta.value = code;
+        return true;
+      },
+      connect: () => {
+        const btns = Array.from(
+          drawerInner.querySelectorAll("#pair-add-sheet button"),
+        ) as HTMLButtonElement[];
+        btns.find((b) => b.textContent === "connect")?.click();
+        return true;
+      },
+      sasAdd: () =>
+        (drawerInner.querySelector("#pair-add-sheet .pm-sas") as HTMLElement | null)
+          ?.textContent ?? "",
+      sasJoin: () =>
+        (joinHost.querySelector(".pm-sas") as HTMLElement | null)?.textContent ?? "",
+      /** "codes match — continue" on the add side: SAS -> consequence. */
+      sasContinue: () => {
+        const btns = Array.from(
+          drawerInner.querySelectorAll("#pair-add-sheet button"),
+        ) as HTMLButtonElement[];
+        btns.find((b) => (b.textContent ?? "").includes("codes match"))?.click();
+      },
+      /** The heavy ceremony's own controls. `grant` CLICKS: before the
+       * arming delay elapses the click lands on a disabled button and
+       * does nothing, which is the property worth testing. */
+      consequence: () =>
+        (drawerInner.querySelector("#pair-add-sheet .pm-consequence") as HTMLElement | null)
+          ?.textContent ?? "",
+      grantArmed: () => {
+        const b = drawerInner.querySelector("#pair-add-sheet button.pm-armed") as
+          | HTMLButtonElement
+          | null;
+        return b === null ? null : !b.disabled;
+      },
+      deviceName: () =>
+        (drawerInner.querySelector("#pair-add-sheet input[type=text]") as HTMLInputElement | null)
+          ?.value ?? null,
+      typeDeviceName: (value: string) => {
+        const input = drawerInner.querySelector("#pair-add-sheet input[type=text]") as
+          | HTMLInputElement
+          | null;
+        if (input) input.value = value;
+      },
+      grant: () =>
+        (drawerInner.querySelector("#pair-add-sheet button.pm-armed") as HTMLButtonElement | null)
+          ?.click(),
+      /** The join side's LIGHT confirm ("I initiated this — codes match"). */
+      joinConfirm: () => {
+        const btns = Array.from(joinHost.querySelectorAll("button")) as HTMLButtonElement[];
+        btns.find((b) => (b.textContent ?? "").includes("I initiated"))?.click();
+      },
+      /** Drain both sides' status once, without waiting on the timers. */
+      tick: async () => {
+        await joinHandle.tick();
+        await drainAnnouncements(aliceUs, usAnnounce);
+        await drainAnnouncements(tabletUs, usAnnounce);
+      },
+      devices: async () => {
+        const res = await aliceUs.usDevicesList();
+        return res.ok ? res.value : [];
+      },
+      marks: async () => {
+        const res = await tabletUs.usMarksList();
+        return res.ok ? res.value : { error: true };
+      },
+      putMark: async (provenance: string, petname: string, hue: number) => {
+        const res = await aliceUs.usMarkPut({
+          provenance,
+          petname,
+          hue,
+          createdAt: Date.now(),
+          needsReconfirm: false,
+        });
+        return res.ok;
+      },
+      usReady: () => usReady,
     },
     /** The app's own row in the trust table, as the visor registered it at
      * boot: provenance key, self-declared nickname, assigned mark, the

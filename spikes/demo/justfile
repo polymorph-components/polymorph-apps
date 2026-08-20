@@ -81,7 +81,8 @@ panels:
 # while the real engine composite (Track A) lands separately.
 pairing-site:
     mkdir -p serve
-    deno check host/pairing-demo.ts host/pairing-visor.ts host/pairing-mock.ts
+    deno check host/pairing-demo.ts host/pairing-mock.ts \
+        ../../visor/ui/pairing.ts ../../visor/ui/pairing-driver.ts
     deno bundle --platform browser --minify -o serve/pairing-demo.js host/pairing-demo.ts
     cp web/pairing-demo.html serve/
 

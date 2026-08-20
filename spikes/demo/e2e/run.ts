@@ -38,6 +38,7 @@ import transportRefusal from "./scenarios/transport-refusal.ts";
 import tenantPrecedence from "./scenarios/tenant-precedence.ts";
 import dialogCloseRetirement from "./scenarios/dialog-close-retirement.ts";
 import stripOwnership from "./scenarios/strip-ownership.ts";
+import devicePairing from "./scenarios/device-pairing.ts";
 
 // Re-exported so a scenario imports its whole contract from one place:
 // `Scenario` and the `Ctx` it is handed.
@@ -71,6 +72,10 @@ const SCENARIOS: Scenario[] = [
   transportRefusal,
   tenantPrecedence,
   dialogCloseRetirement,
+  // The two pairing ceremonies. It runs against the in-page mock driver
+  // (see the scenario's own header for why, and PAIRING.md §6), so it
+  // needs no relay and no store.
+  devicePairing,
   // Last: it provokes the visor-timer races, so it is the scenario most
   // likely to leave a page in an interesting state — and it gets a fresh
   // context either way.

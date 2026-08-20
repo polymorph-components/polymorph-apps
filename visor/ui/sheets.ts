@@ -241,6 +241,47 @@ export interface VisorSheetsConfig {
   /** The whole record for `provenance` was just deleted. The consumer's
    * caches must stop speaking a name the visor no longer holds. */
   onForgotten?: (provenance: string) => void;
+  /** The identity record and the anchor hue were just COMMITTED from the
+   * settings sheet (Save, never Cancel and never a live preview). The
+   * visor has already stored and painted both; this is for a consumer
+   * that must MIRROR the commit somewhere else — the demo writes it
+   * through to the user-system partition, where the profile is the
+   * source of truth and localStorage is the boot cache (PAIRING.md §5).
+   *
+   * It fires AFTER the write, so a consumer that fails cannot leave the
+   * visor's own record half-committed; a mirror that fails is the
+   * consumer's problem to announce. */
+  onIdentityCommitted?: (rec: VisorIdentity, hue: number) => void;
+  /** Consumer-supplied actions on the settings sheet.
+   *
+   * THE ONE EXTENSION POINT ON A VISOR-OWNED SHEET, and deliberately a
+   * narrow one: a consumer contributes a LABEL and a callback, never a
+   * node. The visor draws the button, in the visor's own chrome, so a
+   * consumer cannot paint anything on a sheet whose whole claim is that
+   * no one but the visor draws there — the same reason the identity
+   * button's face is a fixed glyph set rather than free text.
+   *
+   * The demo uses exactly one: "add a device…", the entry to the pairing
+   * ceremony (PAIRING.md §5's "strip menu → add a device"). TodoMVC
+   * passes none, and an empty list renders NOTHING — no heading, no
+   * container, no separator — so the sheet is byte-identical to what it
+   * was before this hook existed. */
+  extraActions?: SheetAction[];
+}
+
+/** One consumer-contributed action on the settings sheet (see
+ * `VisorSheetsConfig.extraActions`). */
+export interface SheetAction {
+  /** The button's face. The visor renders it as its own words — a
+   * consumer that puts a component's self-declared string here would be
+   * lending the visor's voice, which is the consumer's error to avoid
+   * (nothing on this path is component-influenced in either spike). */
+  label: string;
+  /** One line under the button, in the visor's explanatory voice. */
+  hint?: string;
+  /** Stable key for driving/tests (`data-action`). Defaults to `label`. */
+  key?: string;
+  onSelect(): void;
 }
 
 export interface VisorSheets {
@@ -690,6 +731,43 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     note.textContent =
       "this sheet is the visor's, opened from the bar below it — a component cannot draw here, and none of this is ever given to one";
 
+    // CONSUMER ACTIONS (see `extraActions`). Nothing is rendered at all
+    // when there are none, so a consumer that passes no actions gets the
+    // sheet exactly as it was before this hook existed.
+    const actions = config.extraActions ?? [];
+    const actionsBlock = document.createElement("div");
+    // NOT `cred-row`: that class is the Save/Cancel pair, and both this
+    // sheet's own driving hooks and the demo's select it positionally
+    // (`.cred-row button:first-child`). A second `.cred-row` earlier in
+    // the sheet would silently steal those clicks.
+    actionsBlock.className = "settings-extra";
+    for (const action of actions) {
+      const line = document.createElement("div");
+      line.className = "cred-field";
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "settings-extra-action";
+      b.dataset.action = action.key ?? action.label;
+      b.textContent = action.label;
+      // The action LEAVES this sheet: closing first means the drawer is
+      // free for whatever the action opens, and that the settings
+      // session cannot be left owning a sheet nobody is looking at. The
+      // close is a plain one (no `commit`), so an uncommitted colour
+      // preview reverts exactly as Cancel would.
+      b.onclick = () => {
+        closeSettings();
+        action.onSelect();
+      };
+      line.append(b);
+      if (action.hint !== undefined) {
+        const hint = document.createElement("div");
+        hint.className = "hint";
+        hint.textContent = action.hint;
+        line.append(hint);
+      }
+      actionsBlock.append(line);
+    }
+
     const row = document.createElement("div");
     row.className = "cred-row";
     const saveBtn = document.createElement("button");
@@ -710,8 +788,9 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
       hueLabel,
       hueRow,
       note,
-      row,
     );
+    if (actions.length > 0) root.append(actionsBlock);
+    root.append(row);
     return {
       root,
       nameInput: nameField.input,
@@ -746,6 +825,10 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
         });
         // Remember, paint, persist — in that order.
         visor.commitHue(built.hue());
+        // Mirror the commit outward (see `onIdentityCommitted`): the
+        // visor's own record is already written, so a consumer's mirror
+        // can only ever be late, never contradictory.
+        config.onIdentityCommitted?.(visor.identity(), built.hue());
         // The strip is repainted from the RECORD, not from the inputs, so
         // what the bar shows is exactly what was persisted (clamping and
         // the unset-is-absent rule included).
