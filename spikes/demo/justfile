@@ -110,3 +110,72 @@ pages: translate app panels check
     cp build/engine.plan.json ../../docs/spike-demo/
     sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > ../../docs/spike-demo/index.html
     cp ../todomvc/web/todomvc-app.css ../../docs/spike-demo/
+
+# --- end-to-end scenarios in a real Chromium (spikes/demo/e2e) -------------
+#
+# Playwright driving a REAL headless Chromium, as a library from Deno —
+# no @playwright/test, no package.json, no second toolchain. Every chrome
+# and storage flow here used to be hand-driven once per session in an
+# embedded webview that could not deliver `<dialog>` close events; this
+# is the same set of scenarios, repeatable, with a non-zero exit.
+#
+# Pinned in ONE place: the version below is both what `e2e-deps` installs
+# a browser for and what e2e/run.ts imports. A mismatch downloads a
+# browser revision the library will not launch.
+PLAYWRIGHT := "npm:playwright@1.57.0"
+
+# Browser + store binaries the suite needs. PROBE-THEN-INSTALL: a launch
+# that already works is left alone (a developer machine usually has the
+# browser cached from some other project), so this is a no-op after the
+# first run and CI only pays the download once per cache key.
+e2e-deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if deno eval "import { chromium } from '{{PLAYWRIGHT}}';
+                  const b = await chromium.launch({ args: ['--no-sandbox'] });
+                  await b.close();" >/dev/null 2>&1; then
+        echo "playwright chromium: already launchable"
+    else
+        echo "playwright chromium: installing…"
+        # install-deps needs root and is a CI concern (a workstation
+        # already has the system libraries); it is skipped when it fails.
+        #
+        # The DOWNLOAD deliberately goes through npx, not `deno run
+        # npm:playwright install`: the deno-wrapped installer wedged the
+        # download twice on one day (locally at 1.5 MB of ~170, then a
+        # CI job pinned >25 min on the same step), while the node
+        # installer is the battle-tested path and node/npx ship on both
+        # this workstation and the CI runners. The VERSION is the same
+        # pin, so the installed revision cannot drift from the library.
+        pwver="{{PLAYWRIGHT}}"; pwver="${pwver#npm:playwright@}"
+        if command -v npx >/dev/null 2>&1; then
+            if [ -n "${CI:-}" ]; then
+                npx --yes "playwright@${pwver}" install --with-deps chromium
+            else
+                npx --yes "playwright@${pwver}" install chromium
+            fi
+        else
+            # No node on this machine: fall back to the deno wrapper and
+            # hope; the launch probe above means this path only runs when
+            # there is no usable browser at all.
+            if [ -n "${CI:-}" ]; then
+                deno run -A {{PLAYWRIGHT}} install-deps chromium || true
+            fi
+            deno run -A {{PLAYWRIGHT}} install chromium
+        fi
+    fi
+    # The store the credential scenarios talk to (and that one of them
+    # deliberately stops): same binary the tasks-engine spike fetches.
+    cd ../tasks-engine && just minio
+
+# Run the scenarios against a freshly built site. The harness owns the
+# world: a static server for serve/, a MinIO with CORS open on an
+# ephemeral port, and one browser with a fresh context per scenario.
+# Pass names to run a subset: `just e2e boot-app-surface`.
+e2e *SCENARIOS: site
+    deno run -A e2e/run.ts {{SCENARIOS}}
+
+# Type-check the harness on its own (the scenarios are not part of the
+# site graph, so `just site`'s deno check does not reach them).
+e2e-check:
+    deno check e2e/run.ts e2e/util.ts e2e/scenarios/*.ts
