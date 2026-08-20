@@ -67,47 +67,42 @@ reject-on-unknown, per NOTES).
 - Abort at any step tears down the stream and, on the join side, expires
   the offer (a new offer mints a new token).
 - Enrollment writes on the add side, in order: `kh-add-to-group(user,
-  new-individual, "admin")` → **user-system doc regeneration** (below)
-  → devices-doc entry {agent-id, name, enrolled-at} written to the NEW
-  generation → flush ops. ENROLL carries the new generation's
-  partition-id. The joiner appears in `us-devices-list` on every device
-  via normal sync.
-- **Doc regeneration at enrollment** (rationale corrected 2026-08-19
-  after the attribution investigation; see spikes/keyhive-addwedge and
-  the README finding): a post-seal add yields the joiner readable
-  epochs just fine — keyhive propagates the CGKA add, the bridge
-  delivers the event set, and post-join envelopes open (verified with
-  the rotation off and the ENROLL card suppressed; 10/10,
-  order-independent). What a late joiner cannot do is **materialize
-  pre-join automerge history**: every post-join change roots in
-  pre-join changes, which stay dark by designed non-retroactivity, and
-  automerge buffers changes with missing deps. Regeneration is
-  therefore the **state-handoff mechanism**, not a defect workaround:
-  the adder CREATES a new user-system doc (delegated to the user
-  group, sealed immediately — the joiner is a member from epoch 0),
-  copies the current state VALUES (all four maps, `created-at`
-  metadata preserved), and writes a forward pointer
-  {superseded-by: new-doc-id} into the old generation. Existing
-  devices follow the pointer on next sync, adopt the new generation,
-  and value-reconcile: re-write only their OWN values missing from the
-  copy (by authorship + created-at), no announcements for identical
-  values. The joiner reads pre-join history as copied state — the
-  correct read-back window for user-system data. When the Envelope
-  content format lands (#36), causal-key read-back replaces this and
-  the regeneration machinery can be retired. Concurrent enrollments
-  can fork generations: winner = lexicographic smallest new-doc-id;
-  the losing adder repeats its finalization atop the winner (not gated
-  in v1 — pairing is humanly serialized; detect and report, don't
-  solve).
-- The **post-add forced rotation stays** as defence in depth — a
-  deliberate epoch boundary at enrollment — not as the readability
-  mechanism (measured: post-join content opens with it disabled).
-- History note, corrected: causal-key read-back for late joiners
-  requires the Envelope content format — the production path on #36.
-  Until then, regenerated-state copy IS the history handoff.
-- After ENROLL the joiner pulls the user-system doc and adopts profile
-  state; the visor announces the adoption (hue + name arriving is a
-  remotely-caused change, #22: announced).
+  new-individual, "admin")` → forced key rotation (defence in depth: a
+  deliberate epoch boundary at enrollment) → devices-doc entry
+  {agent-id, name, enrolled-at} written to the doc — this write is
+  also the **walk anchor**: a chunk guaranteed sealed under a
+  post-add epoch, from which the joiner's causal read-back starts →
+  flush ops. ENROLL carries the ORIGINAL partition-id; there is no
+  regeneration (see §4b).
+- **Retired (2026-08-19, Envelope slice)**: doc regeneration, forward
+  pointers, value-reconciliation, and generation-fork handling. With
+  one doc lineage, a partitioned device's writes — including
+  deletions — merge natively as CRDT changes on heal; the
+  forget-resurrection hazard the value-copy design carried is gone by
+  construction. The retired design and its measurements remain in git
+  history (PR #40) and the README.
+- History note: late joiners materialize pre-join history via
+  causal-key read-back (§4b). The read-back window for the
+  user-system doc is deliberately TOTAL — these are the user's own
+  devices. The chain-cut policy for shared partitions (what a newly
+  added collaborator may walk) is a #36/#9 decision-memo item, out of
+  scope here.
+- Historical record (superseded 2026-08-19 by §4b; kept because its
+  measurements still bind): the attribution investigation
+  (spikes/keyhive-addwedge + engine instrumentation) established that
+  a post-seal add yields the joiner readable epochs — keyhive
+  propagates the CGKA add, the bridge delivers the event set, and
+  post-join envelopes open with the rotation off and the ENROLL card
+  suppressed (10/10, order-independent). What a late joiner could not
+  do without the Envelope format was materialize pre-join automerge
+  history (designed non-retroactivity + automerge buffering changes
+  with missing deps). The interim answer was doc regeneration
+  (value-copy state handoff); it is now retired in favour of
+  causal-key read-back.
+- After ENROLL the joiner pulls the user-system doc, decrypts the
+  anchor chunk, causal-walks the ancestry, materializes, and adopts
+  profile state; the visor announces the adoption (hue + name arriving is
+  a remotely-caused change, #22: announced).
 
 Threat notes (carry into #1 later): shoulder-surfed/photographed code ⇒
 attacker can race the claim; SAS mismatch + single-claim + dual-confirm
@@ -252,6 +247,42 @@ Added to `interface driver`:
 - **Events**: per-instance drained queue; only remotely-caused changes;
   emitted after apply + repair.
 
+## 4b. Envelope content format (added 2026-08-19)
+
+The engine's content spine switches what it seals, at the single
+seal/open boundary (one seal site, one open site; nothing above or
+below changes — WIT, the visor, subduction, sedimentree, storage all
+carry opaque bytes either way):
+
+- **Write path**: the plaintext handed to keyhive encryption becomes a
+  keyhive `Envelope { content: chunk-bytes, ancestor keys: keys of the
+  chunk's parent chunks }` instead of raw chunk bytes. The writer
+  holds its parents' keys by construction (it wrote or read them). Use
+  keyhive's own Envelope type/API at the pinned rev; if the API
+  requires a materially different integration shape than described
+  here, STOP and report — do not invent a parallel envelope format.
+- **Read path**: a chunk that fails direct decryption is reached by
+  **causal walk**: decrypt any readable descendant, take the ancestor
+  keys from inside its plaintext, step down one hop, recurse
+  (`try_causal_decrypt_content` or the equivalent at the pinned rev).
+  A late joiner therefore materializes the complete history from its
+  walk anchor (§2).
+- **Scope**: the WHOLE content spine — tasks partition and user-system
+  doc alike — so the existing G1–G5 acts ride the new format and
+  double as coverage.
+- **Format generation**: the plaintext layout change is a format
+  generation bump. The spike carries no deployed data, so no migration
+  is implemented; the production migration seam is #8's business and
+  is recorded, not solved, here.
+- **Read-back window**: total for the user-system doc (own devices).
+  Chain-cut policy for shared partitions (what a late-added
+  collaborator may walk; natural cut points are compaction/summary
+  boundaries) is deferred to a #36/#9 decision memo.
+- **Shipping gate, restated from NOTES**: keyhive's content-envelope
+  scheme is CAUTION-flagged in upstream's own design doc; independent
+  review gates any polymorph data shipping under it. This spike
+  implements; it does not ship.
+
 ## 5. Visor semantics (Track B; #22 rulings apply throughout)
 
 - **Marks/hue/name move to the partition**; localStorage demotes to a
@@ -286,6 +317,23 @@ on B; SAS values equal on both sides; commitment violation aborts;
 second CLAIM refused; expiry; concurrent same-petname assignment on two
 devices → identical deterministic repair on both + events emitted;
 revoke device → re-pair same hardware as a NEW individual succeeds.
+
+Envelope-slice additions (2026-08-19), replacing the
+regeneration-specific gates:
+
+- **Late joiner materializes FULL history**: founder writes state
+  BEFORE the add; joiner enrolls; joiner's materialized view includes
+  the pre-join values (via causal walk, not copy) — 10 runs,
+  order-varied.
+- **Partitioned writes merge natively**: a device offline during
+  another device's enrollment writes a mark, RENAMES an existing mark,
+  and FORGETS a mark; on heal, all three survive — in particular the
+  forget does NOT resurrect and the rename is not lost. This gate is
+  the proof the value-copy hazards are gone.
+- The post-seal-add boundary act flips its second assertion: pre-join
+  content is now EXPECTED-readable through the walk (assert the walk
+  succeeds where direct decrypt fails).
+- G1–G5 regression on the new format.
 
 Track B (visor): demo builds; Playwright drive of both flows against
 the mock driver (join + add panes side by side, SAS equality asserted
