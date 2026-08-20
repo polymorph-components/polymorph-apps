@@ -55,8 +55,10 @@ use keyhive_core::principal::group::id::GroupId;
 use keyhive_core::principal::identifier::Identifier;
 use keyhive_core::principal::individual::id::IndividualId;
 use keyhive_core::principal::membered::Membered;
+use keyhive_core::crypto::envelope::Envelope;
 use keyhive_core::store::ciphertext::memory::MemoryCiphertextStore;
 use keyhive_crypto::share_key::{ShareKey, ShareSecretKey};
+use keyhive_crypto::symmetric_key::SymmetricKey;
 use keyhive_crypto::signed::SigningError;
 use keyhive_crypto::signer::async_signer::AsyncSigner;
 use keyhive_crypto::verifiable::Verifiable;
@@ -417,6 +419,15 @@ struct Partition {
     /// whose automerge dependencies it will never have, and conflating
     /// the two hides exactly that boundary.
     decrypted: u32,
+    /// Chunks recovered by CAUSAL WALK — i.e. ones whose direct decrypt
+    /// failed and which were reached through a readable descendant's
+    /// ancestor keys.
+    ///
+    /// Distinct from `decrypted` on purpose. "It materialized" and "it
+    /// materialized through the walk" are different claims, and this
+    /// spike has already once mistaken one observation for another; a
+    /// gate that cannot tell them apart cannot assert §4b.
+    walked: u32,
 }
 
 /// S3-compatible store config: ADDRESSING ONLY. The signing credential
@@ -469,6 +480,21 @@ struct BucketState {
 
 struct State {
     kh: Kh,
+    /// A clone of the ciphertext store keyhive was built with. Clones
+    /// share internal state, so inserting here is inserting into
+    /// keyhive's own store — which is where the causal walk looks for
+    /// ancestors (§4b). The sedimentree remains the authoritative copy;
+    /// this is a working set, and keyhive EVICTS from it on a successful
+    /// walk (`mark_decrypted` removes), so it is refilled on demand.
+    ciphertexts: KhStore,
+    /// cref -> the symmetric key that chunk's envelope was sealed under.
+    ///
+    /// Populated three ways, and the invariant that makes the write path
+    /// sound is that all three are the only ways a chunk becomes an
+    /// automerge dependency: we sealed it, we opened it directly, or we
+    /// reached it through a walk. A device can therefore always name the
+    /// keys of its own change's parents.
+    chunk_keys: HashMap<[u8; 32], SymmetricKey>,
     sd: Arc<Sd>,
     sd_storage: MemoryStorage,
     signer: WebcryptoSigner,
@@ -2102,28 +2128,95 @@ async fn s3_pull(doc_id: Vec<u8>, owner: Vec<u8>) -> Result<String, String> {
 
 // --- the DAG content spine ---
 
+/// The plaintext this engine seals: the chunk, plus the keys of the
+/// chunk's parents (PAIRING.md §4b).
+///
+/// `Envelope` is keyhive's own type; there is no envelope-aware encrypt
+/// API at the pinned rev, so the embedder serializes it and hands the
+/// bytes to `try_encrypt_content` — which is exactly the shape
+/// `try_causal_decrypt` expects to find on the way back.
+type ChunkEnvelope = Envelope<[u8; 32], Vec<u8>>;
+
 /// Encrypt one automerge change under the doc's current epoch and commit
 /// its envelope to the sedimentree with the change's deps as parents. Any
 /// CGKA update the encryption produced is synced over the bridge.
+///
+/// The sealed plaintext carries the parents' content keys, which is what
+/// lets a device that arrives later read backwards from anything it can
+/// read forwards. Consequence worth stating plainly: possession of one
+/// chunk key transitively grants the whole ancestry behind it, so the
+/// read-back window is a POLICY question, not an accident of the format.
+/// It is total here by intent (the user's own devices, §4b); the chain-cut
+/// policy for shared partitions is a #36/#9 decision-memo item.
 async fn encrypt_and_commit(
     id: &[u8],
     chunk: Vec<u8>,
     preds: Vec<[u8; 32]>,
     cref: [u8; 32],
 ) -> Result<(), String> {
-    let (kh, sd, proto) = with_state(|s| (s.kh.clone(), s.sd.clone(), s.proto.clone()))?;
+    let (kh, sd, proto, ciphertexts) = with_state(|s| {
+        (
+            s.kh.clone(),
+            s.sd.clone(),
+            s.proto.clone(),
+            s.ciphertexts.clone(),
+        )
+    })?;
     let did = kh_doc_id(id)?;
     let doc = kh
         .get_document(did)
         .await
         .ok_or("keyhive doc not found".to_string())?;
-    let out = kh
-        .try_encrypt_content(doc, &cref, &preds, &chunk)
+
+    // The writer holds its parents' keys by construction: a change's deps
+    // are chunks it has already materialized, and every path to
+    // materialization records the key.
+    let mut ancestors: std::collections::HashMap<[u8; 32], SymmetricKey> =
+        std::collections::HashMap::new();
+    let missing: Vec<[u8; 32]> = with_state(|s| {
+        let mut missing = Vec::new();
+        for parent in &preds {
+            match s.chunk_keys.get(parent) {
+                Some(key) => {
+                    ancestors.insert(*parent, *key);
+                }
+                None => missing.push(*parent),
+            }
+        }
+        missing
+    })?;
+    if !missing.is_empty() {
+        // Authoring on a parent whose key we do not hold would mint a
+        // chunk nobody can walk past. It should be unreachable — authoring
+        // merges first — so it is an error, not a silent omission.
+        return Err(format!(
+            "cannot seal: {} parent chunk key(s) unknown; authoring on \
+             unmaterialized history would cut the causal chain",
+            missing.len()
+        ));
+    }
+
+    let plaintext = bincode::serialize(&ChunkEnvelope {
+        plaintext: chunk,
+        ancestors,
+    })
+    .map_err(|e| format!("envelope serialize: {e}"))?;
+
+    let (out, key) = kh
+        .try_encrypt_content_keyed(doc, &cref, &preds, &plaintext)
         .await
         .map_err(|e| format!("encrypt: {e:?}"))?;
     let envelope =
         bincode::serialize(out.encrypted_content()).map_err(|e| format!("serialize: {e}"))?;
     let had_update = out.update_op().is_some();
+
+    // Remember our own chunk's key (our successors will name it), and put
+    // the ciphertext where the walk looks for ancestors.
+    with_state(|s| s.chunk_keys.insert(cref, key))?;
+    ciphertexts
+        .insert(Arc::new(out.encrypted_content().clone()))
+        .await;
+
     let tree = tree_id(id)?;
     let parents: BTreeSet<CommitId> = preds.into_iter().map(CommitId::new).collect();
     sd.add_commit(tree, CommitId::new(cref), parents, Blob::new(envelope))
@@ -2165,69 +2258,185 @@ fn causal_order(mut commits: Vec<LooseCommit>) -> Vec<LooseCommit> {
     out
 }
 
-/// Apply every newly synced, decryptable chunk to the partition's replica,
-/// in causal order. Undecryptable chunks (epochs this member does not
-/// hold) are counted and left unapplied.
+/// Apply every newly synced chunk this replica can reach, in causal
+/// order.
+///
+/// Two ways to reach one (PAIRING.md §4b):
+///
+/// - **direct** — the chunk's epoch is one this device holds;
+/// - **causal walk** — the chunk predates this device's membership, so
+///   its epoch is dark, but a readable DESCENDANT carries its key inside
+///   its own plaintext. `try_causal_decrypt_content` walks that chain.
+///
+/// The walk is only attempted when a direct decrypt has failed AND some
+/// chunk was readable, because the walk needs an entrypoint. Arrival
+/// order therefore matters: until a readable descendant exists, dark
+/// chunks stay counted and unapplied, and are retried on the next poll.
+/// Enrollment guarantees the entrypoint (the devices-entry write is
+/// sealed under a post-add epoch — the walk anchor, §2).
 async fn apply_new_chunks(id: &[u8]) -> Result<(), String> {
     breathe().await;
-    let (kh, sd, storage) =
-        with_state(|s| (s.kh.clone(), s.sd.clone(), s.sd_storage.clone()))?;
+    let (kh, sd, storage, ciphertexts) = with_state(|s| {
+        (
+            s.kh.clone(),
+            s.sd.clone(),
+            s.sd_storage.clone(),
+            s.ciphertexts.clone(),
+        )
+    })?;
     let tree = tree_id(id)?;
     let did = kh_doc_id(id)?;
 
-    let commits = sd.get_commits(tree).await.unwrap_or_default();
+    let commits = causal_order(sd.get_commits(tree).await.unwrap_or_default());
     let already = with_state(|s| {
         s.partitions
             .get(id)
             .map(|p| p.applied.clone())
             .ok_or("unknown partition".to_string())
     })??;
-    let pending: Vec<LooseCommit> = causal_order(commits)
-        .into_iter()
-        .filter(|c| !already.contains(c.head().as_bytes()))
-        .collect();
-    if pending.is_empty() {
+    if commits.iter().all(|c| already.contains(c.head().as_bytes())) {
         return Ok(());
     }
 
     let Some(kh_doc) = kh.get_document(did).await else {
         // Commits are here but keyhive hasn't learned the doc yet: not an
         // error, just not-synced-yet. Ask the bridge to try again.
-        eprintln!(
-            "[apply] {} commits waiting, keyhive doc unknown; nudging",
-            pending.len()
-        );
+        eprintln!("[apply] commits waiting, keyhive doc unknown; nudging");
         nudge_keyhive_sync().await;
         return Ok(());
     };
 
-    let mut changes: Vec<Change> = Vec::new();
-    let mut applied_now: Vec<[u8; 32]> = Vec::new();
-    let mut undecryptable = 0u32;
-    for commit in pending {
+    // Load every chunk's ciphertext once. The walk resolves ancestors
+    // through keyhive's ciphertext store, and keyhive EVICTS entries it
+    // has decrypted (`mark_decrypted` removes), so the store is refilled
+    // from the sedimentree — which stays the authoritative copy — rather
+    // than treated as durable.
+    let mut envelopes: Vec<([u8; 32], EncryptedContent<P, T>)> = Vec::new();
+    for commit in &commits {
         let verified =
             <MemoryStorage as Storage<Local>>::load_loose_commit(&storage, tree, commit.head())
                 .await
                 .map_err(|e| format!("load: {e:?}"))?
                 .ok_or("commit blob not found")?;
-        let envelope: EncryptedContent<P, T> = bincode::deserialize(verified.blob().as_slice())
+        let encrypted: EncryptedContent<P, T> = bincode::deserialize(verified.blob().as_slice())
             .map_err(|e| format!("bad envelope: {e}"))?;
-        match kh.try_decrypt_content(kh_doc.clone(), &envelope).await {
-            Ok(plain) => {
-                let change =
-                    Change::from_bytes(plain).map_err(|e| format!("bad change: {e}"))?;
-                applied_now.push(*commit.head().as_bytes());
-                changes.push(change);
-            }
-            Err(e) => {
-                if undecryptable == 0 {
-                    eprintln!(
-                        "[decrypt] chunk {} undecryptable: {e:?}",
-                        hex::encode(&commit.head().as_bytes()[..8]),
-                    );
+        envelopes.push((*commit.head().as_bytes(), encrypted));
+    }
+
+    // Pass 1: direct decryption.
+    let mut recovered: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+    let mut keys: Vec<([u8; 32], SymmetricKey)> = Vec::new();
+    let mut entrypoints: Vec<EncryptedContent<P, T>> = Vec::new();
+    let mut dark = 0u32;
+    let mut walked_now: HashSet<[u8; 32]> = HashSet::new();
+    for (cref, encrypted) in &envelopes {
+        if already.contains(cref) {
+            // Applied already; it may still serve as a walk entrypoint,
+            // but only if THIS device can open it directly. A chunk that
+            // was itself recovered by a walk cannot start one.
+            continue;
+        }
+        match kh.try_decrypt_content_keyed(kh_doc.clone(), encrypted).await {
+            Ok((plain, key)) => {
+                let envelope: ChunkEnvelope = bincode::deserialize(&plain)
+                    .map_err(|e| format!("chunk envelope decode: {e}"))?;
+                keys.push((*cref, key));
+                // The ancestor keys travel with the chunk: record them so
+                // this device can both walk backwards and, later, name
+                // them as parents of its own writes.
+                for (ancestor, ancestor_key) in &envelope.ancestors {
+                    keys.push((*ancestor, *ancestor_key));
                 }
-                undecryptable += 1;
+                recovered.insert(*cref, envelope.plaintext);
+                entrypoints.push(encrypted.clone());
             }
+            Err(_) => dark += 1,
+        }
+    }
+
+    // Pass 2: the causal walk, from anything readable, for anything not.
+    if dark > 0 {
+        // Widen the entrypoint set to already-applied chunks this device
+        // can still open directly — after a restart or a late sync the
+        // only readable chunk may be one applied several polls ago.
+        for (cref, encrypted) in &envelopes {
+            if !already.contains(cref) {
+                continue;
+            }
+            if kh
+                .try_decrypt_content_keyed(kh_doc.clone(), encrypted)
+                .await
+                .is_ok()
+            {
+                entrypoints.push(encrypted.clone());
+            }
+        }
+    }
+    if dark > 0 && !entrypoints.is_empty() {
+        for (_, encrypted) in &envelopes {
+            ciphertexts.insert(Arc::new(encrypted.clone())).await;
+        }
+        for entry in &entrypoints {
+            let walked = match kh.try_causal_decrypt_content(kh_doc.clone(), entry).await {
+                Ok(state) => state,
+                // A partial walk still yields progress; take it and move
+                // on rather than discarding what was reached.
+                Err(e) => match e {
+                    keyhive_core::principal::document::DocCausalDecryptionError::CausalDecryptionError(inner) => inner.progress,
+                    other => {
+                        eprintln!("[walk] {other}");
+                        continue;
+                    }
+                },
+            };
+            for (cref, plaintext) in walked.complete {
+                // Keys are recorded only for chunks that actually opened.
+                // `CausalDecryptionState::keys` also holds keys for
+                // ciphertexts whose decrypt FAILED (keyhive records the
+                // key before attempting), and storing those would let a
+                // later seal name a parent key that does not open it.
+                if let Some(key) = walked.keys.get(&cref) {
+                    keys.push((cref, *key));
+                }
+                if already.contains(&cref) || recovered.contains_key(&cref) {
+                    continue;
+                }
+                walked_now.insert(cref);
+                recovered.insert(cref, plaintext);
+            }
+            // `next` is sound and worth keeping: these keys came out of a
+            // successfully decrypted envelope's ancestor map, for chunks
+            // this device does not hold YET. Recording them saves the hop
+            // when the chunk arrives.
+            for (cref, key) in walked.next.iter() {
+                keys.push((*cref, *key));
+            }
+        }
+        // Everything the walk resolved is now applied below, so recount
+        // what genuinely remains out of reach.
+        dark = envelopes
+            .iter()
+            .filter(|(cref, _)| !already.contains(cref) && !recovered.contains_key(cref))
+            .count() as u32;
+        if dark > 0 {
+            eprintln!("[walk] {dark} chunk(s) still unreachable after the walk");
+        }
+    }
+
+    with_state(|s| s.chunk_keys.extend(keys))?;
+
+    // Apply in causal order: automerge buffers changes whose deps are
+    // missing, so order is what turns decryption into materialization.
+    let mut changes: Vec<Change> = Vec::new();
+    let mut applied_now: Vec<[u8; 32]> = Vec::new();
+    for commit in &commits {
+        let cref = *commit.head().as_bytes();
+        if already.contains(&cref) {
+            continue;
+        }
+        if let Some(bytes) = recovered.remove(&cref) {
+            changes.push(Change::from_bytes(bytes).map_err(|e| format!("bad change: {e}"))?);
+            applied_now.push(cref);
         }
     }
 
@@ -2242,11 +2451,15 @@ async fn apply_new_chunks(id: &[u8]) -> Result<(), String> {
             // Envelopes opened, whether or not automerge could then
             // materialize them (missing deps buffer silently).
             p.decrypted += n as u32;
+            p.walked += applied_now
+                .iter()
+                .filter(|cref| walked_now.contains(*cref))
+                .count() as u32;
         }
-        p.undecryptable = undecryptable;
+        p.undecryptable = dark;
         Ok(())
     })??;
-    if undecryptable > 0 {
+    if dark > 0 {
         // Waiting on epoch material (e.g. a post-revocation rotation op):
         // ask the bridge to try again.
         nudge_keyhive_sync().await;
@@ -2562,8 +2775,8 @@ fn known_peers() -> Result<Vec<Vec<u8>>, String> {
 /// Subscribe to a tree with one peer, fire-and-forget.
 ///
 /// Engine-driven on purpose: the user-system surface hides doc identity
-/// (PAIRING.md §4), and generations change it, so the host cannot be the
-/// thing that knows which tree to subscribe to.
+/// (PAIRING.md §4), so the host has no name for the tree to subscribe
+/// to.
 fn subscribe_tree(peer: Vec<u8>, tree: Vec<u8>) -> Result<(), String> {
     let peer = PeerId::new(arr32(&peer, "peer")?);
     let tree = tree_id(&tree)?;
@@ -2635,7 +2848,12 @@ fn read_snapshot(am: &AutoCommit) -> Result<Vec<TodoItem>, String> {
 
 /// Assemble instance state around an identity + keyhive (fresh from
 /// `init` or restored from a bundle by `identity-import`).
-fn finish_init(signer: WebcryptoSigner, verifying: DalekVerifyingKey, kh: Kh) -> Result<(), String> {
+fn finish_init(
+    signer: WebcryptoSigner,
+    verifying: DalekVerifyingKey,
+    kh: Kh,
+    ciphertexts: KhStore,
+) -> Result<(), String> {
     let my_peer = PeerId::from(verifying);
     #[allow(clippy::arc_with_non_send_sync)] // upstream APIs take Arc; single-threaded wasm
     let shared_kh = Arc::new(async_lock::Mutex::new(kh.clone()));
@@ -2667,6 +2885,8 @@ fn finish_init(signer: WebcryptoSigner, verifying: DalekVerifyingKey, kh: Kh) ->
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             kh,
+            ciphertexts,
+            chunk_keys: HashMap::new(),
             sd,
             sd_storage,
             signer,
@@ -2735,9 +2955,10 @@ impl DriverGuest for Component {
             sign_count: Cell::new(0),
         }));
 
+        let ciphertexts: KhStore = MemoryCiphertextStore::new();
         let kh = Kh::generate(
             signer.clone(),
-            MemoryCiphertextStore::new(),
+            ciphertexts.clone(),
             NoListener,
             rand::rngs::OsRng,
         )
@@ -2749,7 +2970,7 @@ impl DriverGuest for Component {
             .await
             .map_err(|e| format!("contact card: {e:?}"))?;
         CARD.with(|c| *c.borrow_mut() = Some(card));
-        finish_init(signer, verifying, kh)?;
+        finish_init(signer, verifying, kh, ciphertexts)?;
         Ok(hex::encode(verifying.to_bytes()))
     }
 
@@ -3193,10 +3414,11 @@ impl DriverGuest for Component {
                 .map_err(|e| format!("archive decode: {e}"))?;
         #[allow(clippy::arc_with_non_send_sync)] // upstream API shape; single-threaded wasm
         let csprng = Arc::new(futures::lock::Mutex::new(rand::rngs::OsRng));
+        let ciphertexts: KhStore = MemoryCiphertextStore::new();
         let kh = Kh::try_from_archive(
             &archive,
             signer.clone(),
-            MemoryCiphertextStore::new(),
+            ciphertexts.clone(),
             NoListener,
             csprng,
         )
@@ -3208,7 +3430,7 @@ impl DriverGuest for Component {
             .await
             .map_err(|e| format!("contact card: {e:?}"))?;
         CARD.with(|c| *c.borrow_mut() = Some(card));
-        finish_init(signer, verifying, kh)?;
+        finish_init(signer, verifying, kh, ciphertexts)?;
 
         // Bind the tasks service to the bundled partition; content
         // rehydrates from the bucket (G4 cold boot).
@@ -3221,6 +3443,7 @@ impl DriverGuest for Component {
                     revision: 0,
                     undecryptable: 0,
                     decrypted: 0,
+                    walked: 0,
                 },
             );
             s.active = Some(payload.partition.clone());
@@ -3488,6 +3711,7 @@ impl DriverGuest for Component {
                     revision: 1,
                     undecryptable: 0,
                     decrypted: 0,
+                    walked: 0,
                 },
             );
             s.pending.insert(id.clone(), (chunk, cref));
@@ -3496,6 +3720,12 @@ impl DriverGuest for Component {
     }
 
     async fn seal_partition(id: Vec<u8>) -> Result<(), String> {
+        // Only the CREATION change may be pending here. Anything authored
+        // between create and seal would have parents whose keys do not
+        // exist yet (nothing has been sealed, so no chunk key has been
+        // minted), and `encrypt_and_commit` now refuses that rather than
+        // sealing an envelope with a missing ancestor key. No current
+        // flow does it; the refusal is the guard for one that tries.
         let (chunk, cref) =
             with_state(|s| s.pending.remove(&id))?.ok_or("no pending creation chunk")?;
         encrypt_and_commit(&id, chunk, vec![], cref).await?;
@@ -3513,6 +3743,7 @@ impl DriverGuest for Component {
                     revision: 0,
                     undecryptable: 0,
                     decrypted: 0,
+                    walked: 0,
                 },
             );
             s.active = Some(id);
@@ -3636,17 +3867,18 @@ impl DriverGuest for Component {
                 .doc
                 .as_ref()
                 .and_then(|id| s.partitions.get(id))
-                .map(|p| (p.decrypted, p.undecryptable, p.revision))
-                .unwrap_or((0, 0, 0));
+                .map(|p| (p.decrypted, p.undecryptable, p.revision, p.walked))
+                .unwrap_or((0, 0, 0, 0));
             format!(
                 "webcrypto sign calls: {}; iroh conns: {}; revision: {rev}; undecryptable: {undec}; \
-                 us-decrypted={} us-undecryptable={} us-revision={}; \
+                 us-decrypted={} us-undecryptable={} us-revision={} us-walked={}; \
                  tables syncs={} conns={} parts={} pending={} buckets={} fetches={}",
+                s.signer.0.sign_count.get(),
+                s.iroh_conns.len(),
                 us.0,
                 us.1,
                 us.2,
-                s.signer.0.sign_count.get(),
-                s.iroh_conns.len(),
+                us.3,
                 s.syncs.len(),
                 s.conn_results.len(),
                 s.partitions.len(),

@@ -169,8 +169,9 @@ persisted bundle after authoring, or design a re-join path.
 
 `PAIRING.md` is the pinned contract; the engine implements §1–§4 and the
 headless acts in §6 run under `just pair` (relay only — no bucket is
-involved, so no MinIO). Twelve acts, including a post-seal-add act that
-guards the boundary the finding below corrects.
+involved, so no MinIO). Fifteen acts, including
+full-history-by-walk (10 order-varied seeds) and a partitioned-writer act
+that guards the merge properties the retired design could not offer.
 
 The ceremony is interactive on BOTH devices: the new device displays a
 79-character `BASE32_NOPAD_VISUAL` code (version ‖ endpoint-id ‖ token),
@@ -191,8 +192,8 @@ BURNS the offer — a code that reached a second party has leaked) and a
 
 The user-system doc backs `profile`/`marks`/`contacts`/`devices` behind a
 WIT surface that hides the partitioning — including which document holds
-them, which is what lets enrollment regenerate the doc underneath chrome
-(see the finding below). Petname (case-insensitive) and
+them, so the storage shape is free to change without chrome knowing (the
+retired generation design leaned on this; see §4b). Petname (case-insensitive) and
 hue uniqueness are repaired deterministically after every remote apply —
 older `created-at` wins, ties broken by lexicographic provenance — and
 every device computes the same outcome, so only the device whose OWN
@@ -200,6 +201,72 @@ write lost persists it. `needs-reconfirm` is derived rather than stored,
 which removes the write entirely on that path. `us-events` drains
 remotely-caused changes only; local writes update the diff baseline as
 they are made, so a device can never be announced its own work.
+
+### The Envelope content format (§4b) — implementation note
+
+The content spine seals a keyhive `Envelope` instead of raw chunk bytes,
+at one seal site and one open site. Everything above and below carries
+opaque bytes either way: WIT, chrome, subduction, sedimentree and the
+bucket path are untouched.
+
+**API actually used** (keyhive `efe6ccf3`, which is also upstream HEAD):
+
+- `keyhive_core::crypto::envelope::Envelope<C, T>` — public fields
+  `plaintext: T` and `ancestors: HashMap<C, SymmetricKey>`. There is **no
+  envelope-aware encrypt API** at this rev: the embedder serializes the
+  Envelope with bincode and passes the bytes to `try_encrypt_content`,
+  which is exactly the shape the read side expects, since
+  `try_causal_decrypt` does `bincode::deserialize::<Envelope<Cr, T>>` on
+  each plaintext it opens. We use `Envelope<[u8; 32], Vec<u8>>`.
+- **Where ancestor keys come from**: `try_encrypt_content_keyed` returns
+  the `SymmetricKey` it minted for the chunk, and
+  `try_decrypt_content_keyed` returns the key a chunk was opened under; a
+  walk additionally returns `CausalDecryptionState::keys`. The engine
+  keeps a `cref -> SymmetricKey` map fed from all three. The write-path
+  invariant is that those are the ONLY ways a chunk becomes an automerge
+  dependency — you can only author on top of what you materialized — so a
+  writer can always name its parents' keys. Sealing refuses rather than
+  silently omitting a parent, since an omission would cut the chain for
+  every later reader.
+- **Walk mechanics**: `Keyhive::try_causal_decrypt_content(doc,
+  entrypoint)` decrypts the entrypoint, reads its ancestors' keys out of
+  the plaintext, and recurses through the **ciphertext store**, returning
+  `complete: Vec<(cref, inner-plaintext)>`. Two consequences for an
+  embedder: the store must be populated (ours lives in the sedimentree,
+  so received ciphertexts are inserted into keyhive's store on demand —
+  a clone of the store handed to `Keyhive::generate` shares its state),
+  and keyhive **evicts** what it has decrypted (`mark_decrypted` removes),
+  so the store is a working set refilled from the sedimentree rather than
+  a durable copy. Only chunks this device can open DIRECTLY are valid
+  entrypoints; one recovered by a walk cannot start another.
+- **Ordering**: the walk needs an entrypoint, so a device with no
+  readable chunk yet simply counts the rest as unreachable and retries on
+  the next poll. Enrollment removes the race by construction — the
+  devices-entry write is sealed under a post-add epoch, so the joiner is
+  guaranteed a directly-openable chunk (the walk anchor, §2).
+
+**What this replaced.** Enrollment used to regenerate the user-system doc
+and copy state values across, with a forward pointer, value
+reconciliation and generation-fork detection. All of it is deleted. The
+partitioned-writer gate is the reason it is safe to delete: with one
+document lineage a concurrent add, rename and *forget* all merge as
+ordinary CRDT changes, where the value-copy design could resurrect a
+forgotten mark and lose a rename. The retired design and its measurements
+live in git history (PR #40) and in the finding below.
+
+**Security note, carried from NOTES and restated because it is easy to
+lose in an implementation detail**: possession of one chunk key
+transitively grants everything behind it, so the read-back window is a
+policy decision, not a property of the format. It is deliberately TOTAL
+here — the user's own devices — and the chain-cut policy for shared
+partitions (what a newly added collaborator may walk; compaction
+boundaries are the natural cut points) is a #36/#9 decision-memo item,
+recorded and not solved. Keyhive's content-envelope scheme is
+CAUTION-flagged in upstream's own design doc, and independent review
+gates any polymorph data shipping under it. **This spike implements it;
+it does not ship it.** The plaintext layout change is a format generation
+bump; the spike carries no deployed data, so no migration exists here
+(#8's seam).
 
 ### Finding: post-seal enrollment was never broken — the gate was measuring the wrong thing
 
@@ -276,12 +343,12 @@ mistaken for a defect:
   carrying ancestor keys, while `try_encrypt_content` — what this spike
   uses — encrypts raw content. That is the production path for late
   joiners reading history (#36), not a bug.
-- **Regeneration stays**, reclassified. It is not a workaround for a
-  readability defect; it is the STATE-HANDOFF mechanism. Until the
-  Envelope format lands, a new device cannot materialize pre-join
-  history, and the generation is what hands it the account's current
-  state. Its other properties (the fork-detecting map pointer, the
-  carried diff baseline, engine-driven subscriptions) are unaffected.
+- **Regeneration is retired.** It was the interim state-handoff while a
+  late joiner could not materialize pre-join history. The Envelope format
+  (above) replaces it with causal read-back, so the doc has one lineage
+  again and the copy-shaped hazards go with it. Engine-driven
+  subscriptions and the diff baseline survive; the forward pointer,
+  value reconciliation and fork detection are deleted.
 
 ## Findings
 

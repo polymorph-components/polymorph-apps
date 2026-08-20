@@ -38,39 +38,23 @@ use crate::{arr32, with_state, Partition};
 
 #[derive(Default)]
 pub(crate) struct UsDoc {
-    /// The CURRENT generation's partition id (a keyhive doc id).
-    ///
-    /// Generations exist because enrollment regenerates the doc
-    /// (PAIRING.md §2): a device added after a doc was sealed never gets
-    /// a readable epoch at the pinned keyhive rev, while a doc it is a
-    /// member of from epoch 0 is stably readable. The `us-*` surface
-    /// never exposes this id, which is what lets the generation change
-    /// underneath chrome without chrome knowing.
+    /// The user-system partition id (a keyhive doc id). One lineage:
+    /// enrollment no longer regenerates the doc (PAIRING.md §2/§4b), so
+    /// a late device joins THIS document and reads its history by causal
+    /// walk. The `us-*` surface never exposes the id.
     pub(crate) doc: Option<Vec<u8>>,
     /// The user group every device of this user belongs to.
     pub(crate) user_group: Option<Vec<u8>>,
-    /// Provenances THIS instance wrote. Two rules key off it: repair
-    /// writes (only the owner of a losing write persists it) and
-    /// generation reconciliation (only own values are re-written).
+    /// Provenances THIS instance wrote. The repair rule keys off it:
+    /// only the owner of a losing write persists the repair.
     my_marks: HashSet<String>,
-    /// Contact keys this instance wrote.
-    my_contacts: HashSet<String>,
-    /// Device keys this instance wrote.
-    my_devices: HashSet<String>,
     /// Contact cards already handed to keyhive, so a synced contact is
     /// ingested exactly once per instance.
     ingested_contacts: HashSet<String>,
-    /// Own values staged for re-writing into a newly adopted generation
-    /// (authorship + `created-at` preserved).
-    pending: Option<Values>,
     /// (peer, tree) pairs already subscribed, so the poll loop does not
     /// start a fresh sync every time it runs.
     subscribed: HashSet<(Vec<u8>, Vec<u8>)>,
-    /// Every generation this device has held, oldest first.
-    generations: Vec<Vec<u8>>,
-    /// The baseline the next drain diffs against. Deliberately NOT reset
-    /// when a generation is adopted: the values a device already rendered
-    /// must not be re-announced just because they moved documents.
+    /// The baseline the next drain diffs against.
     last: Option<Snap>,
     /// The drained event queue (per instance, per PAIRING.md §4).
     events: Vec<UsEvent>,
@@ -91,11 +75,6 @@ fn doc_id() -> Result<Vec<u8>, String> {
 /// palette leaves a collision standing rather than inventing a colour
 /// outside the set the framework can render legibly.
 const HUE_PALETTE_LEN: u16 = 10;
-
-/// Forward pointer to the successor generation. A MAP, not a scalar:
-/// two adders enrolling concurrently would silently last-write-wins a
-/// scalar, and a fork that cannot be seen is a fork that corrupts.
-const SUPERSEDED: &str = "superseded-by";
 
 const PROFILE: &str = "profile";
 const MARKS: &str = "marks";
@@ -243,363 +222,10 @@ fn read_contacts(am: &AutoCommit) -> BTreeMap<String, (Vec<u8>, String)> {
     out
 }
 
-/// A whole user-system state as VALUES, independent of which document
-/// holds them. Generations copy this, not history.
-#[derive(Clone, Default)]
-struct Values {
-    profile: (String, u16, Option<Vec<u8>>),
-    marks: Vec<MarkRaw>,
-    contacts: BTreeMap<String, (Vec<u8>, String)>,
-    devices: BTreeMap<String, (String, u64, bool)>,
-}
-
-fn read_values(am: &AutoCommit) -> Values {
-    Values {
-        profile: read_profile(am),
-        marks: read_marks(am),
-        contacts: read_contacts(am),
-        devices: read_devices(am),
-    }
-}
-
-/// Just this instance's own values, for re-writing into a generation
-/// whose copy predates them.
-fn own_values(all: &Values, mine_marks: &HashSet<String>, mine_contacts: &HashSet<String>, mine_devices: &HashSet<String>) -> Values {
-    Values {
-        profile: all.profile.clone(),
-        marks: all
-            .marks
-            .iter()
-            .filter(|m| mine_marks.contains(&m.provenance))
-            .cloned()
-            .collect(),
-        contacts: all
-            .contacts
-            .iter()
-            .filter(|(k, _)| mine_contacts.contains(*k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        devices: all
-            .devices
-            .iter()
-            .filter(|(k, _)| mine_devices.contains(*k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    }
-}
-
-fn write_mark_fields(am: &mut AutoCommit, obj: &ObjId, m: &MarkRaw) -> Result<(), String> {
-    am.put(obj, "petname", m.petname.as_str())
-        .map_err(|e| format!("petname: {e}"))?;
-    am.put(obj, "hue", m.hue as i64)
-        .map_err(|e| format!("hue: {e}"))?;
-    if let Some(n) = &m.nickname {
-        am.put(obj, "nickname", n.as_str())
-            .map_err(|e| format!("nickname: {e}"))?;
-    }
-    // `created-at` travels with the value: it is what decides conflict
-    // winners, so a copy that reset it would silently re-order the whole
-    // marks table on the next merge.
-    am.put(obj, "created-at", m.created_at as i64)
-        .map_err(|e| format!("created-at: {e}"))?;
-    if let Some(c) = &m.confirmed_for {
-        am.put(obj, "confirmed-for", c.as_str())
-            .map_err(|e| format!("confirmed-for: {e}"))?;
-    }
-    Ok(())
-}
-
-/// One automerge change containing an entire user-system state: the
-/// creation change of a new generation.
-fn build_generation(v: &Values) -> Result<(AutoCommit, [u8; 32], Vec<u8>), String> {
-    let mut am = AutoCommit::new();
-    let p = am
-        .put_object(ROOT, PROFILE, ObjType::Map)
-        .map_err(|e| format!("profile map: {e}"))?;
-    am.put(&p, "display-name", v.profile.0.as_str())
-        .map_err(|e| format!("display-name: {e}"))?;
-    am.put(&p, "hue", v.profile.1 as i64)
-        .map_err(|e| format!("hue: {e}"))?;
-    if let Some(icon) = &v.profile.2 {
-        am.put(&p, "icon", icon.clone())
-            .map_err(|e| format!("icon: {e}"))?;
-    }
-    let marks = am
-        .put_object(ROOT, MARKS, ObjType::Map)
-        .map_err(|e| format!("marks map: {e}"))?;
-    for m in &v.marks {
-        let obj = am
-            .put_object(&marks, m.provenance.as_str(), ObjType::Map)
-            .map_err(|e| format!("mark entry: {e}"))?;
-        write_mark_fields(&mut am, &obj, m)?;
-    }
-    let contacts = am
-        .put_object(ROOT, CONTACTS, ObjType::Map)
-        .map_err(|e| format!("contacts map: {e}"))?;
-    for (key, (card, petname)) in &v.contacts {
-        let obj = am
-            .put_object(&contacts, key.as_str(), ObjType::Map)
-            .map_err(|e| format!("contact entry: {e}"))?;
-        am.put(&obj, "card", card.clone())
-            .map_err(|e| format!("contact card: {e}"))?;
-        am.put(&obj, "petname", petname.as_str())
-            .map_err(|e| format!("contact petname: {e}"))?;
-    }
-    let devices = am
-        .put_object(ROOT, DEVICES, ObjType::Map)
-        .map_err(|e| format!("devices map: {e}"))?;
-    for (key, (name, enrolled_at, revoked)) in &v.devices {
-        let obj = am
-            .put_object(&devices, key.as_str(), ObjType::Map)
-            .map_err(|e| format!("device entry: {e}"))?;
-        am.put(&obj, "name", name.as_str())
-            .map_err(|e| format!("device name: {e}"))?;
-        am.put(&obj, "enrolled-at", *enrolled_at as i64)
-            .map_err(|e| format!("enrolled-at: {e}"))?;
-        am.put(&obj, "revoked", *revoked)
-            .map_err(|e| format!("revoked: {e}"))?;
-    }
-    am.commit();
-    let change = am
-        .get_last_local_change()
-        .ok_or("generation creation produced no change")?;
-    let cref = change.hash().0;
-    let chunk = change.raw_bytes().to_vec();
-    Ok((am, cref, chunk))
-}
-
-/// Successor generations recorded in a doc, lexicographically ordered.
-fn successors(am: &AutoCommit) -> Vec<String> {
-    let Some(ptr) = map_at(am, SUPERSEDED) else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = am.keys(&ptr).map(|k| k.to_string()).collect();
-    out.sort();
-    out
-}
-
-/// Create the next generation of the user-system doc and point the
-/// current one at it (PAIRING.md §2).
+/// Keep a subscription open to the user-system doc with every peer.
 ///
-/// The joiner is a member of this document from epoch 0, which is the
-/// only arrangement measured to be stably readable at the pinned keyhive
-/// rev. What crosses over is VALUES, not history: the read-back window
-/// for user-system data is "what the account currently believes", and
-/// the automerge history of how it got there is not something any device
-/// renders.
-async fn regenerate() -> Result<Vec<u8>, String> {
-    let old_id = doc_id()?;
-    let group = with_state(|s| s.us.user_group.clone())?
-        .ok_or("no user group on this device")?;
-    let values = read_us(read_values)?;
-
-    let (am, cref, chunk) = build_generation(&values)?;
-    let new_id = crate::create_doc_for(cref).await?;
-    crate::add_doc_member(&new_id, &group, "edit").await?;
-    with_state(|s| {
-        let mut applied = HashSet::new();
-        applied.insert(cref);
-        s.partitions.insert(
-            new_id.clone(),
-            Partition {
-                am,
-                applied,
-                revision: 1,
-                undecryptable: 0,
-                decrypted: 0,
-            },
-        );
-    })?;
-    // Create → delegate → seal, in that order: the epoch at seal time is
-    // what determines readership, and this is the whole reason the
-    // generation exists.
-    crate::encrypt_and_commit(&new_id, chunk, vec![], cref).await?;
-
-    // The forward pointer goes into the OLD generation, so any device
-    // still reading the old one finds the way forward on its next sync.
-    let pointer_key = hex::encode(&new_id);
-    crate::author(&old_id, move |am| {
-        let ptr = match map_at(am, SUPERSEDED) {
-            Some(p) => p,
-            None => am
-                .put_object(ROOT, SUPERSEDED, ObjType::Map)
-                .map_err(|e| format!("superseded map: {e}"))?,
-        };
-        am.put(&ptr, pointer_key.as_str(), true)
-            .map_err(|e| format!("forward pointer: {e}"))?;
-        Ok(())
-    })
-    .await?;
-
-    with_state(|s| {
-        s.us.doc = Some(new_id.clone());
-        s.us.generations.push(new_id.clone());
-    })?;
-    // This device authored the copy, so none of it is news to it.
-    set_baseline()?;
-    Ok(new_id)
-}
-
-/// Follow a forward pointer, if the current generation carries one.
-///
-/// The baseline is deliberately carried across: every value that came
-/// over in the copy is one this device already rendered, and #22 is
-/// explicit that announcements are for remotely-caused CHANGES, not for
-/// bookkeeping the user cannot perceive.
-async fn follow_pointer() -> Result<Option<Vec<u8>>, String> {
-    let current = doc_id()?;
-    let heirs = read_us(successors)?;
-    if heirs.is_empty() {
-        return Ok(None);
-    }
-    if heirs.len() > 1 {
-        // Not gated in v1: pairing is humanly serialized, so this is a
-        // report-loudly path rather than a solved one (PAIRING.md §2).
-        eprintln!(
-            concat!(
-                "[us] GENERATION FORK: {} successors recorded on {}; taking the ",
-                "lexicographically smallest ({}). A losing adder must repeat ",
-                "its finalization atop the winner."
-            ),
-            heirs.len(),
-            hex::encode(&current[..4]),
-            &heirs[0][..8]
-        );
-    }
-    let winner = hex::decode(&heirs[0]).map_err(|e| format!("bad successor id: {e}"))?;
-    if winner == current {
-        return Ok(None);
-    }
-
-    // Stage this device's own values before switching: the copy was taken
-    // on the adder, and anything this device wrote that had not reached
-    // it yet would otherwise be lost with the old generation.
-    let (all, mine_marks, mine_contacts, mine_devices) = {
-        let all = read_us(read_values)?;
-        with_state(|s| {
-            (
-                all,
-                s.us.my_marks.clone(),
-                s.us.my_contacts.clone(),
-                s.us.my_devices.clone(),
-            )
-        })?
-    };
-    let mine = own_values(&all, &mine_marks, &mine_contacts, &mine_devices);
-
-    with_state(|s| {
-        s.partitions
-            .entry(winner.clone())
-            .or_insert_with(|| Partition {
-                am: AutoCommit::new(),
-                applied: HashSet::new(),
-                revision: 0,
-                undecryptable: 0,
-                decrypted: 0,
-            });
-        s.us.doc = Some(winner.clone());
-        s.us.generations.push(winner.clone());
-        s.us.pending = Some(mine);
-    })?;
-    crate::flush_keyhive().await?;
-    Ok(Some(winner))
-}
-
-/// Re-write this device's own values that the generation copy predates.
-///
-/// Only own values, and only missing ones: a device that re-wrote values
-/// it merely READ would resurrect entries other devices had deleted, and
-/// would do it with its own authorship.
-async fn reconcile_pending() -> Result<(), String> {
-    let Some(mine) = with_state(|s| s.us.pending.clone())? else {
-        return Ok(());
-    };
-    // Wait until the new generation has actually materialized, or
-    // "missing" cannot be distinguished from "not synced yet".
-    if read_us(|am| map_at(am, PROFILE).is_none())? {
-        return Ok(());
-    }
-    let current = read_us(read_values)?;
-    let id = doc_id()?;
-
-    for m in &mine.marks {
-        if current.marks.iter().any(|c| c.provenance == m.provenance) {
-            continue;
-        }
-        let m = m.clone();
-        crate::author(&id, move |am| {
-            let marks = match map_at(am, MARKS) {
-                Some(x) => x,
-                None => am
-                    .put_object(ROOT, MARKS, ObjType::Map)
-                    .map_err(|e| format!("marks map: {e}"))?,
-            };
-            let obj = am
-                .put_object(&marks, m.provenance.as_str(), ObjType::Map)
-                .map_err(|e| format!("mark entry: {e}"))?;
-            write_mark_fields(am, &obj, &m)
-        })
-        .await?;
-    }
-    for (key, (card, petname)) in &mine.contacts {
-        if current.contacts.contains_key(key) {
-            continue;
-        }
-        let (key, card, petname) = (key.clone(), card.clone(), petname.clone());
-        crate::author(&id, move |am| {
-            let contacts = match map_at(am, CONTACTS) {
-                Some(x) => x,
-                None => am
-                    .put_object(ROOT, CONTACTS, ObjType::Map)
-                    .map_err(|e| format!("contacts map: {e}"))?,
-            };
-            let obj = am
-                .put_object(&contacts, key.as_str(), ObjType::Map)
-                .map_err(|e| format!("contact entry: {e}"))?;
-            am.put(&obj, "card", card)
-                .map_err(|e| format!("contact card: {e}"))?;
-            am.put(&obj, "petname", petname.as_str())
-                .map_err(|e| format!("contact petname: {e}"))?;
-            Ok(())
-        })
-        .await?;
-    }
-    for (key, (name, enrolled_at, revoked)) in &mine.devices {
-        if current.devices.contains_key(key) {
-            continue;
-        }
-        let (key, name, enrolled_at, revoked) =
-            (key.clone(), name.clone(), *enrolled_at, *revoked);
-        crate::author(&id, move |am| {
-            let devices = match map_at(am, DEVICES) {
-                Some(x) => x,
-                None => am
-                    .put_object(ROOT, DEVICES, ObjType::Map)
-                    .map_err(|e| format!("devices map: {e}"))?,
-            };
-            let obj = am
-                .put_object(&devices, key.as_str(), ObjType::Map)
-                .map_err(|e| format!("device entry: {e}"))?;
-            am.put(&obj, "name", name.as_str())
-                .map_err(|e| format!("device name: {e}"))?;
-            am.put(&obj, "enrolled-at", enrolled_at as i64)
-                .map_err(|e| format!("enrolled-at: {e}"))?;
-            am.put(&obj, "revoked", revoked)
-                .map_err(|e| format!("revoked: {e}"))?;
-            Ok(())
-        })
-        .await?;
-    }
-
-    with_state(|s| s.us.pending = None)?;
-    // Reconciliation is this device's own writing; it is not news.
-    set_baseline()
-}
-
-/// Keep a subscription open to the CURRENT generation with every peer.
-///
-/// Engine-driven because the host cannot see generations: `us-*` hides
-/// doc identity by design, and enrollment changes it.
+/// Engine-driven because `us-*` hides doc identity by design, so the host
+/// has no name for the tree to subscribe to.
 fn ensure_subscriptions() -> Result<(), String> {
     let Some(tree) = with_state(|s| s.us.doc.clone())? else {
         return Ok(());
@@ -790,18 +416,9 @@ pub(crate) async fn pump() -> Result<(), String> {
     if with_state(|s| s.us.doc.is_none())? {
         return Ok(());
     }
-    // Apply, then follow any forward pointer, then apply the successor.
-    // Bounded: a device that has been offline across several enrollments
-    // walks the chain, but a malformed cycle must not spin here.
-    for _ in 0..8 {
-        let id = doc_id()?;
-        crate::apply_new_chunks(&id).await?;
-        if follow_pointer().await?.is_none() {
-            break;
-        }
-    }
+    let id = doc_id()?;
+    crate::apply_new_chunks(&id).await?;
     ensure_subscriptions()?;
-    reconcile_pending().await?;
 
     // Received cards are state that must reach every device (the G3
     // finding: the wire will not carry a foreign group's ops to
@@ -937,6 +554,7 @@ pub(crate) async fn create(profile: UsProfile) -> Result<Vec<u8>, String> {
                 revision: 1,
                 undecryptable: 0,
                 decrypted: 0,
+                walked: 0,
             },
         );
         s.us.doc = Some(id.clone());
@@ -967,6 +585,7 @@ pub(crate) async fn adopt(partition_id: &[u8], user_group_id: &[u8]) -> Result<(
                 revision: 0,
                 undecryptable: 0,
                 decrypted: 0,
+                walked: 0,
             });
         s.us.doc = Some(partition_id.to_vec());
         s.us.user_group = Some(user_group_id.to_vec());
@@ -1007,33 +626,19 @@ pub(crate) async fn enroll_device(
     if std::env::var("PM_NO_ROTATE").is_err() {
         crate::rotate_docs_for_group(&group).await?;
     }
-    // 3. Regenerate the user-system doc: the STATE-HANDOFF mechanism
-    // (PAIRING.md §2).
-    //
-    // Not a workaround for a readability defect — that diagnosis was
-    // wrong (see the README finding). A late joiner decrypts post-join
-    // chunks fine; what it cannot do is MATERIALIZE them, because their
-    // automerge dependency chain roots in changes written before it
-    // joined, and automerge buffers changes whose deps are missing.
-    // Causal read-back would need the Envelope content format (#36), so
-    // until then the generation is what hands a new device the account's
-    // current state.
-    //
-    // The env switch exists for one gate only: the harness act that
-    // exercises a post-seal add on the ORIGINAL doc, which is how the
-    // event-delivery fix is verified directly rather than through the
-    // handoff that would mask it.
-    let partition = if std::env::var("PM_NO_REGEN").is_ok() {
-        doc_id()?
-    } else {
-        regenerate().await?
-    };
+    // 3. The ORIGINAL partition: there is no regeneration any more
+    // (PAIRING.md §2). The joiner reads this document's history by causal
+    // walk from the anchor written in step 5.
+    let partition = doc_id()?;
     // 4. The card, exported for the new INDIVIDUAL (the G3 finding: an
     // individual's card carries every membership the person can reach;
     // a group's card carries the memberships the GROUP reaches, which
     // excludes its own constitutive ops).
     let card = crate::export_static_card(joiner).await?;
-    // 5. The devices entry — written to the NEW generation — then flush.
+    // 5. The devices entry, then flush. This write is also the WALK
+    // ANCHOR: it is sealed under an epoch the joiner holds, so it is
+    // guaranteed to be a chunk the joiner can open directly — and from a
+    // chunk it can open, the whole ancestry is reachable (§2, §4b).
     device_entry(joiner, name).await?;
     crate::flush_keyhive().await?;
     Ok((group, card, partition))
@@ -1041,7 +646,6 @@ pub(crate) async fn enroll_device(
 
 async fn device_entry(agent: &[u8], name: &str) -> Result<(), String> {
     let key = hex::encode(agent);
-    with_state(|s| s.us.my_devices.insert(key.clone()))?;
     let enrolled_at = crate::now_ms_u64();
     let name = name.to_string();
     write(move |am| {
@@ -1185,10 +789,7 @@ pub(crate) async fn contact_put(card: Vec<u8>, petname: String) -> Result<(), St
     // entry on every device, with no id parsing on the write path.
     let key = hex::encode(&blake3::hash(&card).as_bytes()[..16]);
     crate::ingest_static_card(card.clone()).await?;
-    with_state(|s| {
-        s.us.ingested_contacts.insert(key.clone());
-        s.us.my_contacts.insert(key.clone());
-    })?;
+    with_state(|s| s.us.ingested_contacts.insert(key.clone()))?;
     write(move |am| {
         let contacts = match map_at(am, CONTACTS) {
             Some(c) => c,

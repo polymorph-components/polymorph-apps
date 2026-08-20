@@ -511,21 +511,22 @@ async fn pairing_scenarios(
             .map_err(|e| e.to_string()),
     ));
 
+    let relay_expiry = relay.clone();
     let mut store = make_store(&[("PM_PAIR_TTL_MS", &TEST_TTL_MS.to_string())]);
     let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
     outcomes.push((
         "offer expiry",
         store
             .run_concurrent(async move |acc| {
-                pairing_acts::expiry_act(acc, joiner, relay, TEST_TTL_MS).await
+                pairing_acts::expiry_act(acc, joiner, relay_expiry, TEST_TTL_MS).await
             })
             .await?
             .map_err(|e| e.to_string()),
     ));
 
-    // Post-seal add on the ORIGINAL doc: regeneration off, so the
-    // event-delivery behaviour is what is under test.
-    let mut store = make_store(&[("PM_NO_REGEN", "1"), ("PM_EVENT_DIFF", "1")]);
+    // Post-seal add on the account's doc: the readability boundary a
+    // late-joining device sits on (direct decrypt vs causal walk).
+    let mut store = make_store(&[]);
     let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
     let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
     let r = relay_for_post_seal;
@@ -535,6 +536,51 @@ async fn pairing_scenarios(
             .run_concurrent(
                 async move |acc| pairing_acts::post_seal_add_act(acc, founder, joiner, r).await,
             )
+            .await?
+            .map_err(|e| e.to_string()),
+    ));
+
+    // Late joiner materializes FULL pre-join history, order-varied.
+    let mut history_failures: Vec<String> = Vec::new();
+    for seed in 0..10u32 {
+        let mut store = make_store(&[]);
+        let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+        let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+        let r = relay.clone();
+        let outcome = store
+            .run_concurrent(async move |acc| {
+                pairing_acts::full_history_act(acc, founder, joiner, r, seed).await
+            })
+            .await?;
+        if let Err(e) = outcome {
+            history_failures.push(format!("seed {seed}: {e}"));
+        }
+    }
+    outcomes.push((
+        "late joiner materializes FULL pre-join history (10 seeds)",
+        if history_failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{}/10 seeds failed: {}",
+                history_failures.len(),
+                history_failures.join(" | ")
+            ))
+        },
+    ));
+
+    // Concurrent writes across an enrollment, including a deletion.
+    let mut store = make_store(&[]);
+    let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let second = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let third = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let r = relay.clone();
+    outcomes.push((
+        "partitioned writes merge natively (add + rename + forget)",
+        store
+            .run_concurrent(async move |acc| {
+                pairing_acts::partitioned_writer_act(acc, founder, second, third, r).await
+            })
             .await?
             .map_err(|e| e.to_string()),
     ));
