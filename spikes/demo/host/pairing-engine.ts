@@ -1,21 +1,21 @@
 // Engine-backed PairingDriver adapter (Track A -> Track B integration
 // step, per pairing-mock.ts's own header comment: "Swapping this module
 // for a thin adapter over the real `driver` export is the whole
-// integration step — nothing in host/pairing-visor.ts is aware this is
+// integration step — nothing in ../../visor/ui/pairing.ts is aware this is
 // a mock.").
 //
 // Wraps one `Engine.driver` (host/engine.ts, itself a typed view over
 // the composite's `polymorph:engine-spike/driver@0.1.0` export) as the
 // `PairingDriver` shape the visor pairing UI consumes. The TYPE stays
-// imported from pairing-mock.ts per the dispatch note; only the
-// implementation lives here.
+// imported from visor/ui/pairing-driver.ts (the visor owns the
+// contract); only the implementation lives here.
 //
 // SHAPE MISMATCH THIS ADAPTER BRIDGES: the engine.ts `Driver` methods
 // follow the WIT `result<T, string>` convention documented at
 // engine.ts:38 — resolve T, or REJECT with a `ComponentException`
 // carrying the WIT err payload (embedder/errors.ts; recognized by the
 // `isComponentException` brand predicate, never `instanceof`, per that
-// module's own header). `PairingDriver` (pairing-mock.ts ~101-139)
+// module's own header). `PairingDriver` (visor/ui/pairing-driver.ts)
 // instead returns `{ok:true,value:T} | {ok:false,error:string}` on every
 // call, never rejecting. Every method below is therefore a
 // try/reject-to-err wrapper, plus field-shape conversions (bigint u64 <->
@@ -66,7 +66,7 @@ import type {
   UsEvent as MockUsEvent,
   UsMark as MockUsMark,
   UsProfile as MockUsProfile,
-} from "./pairing-mock.ts";
+} from "../../../visor/ui/pairing-driver.ts";
 
 function ok<T>(value: T): { ok: true; value: T } {
   return { ok: true, value };
@@ -183,9 +183,10 @@ function toMockEvent(e: UsEvent): MockUsEvent {
         provenance: e.val[0],
         // CONTRACT: spike.wit ~254 types the field name as a bare
         // `string` (tuple<string,string>), not an enum restricted to
-        // "petname"|"hue" — the mock's stricter TS union (pairing-mock.ts:94)
-        // is a mock-side refinement of the same wire shape. Cast here
-        // rather than widen the mock's type (out of territory) or the
+        // "petname"|"hue" — the contract's stricter TS union
+        // (visor/ui/pairing-driver.ts's `UsEvent`) is a visor-side
+        // refinement of the same wire shape. Cast here rather than
+        // widen the contract type (out of territory) or the
         // WIT (governing doc, not editable); the engine is expected to
         // only ever send these two literal strings (usdoc.rs's own
         // repair logic), so this is a narrowing assertion, not a lossy

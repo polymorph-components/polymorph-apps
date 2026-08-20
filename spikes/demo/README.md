@@ -154,13 +154,14 @@ user's sense of what saving means.
 an in-page mock: two mock "devices" share one `MockPairingNetwork`, so a
 code offered on one pane is claimable on the other and both compute the
 same SAS from the same transcript — real UI development without the
-real engine composite. `host/pairing-visor.ts` is the visor-owned
+real engine composite. `../../visor/ui/pairing.ts` is the visor-owned
 rendering of both ceremonies (it is also the ONLY module allowed to
 render a pairing code or a SAS — `scripts/check-invariants.sh`'s new
-check [6/6] holds that line):
+check [6/6] holds that line), and `../../visor/ui/pairing-driver.ts` is
+the backend contract it is written against:
 
 - **Join** (new device): "join existing account" → QR (a vendored,
-  self-contained encoder, `host/vendor/qrcodegen.ts`) + the 79-char code
+  self-contained encoder, `../../visor/ui/vendor/qrcodegen.ts`) + the 79-char code
   in groups of 4 → SAS screen → **light** confirm ("I initiated this" +
   SAS match — nothing secret is typed, no arming delay) → the adoption
   announcement ("this device now follows your profile: ‹name›, your
@@ -174,7 +175,7 @@ check [6/6] holds that line):
   the new device to a devices list.
 - **State migration**: visor hue, display name and the petname/marks
   table move to `us-*` driver calls; `localStorage` demotes to a **boot
-  cache** (`host/pairing-visor.ts`'s `loadBootCache`/
+  cache** (`../../visor/ui/pairing.ts`'s `loadBootCache`/
   `reconcileFromDriver`) — render from cache, reconcile after driver
   init, announce any diff (never silent). The keystore (device-local
   signing key handles) is untouched by this.
@@ -195,11 +196,51 @@ panes, that the arming delay actually gates the add-side confirm, that
 announcements render, and that the join pane's hue visibly adopts the
 synced value.
 
-Swapping the mock for the real composite (after Track A lands) touches
-only the driver construction in `host/pairing-demo.ts` (or wherever the
-three-pane demo wires it in next) — `host/pairing-visor.ts` is written
-against the `PairingDriver` interface alone and does not know the
-difference.
+### In the three-pane demo
+
+The ceremonies are wired into the main demo too, in the two places
+PAIRING.md §5 puts them:
+
+- **Add** opens as a visor DRAWER SHEET, reached from "Your visor" →
+  "add a device…" — a button the visor draws on its own sheet, from the
+  strip. The sheet is an EXCLUSIVE drawer tenant: while a device is
+  being granted admin over the account, a click on the strip cannot
+  slide another sheet over the ceremony.
+- **Join** is a pane-local affordance in the TABLET pane.
+- **The grant is the user's last act on the granting device**, so the
+  sheet comes down the moment it is made; the session keeps running with
+  nothing on screen and announces its outcome — enrolled, failed, or a
+  peer that never finished — on the strip. (That is right for real
+  hardware, where you put the laptop down after granting. It also
+  un-deadlocks this one-page demo, where the sheet's dim lies over the
+  rectangle standing in for the other device: a sheet that stayed up
+  would make the joiner's confirm unclickable.)
+- One-page artifact, deliberately not "fixed": BEFORE the grant, that
+  same dim also covers the tablet pane, so start the join FIRST (the new
+  device displays its code first anyway, per §5) — on real hardware the
+  laptop's dim does not exist on the tablet.
+- Naming a component, forgetting it, and saving the settings sheet now
+  WRITE THROUGH to the partition (`us-mark-put`, `us-mark-forget`,
+  `us-profile-set`); boot renders from `localStorage` and then
+  `reconcileFromDriver` announces any difference on the strip.
+  `us-events` drains onto the strip through `visorAnnounceSink`.
+  The localStorage keys and formats are unchanged — that IS the
+  demotion: the same bytes, no longer the source of truth.
+
+**Which driver.** The in-page ceremony runs against the MOCK by default;
+`?pairing=engine` selects the real composite (`host/pairing-engine.ts`).
+Everything above the driver is the same code either way. The engine path
+does not complete a ceremony yet: `user-create` traps the guest
+(a wit-bindgen async-support panic), so there is no user group to enroll
+into — measured, with the details and what DOES work over the real
+engine, in PAIRING.md §6's status note. The page says which backend is
+live rather than pretending: with `?pairing=engine` the laptop pane
+reads "user-system unavailable (engine): …".
+
+e2e coverage: `just e2e device-pairing` (both ceremonies, SAS equality
+across the two surfaces, the arming delay, the empty device-name field,
+the adoption announcement, and a petname written on the laptop arriving
+on the tablet).
 
 ## Deployment
 

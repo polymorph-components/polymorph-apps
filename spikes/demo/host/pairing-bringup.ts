@@ -18,7 +18,7 @@
 import { type Engine, newEngine, until } from "./engine.ts";
 import { createEnginePairingDriver } from "./pairing-engine.ts";
 import { probeNoNet } from "./probe-net.ts";
-import type { PairAddState, PairJoinState } from "./pairing-mock.ts";
+import type { PairAddState, PairJoinState } from "../../../visor/ui/pairing-driver.ts";
 
 const ENVELOPE = new URL("../build/engine.plan.json", import.meta.url);
 const WASM = new URL("../../tasks-engine/target/composed.wasm", import.meta.url);

@@ -5,7 +5,7 @@
 // behind the exact same function names the real engine composite will
 // export once Track A lands. Swapping this module for a thin adapter
 // over the real `driver` export is the whole integration step — nothing
-// in host/pairing-visor.ts is aware this is a mock.
+// in ../../visor/ui/pairing.ts is aware this is a mock.
 //
 // WHAT IS MOCKED, DELIBERATELY:
 //   - Transport: an in-page "network" object shared by every mock
@@ -34,109 +34,40 @@
 //     mark-conflict-repaired has something real to fire on.
 //
 // Nothing here is visor. This module knows nothing about DOM, strips,
-// sheets or ceremonies — see host/pairing-visor.ts, which is the ONLY
+// sheets or ceremonies — see ../../visor/ui/pairing.ts, which is the ONLY
 // module allowed to render a pairing code or a SAS (invariant (f) in
 // scripts/check-invariants.sh).
 
-// --- WIT record/variant mirrors (PAIRING.md §3, verbatim shapes) -----------
-
-export interface PairOffer {
-  code: string;
-  expiresMs: number;
-}
-
-export interface PairEnrollment {
-  userGroupId: string;
-  partitionId: string;
-}
-
-export type PairJoinState =
-  | { tag: "waiting" }
-  | { tag: "claimed"; sas: string }
-  | { tag: "confirmed-waiting" }
-  | { tag: "enrolled"; enrollment: PairEnrollment }
-  | { tag: "expired" }
-  | { tag: "failed"; message: string };
-
-export type PairAddState =
-  | { tag: "connecting" }
-  | { tag: "sas-ready"; sas: string }
-  | { tag: "waiting-peer" }
-  | { tag: "enrolled" }
-  | { tag: "failed"; message: string };
-
-export interface UsProfile {
-  displayName: string;
-  hue: number;
-  icon?: Uint8Array;
-}
-
-export interface UsMark {
-  provenance: string;
-  petname: string;
-  hue: number;
-  nickname?: string;
-  createdAt: number;
-  needsReconfirm: boolean;
-}
-
-export interface UsDevice {
-  agentId: string;
-  name: string;
-  enrolledAt: number;
-  revoked: boolean;
-}
-
-export type UsEvent =
-  | { tag: "profile-changed" }
-  | { tag: "mark-added"; provenance: string }
-  | { tag: "mark-changed"; provenance: string }
-  | { tag: "mark-conflict-repaired"; provenance: string; field: "petname" | "hue" }
-  | { tag: "device-added"; name: string }
-  | { tag: "device-revoked"; name: string };
-
-/** The async, WIT-shaped surface every mock instance (and, later, the
- * real composite's adapter) implements. Visor code is written against
- * exactly this interface. */
-export interface PairingDriver {
-  pairJoinStart(): Promise<{ ok: true; value: PairOffer } | { ok: false; error: string }>;
-  pairJoinStatus(): Promise<{ ok: true; value: PairJoinState } | { ok: false; error: string }>;
-  pairJoinConfirm(): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-
-  pairAddStart(code: string): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-  pairAddStatus(): Promise<{ ok: true; value: PairAddState } | { ok: false; error: string }>;
-  pairAddConfirm(
-    deviceName: string,
-  ): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-
-  pairAbort(): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-
-  userCreate(profile: UsProfile): Promise<{ ok: true; value: string } | { ok: false; error: string }>;
-
-  usProfileGet(): Promise<{ ok: true; value: UsProfile } | { ok: false; error: string }>;
-  usProfileSet(profile: UsProfile): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-
-  usMarksList(): Promise<{ ok: true; value: UsMark[] } | { ok: false; error: string }>;
-  usMarkPut(mark: UsMark): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-  usMarkForget(provenance: string): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-  usMarkConfirm(provenance: string): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-
-  usContactsList(): Promise<
-    { ok: true; value: Array<[string, string]> } | { ok: false; error: string }
-  >;
-  usContactPut(
-    card: string,
-    petname: string,
-  ): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-
-  usDevicesList(): Promise<{ ok: true; value: UsDevice[] } | { ok: false; error: string }>;
-  usDeviceRevoke(agentId: string): Promise<{ ok: true; value: null } | { ok: false; error: string }>;
-
-  /** Drain remotely-caused changes (local-echo suppressed at the
-   * network layer, matching the contract's "a device never receives
-   * events for its own writes"). */
-  usEvents(): Promise<{ ok: true; value: UsEvent[] } | { ok: false; error: string }>;
-}
+// --- the driver contract (visor/ui/pairing-driver.ts) ----------------------
+//
+// The WIT-shaped types and the `PairingDriver` interface used to live
+// here. They now live in the VISOR, because they are what the visor's
+// pairing UI requires of a backend, not what this mock happens to
+// offer; this file is one of two implementations (the other is
+// host/pairing-engine.ts). They are re-exported so this module's
+// existing consumers keep one import for "the mock and its types".
+export type {
+  PairAddState,
+  PairEnrollment,
+  PairingDriver,
+  PairJoinState,
+  PairOffer,
+  UsDevice,
+  UsEvent,
+  UsMark,
+  UsProfile,
+} from "../../../visor/ui/pairing-driver.ts";
+import type {
+  PairAddState,
+  PairEnrollment,
+  PairingDriver,
+  PairJoinState,
+  PairOffer,
+  UsDevice,
+  UsEvent,
+  UsMark,
+  UsProfile,
+} from "../../../visor/ui/pairing-driver.ts";
 
 // --- the shared user-system "doc" ------------------------------------------
 
@@ -178,7 +109,7 @@ function ensureQueue(doc: UserGroupDoc, instanceId: string) {
 // Hues are PALETTE INDICES (PAIRING.md §4: "u16 index into the #22
 // framework palette, ~10 entries"), not raw OKLCH angles — the mock
 // carries the same u16 index space the WIT type promises; the
-// index-to-angle mapping is the visor's own table (host/pairing-visor.ts
+// index-to-angle mapping is the visor's own table (../../visor/ui/pairing.ts
 // mirrors host/demo.ts's existing VISOR_HUES), never the mock's
 // concern.
 const PALETTE_SIZE = 10;

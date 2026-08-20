@@ -342,3 +342,39 @@ across panes, arming delay enforced, announcements render);
 
 Integration (after A): swap mock for the composite, run the full demo
 beats, then the NOTES/issue design records.
+
+### Status — Track B integration (2026-08-20)
+
+Recorded here because §6 is where the gates live; the CONTRACT above is
+unchanged.
+
+Track B's visor half is done and gated: the pairing UI now lives in
+`visor/ui/pairing.ts` (so §5's "renders only in visor-owned surfaces" is
+a property of the framework layer — invariant (f) greps it there), the
+demo reaches the ADD ceremony from the visor's settings sheet and the
+JOIN ceremony from the tablet pane, and `spikes/demo/e2e` covers both
+ceremonies plus the marks write-through (`device-pairing`, 14 acts).
+
+**The demo's in-page ceremony runs against the MOCK driver by default.**
+`?pairing=engine` selects the real composite through
+`host/pairing-engine.ts`, and everything above the driver is identical —
+but the real path cannot complete a ceremony yet:
+
+- `user-create` **traps the guest** in a real browser: a panic inside
+  wit-bindgen's async support (`async_support.rs:578: assertion failed:
+  !state.is_null()`), reproduced on an otherwise idle instance with a
+  single sequential call, so it is not a host-concurrency artefact. With
+  no user group there is no ENROLL (§2 step 6).
+- The same call also fails under Deno (`just pairing-bringup`), where the
+  BASELINE `just bringup wire` — which contains no pairing at all —
+  reproduces the identical host trap
+  (`resumeWith: parked thread's instance is not enterable from the host`,
+  via the webcrypto signing import). That fault predates this track.
+- What DOES work against the real engine in the browser, verified:
+  `pair-join-start` (79-char code, with the tablet iroh-bound),
+  `us-events`, and the WIT error path
+  (`us-profile-get` -> "no user-system partition").
+
+So the remaining integration work is Track A's: `user-create` is the one
+call standing between this UI and a live ceremony.
+
