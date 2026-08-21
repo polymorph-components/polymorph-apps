@@ -336,9 +336,106 @@ async function main() {
     console.log("         (browser relaunched after a deadline failure)");
   };
 
+  // --- memory watch -------------------------------------------------------
+  //
+  // A wedge from memory pressure looks exactly like the observed protocol
+  // wedges — a renderer stalls and no crash event ever reaches the driver —
+  // so the harness watches the browser's whole process tree, not just the
+  // aftermath: /proc-walked RSS grouped into the LIVE chrome tree (our
+  // descendants), ORPHANED chrome (abandoned by recoverBrowser, reparented
+  // to init, still eating memory — matched by playwright-cache cmdline so a
+  // developer's own desktop Chrome is never counted), minio, and the
+  // harness itself, plus the kernel's MemAvailable. RSS summed over a
+  // process tree OVERCOUNTS shared pages (every renderer maps the same
+  // binary); the trend is what matters here, not the absolute number.
+  // One line per scenario; the full recent history on a deadline failure.
+  type MemSample = {
+    t: number;
+    chromeMb: number;
+    orphanMb: number;
+    minioMb: number;
+    otherMb: number;
+    harnessMb: number;
+    availMb: number;
+  };
+  const pwCachePath = Deno.env.get("PLAYWRIGHT_BROWSERS_PATH") ?? "ms-playwright";
+  const sampleMem = (): MemSample | null => {
+    if (Deno.build.os !== "linux") return null;
+    try {
+      const table = new Map<number, { ppid: number; rssMb: number; comm: string }>();
+      for (const ent of Deno.readDirSync("/proc")) {
+        if (!/^\d+$/.test(ent.name)) continue;
+        const pid = Number(ent.name);
+        try {
+          const stat = Deno.readTextFileSync(`/proc/${pid}/stat`);
+          // comm may contain spaces/parens: parse around the LAST ')'.
+          const close = stat.lastIndexOf(")");
+          const comm = stat.slice(stat.indexOf("(") + 1, close);
+          const ppid = Number(stat.slice(close + 2).split(" ")[1]);
+          const pages = Number(Deno.readTextFileSync(`/proc/${pid}/statm`).split(" ")[1]);
+          table.set(pid, { ppid, rssMb: (pages * 4096) / 1048576, comm });
+        } catch { /* pid raced away */ }
+      }
+      const isOurs = (pid: number): boolean => {
+        for (let cur = pid, guard = 0; guard < 64; guard++) {
+          const p = table.get(cur);
+          if (!p) return false;
+          if (p.ppid === Deno.pid) return true;
+          if (p.ppid <= 1) return false;
+          cur = p.ppid;
+        }
+        return false;
+      };
+      const s: MemSample = {
+        t: performance.now(),
+        chromeMb: 0,
+        orphanMb: 0,
+        minioMb: 0,
+        otherMb: 0,
+        harnessMb: Deno.memoryUsage().rss / 1048576,
+        availMb: Number(
+          Deno.readTextFileSync("/proc/meminfo").match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0,
+        ) / 1024,
+      };
+      for (const [pid, p] of table) {
+        if (pid === Deno.pid) continue;
+        const chromeish = /chrom|headless/i.test(p.comm);
+        if (isOurs(pid)) {
+          if (chromeish) s.chromeMb += p.rssMb;
+          else if (/minio/i.test(p.comm)) s.minioMb += p.rssMb;
+          else s.otherMb += p.rssMb;
+        } else if (chromeish) {
+          try {
+            if (Deno.readTextFileSync(`/proc/${pid}/cmdline`).includes(pwCachePath)) {
+              s.orphanMb += p.rssMb;
+            }
+          } catch { /* not ours to read */ }
+        }
+      }
+      return s;
+    } catch {
+      return null; // diagnostics are best-effort
+    }
+  };
+  const memHistory: MemSample[] = [];
+  let scenarioPeakMb = 0;
+  const recordSample = (): MemSample | null => {
+    const s = sampleMem();
+    if (!s) return null;
+    memHistory.push(s);
+    if (memHistory.length > 40) memHistory.shift();
+    scenarioPeakMb = Math.max(scenarioPeakMb, s.chromeMb + s.orphanMb);
+    return s;
+  };
+  const fmtMb = (mb: number) => `${Math.round(mb)}MB`;
+  const memTimer = setInterval(recordSample, 5_000);
+  Deno.unrefTimer(memTimer);
+
   for (const scenario of runList) {
     console.log(`  ── ${scenario.name}: ${scenario.why}`);
     resetActs();
+    scenarioPeakMb = 0;
+    recordSample();
     const t0 = performance.now();
     let page: Page | null = null;
     try {
@@ -383,6 +480,21 @@ async function main() {
         const stuck = ((performance.now() - phaseAt) / 1000).toFixed(1);
         console.log(`         wedged in phase '${phase}' for ${stuck}s`);
         console.log(`         browser.isConnected(): ${browser.isConnected()}`);
+        // The sampled history answers the question a post-mortem snapshot
+        // cannot: was memory CLIMBING before the stall, or flat?
+        recordSample();
+        if (memHistory.length > 0) {
+          console.log("         --- mem history (5s cadence, oldest first) ---");
+          const now = performance.now();
+          for (const s of memHistory.slice(-12)) {
+            console.log(
+              `         t-${((now - s.t) / 1000).toFixed(0).padStart(3)}s  ` +
+                `chrome ${fmtMb(s.chromeMb)}  orphans ${fmtMb(s.orphanMb)}  ` +
+                `minio ${fmtMb(s.minioMb)}  other ${fmtMb(s.otherMb)}  ` +
+                `harness ${fmtMb(s.harnessMb)}  avail ${fmtMb(s.availMb)}`,
+            );
+          }
+        }
         if (Deno.build.os === "linux") {
           try {
             const mem = new TextDecoder().decode(
@@ -403,6 +515,14 @@ async function main() {
           new Promise((r) => setTimeout(r, 5_000)),
         ]);
       }
+    }
+    const memEnd = recordSample();
+    if (memEnd) {
+      console.log(
+        `         mem: chrome ${fmtMb(memEnd.chromeMb)} (scenario peak ${fmtMb(scenarioPeakMb)})` +
+          `${memEnd.orphanMb > 1 ? `, orphans ${fmtMb(memEnd.orphanMb)}` : ""}` +
+          `, avail ${fmtMb(memEnd.availMb)}`,
+      );
     }
     console.log("");
   }
