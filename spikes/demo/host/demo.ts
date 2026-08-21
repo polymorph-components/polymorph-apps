@@ -23,6 +23,7 @@ import { createSurface } from "../../../visor/surface/surface.ts";
 // storage keys, the surface the strip falls back to, and the CONTENT of
 // the three sheets it registers as drawer tenants.
 import {
+  type DrawerSheet,
   foreignToken,
   initVisor,
   isAppMarkIcon,
@@ -164,7 +165,89 @@ type StorageConfig =
     root: string;
   };
 
+type ProviderKey = StorageConfig["provider"];
+
+/** THE INSTALLED-PROVIDER REGISTRY — what EXISTS on this device, as data.
+ *
+ * This is the storage page's two provider tabs, promoted. The tabs
+ * encoded the same knowledge (which providers there are, which artifact
+ * each one's config panel is fetched by) as markup plus a hardcoded
+ * union in `mountPanel`, in the one place the knowledge could not be
+ * used: inside the page, below the bar, in pixels an app can imitate.
+ * The picker sheet needs it ABOVE the bar, so it becomes a table.
+ *
+ * `artifact` is the PROVENANCE KEY — the name the visor fetches the
+ * panel by, and therefore the key of its row in the trust table
+ * (`marks`). It is the join between "a provider is installed" and
+ * "the user has a word for this component", which is what lets the
+ * picker render list (a) in the same voices the strip uses.
+ *
+ * `label` is the visor's OWN word for the provider — framework voice,
+ * used where the visor has to name a component it has never run (a
+ * never-mounted provider has said nothing about itself yet). It is
+ * never mixed into an app-voice token: the entries in the lists show
+ * the provenance key through `foreignToken`, and this label sits beside
+ * it as the visor's description. */
+interface InstalledProvider {
+  key: ProviderKey;
+  artifact: string;
+  label: string;
+  /** WHAT THE VISOR MUST HOLD to connect this provider — the credential
+   * kinds its sheet asks for, in the visor's own fixed vocabulary
+   * (`CREDENTIAL_VOCABULARY`).
+   *
+   * It is DECLARED HERE rather than asked of the panel, because by the
+   * time the picker binds there is no panel to ask: the record was
+   * written on an earlier visit and the component has not run since.
+   * That is a strengthening rather than a compromise — the fields on the
+   * credential sheet now derive from the visor's own table with no app
+   * input at all, where before a (validated) panel answer chose which of
+   * the visor's fields appeared. The page keeps its own check against
+   * what the running panel declares (`mountPanel` disables Save on an
+   * unknown kind), so a panel that asks for something outside the
+   * vocabulary is still refused where it is running. */
+  needs: readonly string[];
+}
+const INSTALLED_PROVIDERS: readonly InstalledProvider[] = [
+  {
+    key: "s3",
+    artifact: "panel-s3",
+    label: "S3-compatible object storage",
+    needs: ["access-key", "secret-key"],
+  },
+  {
+    key: "dropbox",
+    artifact: "panel-dropbox",
+    label: "Dropbox",
+    needs: ["app-key", "app-secret", "bearer-token", "refresh-token"],
+  },
+];
+const providerInfo = (key: ProviderKey): InstalledProvider =>
+  INSTALLED_PROVIDERS.find((p) => p.key === key)!;
+
 const STORAGE_KEY = "pm-demo-storage";
+
+/** THE CONFIG STORE, PLURAL (#22 "the storage picker moves above the
+ * bar"). One record per CONFIGURED provider, keyed by provider, plus
+ * which one is BOUND.
+ *
+ * Why the split. Configuring a provider and committing to it used to be
+ * the same act — the storage page's Save both wrote the record and
+ * connected the app to it — so a single stored record was all the state
+ * there was. The picker separates them: the page WRITES a record
+ * (configuration, below the bar, in pixels an app could imitate) and
+ * only the picker BINDS one (commitment, above the bar, armed). Two acts
+ * need two pieces of state, and a user may now have several providers
+ * configured with exactly one of them in force.
+ *
+ * `bound` is what boot arms from. Without it a returning user with two
+ * configured providers would have no answer to "which one is my
+ * storage?" and the visor would have to guess — which is the sort of
+ * silent choice this whole design exists to stop making. */
+interface StorageStore {
+  bound: ProviderKey | null;
+  providers: Partial<Record<ProviderKey, StorageConfig>>;
+}
 
 // --- the visor's own storage keys ---------------------------------------------
 //
@@ -227,26 +310,72 @@ function splitLegacyS3(
   return cfg;
 }
 
-function loadStorage(): StorageConfig | null {
+/** Read the whole store, MIGRATING every older shape on the way through.
+ *
+ * Three shapes have been written to this key, and all three still load:
+ *   1. today's `{ bound, providers }`;
+ *   2. the single record `{ provider: "s3" | "dropbox", … }` — THE
+ *      EXISTING RECORD ADOPTS ITS OWN KEY (#22 ruling): the provider it
+ *      declares becomes its key in `providers`, and since it was the one
+ *      configuration this device had, it is also what was in force, so
+ *      it becomes `bound`. A returning user is therefore connected to
+ *      exactly what they were connected to before, with no ceremony;
+ *   3. the pre-#11 record, which still carries a readable secret — split
+ *      by `splitLegacyS3` and escrowed by `escrowPending`, unchanged.
+ * Plus the pre-provider-split `LEGACY_S3_KEY` and the `?s3=` seed, both
+ * of which land as an s3 record that is bound for the same reason.
+ *
+ * MIGRATION IS NOT WRITTEN BACK HERE. This is a read; the rewrite
+ * happens the next time something persists (`escrowPending` on a boot
+ * that escrows, `saveProviderConfig` on a config write). A read that
+ * silently rewrites storage is a read that can corrupt on a half-loaded
+ * page, and there is nothing to gain: every reader goes through here. */
+function loadStorageStore(): StorageStore {
+  const seeded = (cfg: StorageConfig): StorageStore => ({
+    bound: cfg.provider,
+    providers: { [cfg.provider]: cfg },
+  });
   if (params.get("s3")) {
     // The ?secret= seed is treated exactly like a legacy stored secret:
     // escrowed on the way in, never re-persisted as a string.
-    return splitLegacyS3({
+    return seeded(splitLegacyS3({
       endpoint: params.get("s3")!,
       bucket: params.get("bucket") ?? "pm-demo",
       access: params.get("access") ?? "",
       secret: params.get("secret") ?? "",
-    });
+    }));
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const cfg = JSON.parse(raw) as StorageConfig & { secret?: string };
+      const parsed = JSON.parse(raw) as
+        | (StorageConfig & { secret?: string })
+        | StorageStore;
+      if ("providers" in parsed && typeof parsed.providers === "object") {
+        const providers: StorageStore["providers"] = {};
+        for (const p of INSTALLED_PROVIDERS) {
+          const cfg = parsed.providers?.[p.key];
+          if (!cfg || cfg.provider !== p.key) continue;
+          // The pre-#11 secret can be sitting in a plural store too (a
+          // device that migrated to plural before it ever escrowed), so
+          // the split runs per record rather than only on the flat shape.
+          providers[p.key] = cfg.provider === "s3"
+            ? splitLegacyS3(cfg as StorageConfig & { secret?: string } & { provider: "s3" })
+            : cfg;
+        }
+        const bound = parsed.bound ?? null;
+        return {
+          bound: bound !== null && providers[bound] ? bound : null,
+          providers,
+        };
+      }
+      const cfg = parsed as StorageConfig & { secret?: string };
       // MIGRATION: a config written before #11 still carries the raw
       // secret. Split it out here; `escrowPending` imports it and writes
       // the blob back without the field.
-      if (cfg.provider === "s3") return splitLegacyS3(cfg);
-      return cfg;
+      if (cfg.provider === "s3") return seeded(splitLegacyS3(cfg));
+      if (cfg.provider === "dropbox") return seeded(cfg);
+      return { bound: null, providers: {} };
     }
     const legacy = localStorage.getItem(LEGACY_S3_KEY);
     if (legacy) {
@@ -256,12 +385,51 @@ function loadStorage(): StorageConfig | null {
         access: string;
         secret: string;
       };
-      return splitLegacyS3(s3);
+      return seeded(splitLegacyS3(s3));
     }
-    return null;
+    return { bound: null, providers: {} };
   } catch {
-    return null;
+    return { bound: null, providers: {} };
   }
+}
+
+/** The record for one provider, or null when that provider has never
+ * been configured on this device. */
+function loadStorageFor(provider: ProviderKey): StorageConfig | null {
+  return loadStorageStore().providers[provider] ?? null;
+}
+
+/** The configuration currently IN FORCE — the bound provider's record.
+ * Null when nothing is bound, which is now a real and ordinary state: a
+ * provider can be configured (its record written on the page) and not
+ * yet selected (never confirmed in the picker). */
+function loadBoundStorage(): StorageConfig | null {
+  const store = loadStorageStore();
+  return store.bound === null ? null : store.providers[store.bound] ?? null;
+}
+
+function writeStorageStore(store: StorageStore): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+}
+
+/** CONFIGURATION, not commitment: write one provider's record and leave
+ * the binding exactly as it was. This is what the storage page's Save
+ * does now, and the demotion is the point — a page below the bar may
+ * describe a destination; only the picker above the bar may put one in
+ * force. */
+function saveProviderConfig(cfg: StorageConfig): void {
+  const store = loadStorageStore();
+  store.providers[cfg.provider] = cfg;
+  writeStorageStore(store);
+}
+
+/** COMMITMENT: the record is in force from here. Only the picker's armed
+ * confirmation (and the credential sheet it hands to) reaches this. */
+function bindProviderConfig(cfg: StorageConfig): void {
+  const store = loadStorageStore();
+  store.providers[cfg.provider] = cfg;
+  store.bound = cfg.provider;
+  writeStorageStore(store);
 }
 
 /** Finish the migration: import any secret found in cleartext storage as
@@ -273,7 +441,10 @@ async function escrowPending(cfg: StorageConfig | null): Promise<void> {
   if (!pending || pending.secret === "") return;
   try {
     await putSigningKey(pending.origin, pending.access, pending.secret);
-    if (cfg) localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    // The rewrite is the whole store, in today's shape: this is the one
+    // place a legacy blob is guaranteed to be replaced, so it is where
+    // the flat record stops existing on disk.
+    if (cfg) bindProviderConfig(cfg);
     localStorage.removeItem(LEGACY_S3_KEY);
     console.log("[keystore] migrated a stored secret into a non-extractable signing key");
   } catch (e) {
@@ -1342,7 +1513,7 @@ async function boot() {
   // --- the bucket leg: user-configured, activates the tablet ---------------
 
   let bucketReady = false;
-  let currentProvider: "s3" | "dropbox" = loadStorage()?.provider ?? "s3";
+  let currentProvider: ProviderKey = loadBoundStorage()?.provider ?? "s3";
   // Dropbox link tier: Bob's standing pickup capability. The visor carries
   // it here in lieu of the E2E channel the framework would use.
   let bobPickup: string | undefined;
@@ -1518,12 +1689,15 @@ async function boot() {
   // the handle naming the relationship rather than the bytes.
   onBearerRefreshed = (token: string) => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const cfg = JSON.parse(raw) as StorageConfig;
-      if (cfg.provider !== "dropbox") return;
+      // THROUGH THE STORE, not over it: the refreshed bearer belongs to
+      // the dropbox RECORD, and a whole-key overwrite would take every
+      // other provider's configuration with it. The binding is not
+      // touched — a token refresh is not a commitment.
+      const store = loadStorageStore();
+      const cfg = store.providers.dropbox;
+      if (!cfg || cfg.provider !== "dropbox") return;
       cfg.accessToken = token;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+      writeStorageStore(store);
     } catch { /* nothing durable to write to; the grant still has it */ }
   };
 
@@ -1572,8 +1746,11 @@ async function boot() {
   //
   // #22's provisional ruling: a provider's config panel is an APP — its
   // own region, its own grants, launched FROM the visor, never rendered AS
-  // the visor. The visor owns the page, the tabs and the OAuth ceremony; the
-  // panel owns the fields and hands back an opaque config blob.
+  // the visor. The visor owns the page and the OAuth ceremony; the panel
+  // owns the fields and hands back an opaque config blob. (The provider
+  // TABS the visor used to own here are gone: choosing a provider is a
+  // commitment and moved into the picker sheet above the bar, so this
+  // page configures exactly the one provider it was opened for.)
   // Credentials never touch app code or visor-rendered provider code.
   //
   // IT WAS A MODAL <dialog> AND IS NOW A SIBLING PAGE (web/index.html's
@@ -1607,11 +1784,38 @@ async function boot() {
    * not be tabbable, hit-testable or visible to assistive tech: a
    * control the user cannot see but can still reach is worse than a
    * modal, not better. */
-  const showPage = (which: "main" | "storage") => {
-    const storage = which === "storage";
-    pageTrack.classList.toggle("show-storage", storage);
-    pageStorage.toggleAttribute("inert", !storage);
+  /** A VISOR CEREMONY IS UP OVER THE STORAGE PAGE and has frozen it (the
+   * naming or settings sheet — see the `nestedPlace` bracket passed to
+   * `registerVisorSheets`). It composes with the track's own inert
+   * flags rather than fighting them, which is why both go through
+   * `applyPageInert` below instead of being set at their call sites. */
+  let ceremonyFrozen = false;
+
+  /** THE ONE PLACE `inert` IS DECIDED, from the two things that decide
+   * it. The off-screen page must never be tabbable, hit-testable or
+   * visible to assistive tech (a control the user cannot see but can
+   * still reach is worse than a modal), and the page UNDER A CEREMONY
+   * must not take input either.
+   *
+   * Written as a recomputation rather than as set/unset pairs because
+   * the two states end in any order: a ceremony can close while its
+   * page is still up, and a page can be walked out from under an open
+   * ceremony (the chevron does exactly that — sheets are orthogonal to
+   * navigation). Every exit order then lands on the same answer.
+   *
+   * The ceremony freeze only ever ADDS inert to the storage page. It
+   * never inerts the main page: a ceremony that started over the nested
+   * place and outlived it is at home now, where the lightweight sheets
+   * have always left the app alone. */
+  const applyPageInert = () => {
+    const storage = onStoragePage();
+    pageStorage.toggleAttribute("inert", !storage || ceremonyFrozen);
     pageMain.toggleAttribute("inert", storage);
+  };
+
+  const showPage = (which: "main" | "storage") => {
+    pageTrack.classList.toggle("show-storage", which === "storage");
+    applyPageInert();
   };
 
   // --- the visor's own credential entry: the anchored drawer (#22) -----------
@@ -1904,13 +2108,20 @@ async function boot() {
 
   // --- the two-phase commit: the page decides, the drawer collects (#22) ---
   //
-  // Phase 1 is the storage page: tabs, the sandboxed panel region and
-  // Save/Cancel — and NO credential field anywhere in it. Phase 2 is this
-  // drawer. Between them the visor tears the panel down, so by the time a
-  // secret is on screen there is no component surface alive on the page
-  // at all: not on the storage page (left), not in a pane (paused), nowhere.
-  // That invariant is the reason for the ordering below, and it must be
-  // preserved by anything that touches this flow.
+  // Phase 1 is the storage PICKER, a sheet above the bar: the user picks
+  // a configured provider, under an arming delay, and that armed
+  // selection is the whole commitment. Phase 2 is this drawer. Between
+  // them the visor tears any panel down and leaves the config page, so
+  // by the time a secret is on screen there is no component surface
+  // alive anywhere: not on the storage page (left), not in a pane
+  // (paused), nowhere. That invariant is the reason for the ordering in
+  // `selectProvider`, and it must be preserved by anything that touches
+  // this flow.
+  //
+  // WHAT MOVED (#22 "the storage picker moves above the bar"): phase 1
+  // used to be the storage page's Save button — a commitment entered
+  // from below the bar. The page now only WRITES a provider's record;
+  // binding happens exclusively in the picker.
 
   // --- THE DRAWER'S THREE TENANTS ------------------------------------------
   //
@@ -2015,6 +2226,33 @@ async function boot() {
   const sheets = registerVisorSheets(visor, {
     marksKey: MARKS_KEY,
     canOpen: () => !credentialTenant.isOpen(),
+    /** THE NESTED PLACE this consumer has: the provider-config page. A
+     * ceremony opened over it brackets it — the visor's dim goes up (the
+     * drawer host does that from the tenant's `dim` predicate) and the
+     * page itself goes inert here.
+     *
+     * THE PANEL STAYS LIVE. Inert is not retirement: the component keeps
+     * running and keeps its grants, and what it loses for the ceremony's
+     * duration is the user's input. That is the closure that matters —
+     * a live component soliciting text while a visor ceremony is on
+     * screen is the interleaving the anchor exists to prevent — and
+     * retiring the panel instead would destroy a configuration session
+     * the user is in the middle of and is coming back to.
+     *
+     * `thaw` is unconditional and recomputes, because the page may have
+     * been left while the ceremony was up (the chevron walks it out from
+     * under an open sheet). */
+    nestedPlace: {
+      active: () => onStoragePage(),
+      freeze: () => {
+        ceremonyFrozen = true;
+        applyPageInert();
+      },
+      thaw: () => {
+        ceremonyFrozen = false;
+        applyPageInert();
+      },
+    },
     // The demo's in-memory surfaces are caches of the trust record; the
     // strip renders from them, so a commit that only touched storage
     // would leave the anchor showing yesterday's answer. FIRST SIGHT IS
@@ -2072,7 +2310,7 @@ async function boot() {
     // an account-wide erase, so both lines say "this device" and name
     // what other paired devices keep.
     resetConsequences: [
-      "this device's keys and its storage connection are erased with it — this device leaves your account",
+      "this device's keys and its storage configurations are erased with it — this device leaves your account",
       "other devices paired with this account keep their own copies of everything",
     ],
     // THE CONSUMER'S FALLIBLE WIPE (visor/ui/sheets.ts:1329-1339): runs
@@ -2119,10 +2357,11 @@ async function boot() {
   const restoreVisorContext = visor.drawer.restoreContext;
 
   /** Persist and connect: identical to the pre-drawer commit tail, just
-   * moved behind the sheet's Confirm. */
+   * moved behind the sheet's Confirm — and it BINDS, because everything
+   * that reaches here came through the picker's armed confirmation. */
   const persistAndConnect = (cfg: StorageConfig) => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+      bindProviderConfig(cfg);
       if (bucketReady) {
         tablet.status("storage changed — reload the page to reconfigure");
       } else {
@@ -2360,10 +2599,6 @@ async function boot() {
     });
   };
 
-  const tabs: Record<"s3" | "dropbox", HTMLButtonElement> = {
-    s3: document.getElementById("prov-s3") as HTMLButtonElement,
-    dropbox: document.getElementById("prov-dropbox") as HTMLButtonElement,
-  };
   const panelArtifacts = new Map<string, EngineArtifacts>();
   let panelMounted: "s3" | "dropbox" | null = null;
   let activePanel:
@@ -2454,9 +2689,6 @@ async function boot() {
     // NOTHING MOUNTS INTO A PAGE NOBODY IS ON. Same claim the old
     // `dialog.open` guards made, read off the page state instead.
     if (!onStoragePage()) return;
-    for (const [k, btn] of Object.entries(tabs)) {
-      btn.classList.toggle("active", k === provider);
-    }
     const name = provider === "s3" ? "panel-s3" : "panel-dropbox";
     let art = panelArtifacts.get(name);
     if (!art) {
@@ -2600,12 +2832,13 @@ async function boot() {
         })
         .catch((e) => console.warn(`[panel] event: ${err(e)}`));
     };
-    const stored = loadStorage();
+    // THIS PROVIDER'S OWN RECORD, not "the" configuration: the store is
+    // plural now, so a panel is seeded from the record filed under the
+    // provider it is the panel for — never from another provider's.
+    const stored = loadStorageFor(provider);
     // The panel is seeded with a REDACTED copy: its own public fields
     // only. The visor's fields get the secrets (#22).
-    const seedJson = stored && stored.provider === provider
-      ? JSON.stringify(redactForPanel(stored))
-      : "";
+    const seedJson = stored ? JSON.stringify(redactForPanel(stored)) : "";
     await runner.call(() => panel.seed(seedJson));
     await runner.call(() => panel.run());
     if (generation !== panelGeneration) return;
@@ -2696,9 +2929,23 @@ async function boot() {
    * path's handoff into the credential sheet. Rewriting keeps the stack
    * honest about where the user is, at the cost of a Back press that
    * lands on the main page twice — the honest, boring outcome. */
+  /** THE DETOUR IS OVER — every exit runs it, because every exit runs
+   * `closeStorage`. Installed with the picker below (a forward
+   * reference: the ceremony that reacts to leaving a place is built
+   * after the place's own teardown, and a no-op until it exists, so the
+   * teardown's shape does not depend on how far boot has got). */
+  let onPlaceLeft: () => void = () => {};
+
   const closeStorage = () => {
     teardownPanel();
     showPage("main");
+    // The picker, if the user is in the middle of one, re-expands from
+    // its band here: they have come back, so the breadcrumb becomes the
+    // full choice again — with its lists rebuilt, which is how a
+    // just-saved provider is seen to move from "not configured" to
+    // "pick one to connect". (Deferred when a ceremony is holding the
+    // drawer: see `expandPicker`.)
+    onPlaceLeft();
     // THE CHEVRON GOES WITH THE PLACE. Cleared here rather than in each
     // caller, so every exit — Cancel, the Save handoff, browser Back —
     // leaves the strip saying the truth about where the user is. An exit
@@ -2743,7 +2990,15 @@ async function boot() {
   history.replaceState({ page: "main" }, "");
   showPage("main");
 
-  const openStorage = () => {
+  /** WALK TO ONE PROVIDER'S CONFIGURATION PAGE. The provider is now a
+   * PARAMETER rather than a guess: the page used to open on whatever was
+   * stored (or s3) and then offer tabs to switch, which put the CHOICE
+   * of provider inside the page — below the bar, in pixels a component
+   * can imitate. The choice moved above the bar into the picker, so
+   * arriving here means the user already said which provider they were
+   * configuring, in trusted chrome, and this page's only job is that
+   * one provider's configuration. */
+  const openStorage = (provider: ProviderKey = "s3") => {
     // NO SHEET IS CLOSED HERE ANY MORE. The modal used to paint over
     // whatever lightweight sheet was open, so both were closed first;
     // a page slide has nothing to paint over. A sheet is about a
@@ -2770,123 +3025,509 @@ async function boot() {
       onBack: () => closeStorage(),
       label: home !== "" ? `back to ${home}` : "back to the app",
     });
+    // AND IF A PICKER IS OPEN, IT COLLAPSES TO ITS BAND. Hung on the
+    // NAVIGATION rather than on the button that caused it: the band is
+    // about being away from the choice, so every door into this place
+    // produces it — the picker's own "set it up" entry, and equally a
+    // consumer or driver walking here directly. A rule that lived on one
+    // button would be a rule with a hole in it.
+    bandPicker(providerInfo(provider));
     // A PLACE THE USER CAN WALK BACK FROM. See the popstate handler.
     history.pushState({ page: "storage" }, "");
-    mountPanel(loadStorage()?.provider ?? "s3").catch((e) => {
+    mountPanel(provider).catch((e) => {
       region.textContent = `panel failed to mount: ${err(e)}`;
     });
   };
 
-  (document.getElementById("storage-open") as HTMLButtonElement).onclick = openStorage;
-  for (const provider of ["s3", "dropbox"] as const) {
-    tabs[provider].onclick = (ev) => {
-      ev.preventDefault();
-      if (panelMounted === provider) return;
-      mountPanel(provider).catch((e) => {
-        region.textContent = `panel failed to mount: ${err(e)}`;
-      });
-    };
-  }
-  // The visor's Save: the commit belongs to the shell, so it is the visor that
-  // asks the panel for a configuration and the visor that decides the
-  // configuration is done. A panel refusing (none) leaves the storage
-  // page up with its own explanation showing inside its region.
+  // --- THE STORAGE PICKER: commitment, above the bar (#22) -----------------
   //
-  // PHASE 1 OF TWO. On success this does not connect: it takes the
-  // secret-free config, retires the panel, leaves the storage page, and hands
-  // the interaction to the visor's credential drawer. Nothing is persisted
-  // and no credential is released until the sheet's Confirm.
+  // The provider CHOICE was the last consequential act still living in
+  // forgeable territory. It was the storage page's two tabs: visor
+  // pixels by construction, but inside a page that scrolls, adjacent to
+  // a component's own rectangle, where an app can paint a convincing
+  // copy of the same two buttons. Choosing a provider decides where the
+  // user's data goes, so it belongs in the one region no component can
+  // draw — a sheet hanging off the pinned strip.
+  //
+  // TWO LISTS, ON TWO ORTHOGONAL AXES:
+  //   (a) CONFIGURED providers, offered for immediate armed SELECTION;
+  //   (b) INSTALLED but unconfigured providers, offered for CONFIGURATION.
+  // Which list an entry is in follows CONFIG state. Which VOICE it wears
+  // follows NAMING state. They are independent, which is why a
+  // configured-but-unnamed provider sits in (a) wearing app voice and
+  // the NEW marker — it is a thing the user has set up but never given a
+  // word to, and the sheet says exactly that.
+  //
+  // NEW HERE MEANS "YOU HAVE NO WORD FOR THIS", not "first sight this
+  // boot" as it does on the strip. A list entry is a standing question
+  // ("do you recognise this?"), not an arrival event; the ruling spells
+  // the case out — "a configured-but-unnamed provider sits in (a)
+  // wearing app voice + NEW" — so unnamed is the test.
+  interface PickerSession {
+    /** Identity only: each open is its own session object, so a deferred
+     * handler can ask whether it is still the current one. */
+    opened: number;
+  }
+
+  /** One row's identity, resolved the way the STRIP resolves it: by
+   * PROVENANCE (the artifact name the visor fetches the panel by), out
+   * of the same trust table. Read-only — `marks.load()` rather than
+   * `marks.mark()`, because merely LISTING a provider must not create a
+   * first-sight record for it. Opening a picker is not meeting a
+   * component. */
+  const pickerIdentity = (info: InstalledProvider) => {
+    const rec = marks.load()[info.artifact];
+    const petname = (rec?.petname ?? "").trim();
+    return { petname, icon: rec?.icon ?? "", named: petname !== "" };
+  };
+
+  /** The entry's identity, in the voice its naming state earns.
+   *
+   * NAMED -> user voice: the pet icon the user picked and the word they
+   * wrote, unquoted, unplated (`markIcon`/`petnameSpan`).
+   * UNNAMED -> app voice through the constructor, plus the visor's NEW
+   * marker. The plated token is the PROVENANCE KEY, which is what the
+   * strip itself shows for a surface that has not run yet: the nickname
+   * is a claim only a running component can make, and the picker lists
+   * providers that may not have run for weeks. */
+  const pickerIdentityNodes = (info: InstalledProvider): Node[] => {
+    const { petname, icon, named } = pickerIdentity(info);
+    if (named) {
+      const nodes: Node[] = [];
+      const mark = markIcon(icon);
+      if (mark) nodes.push(mark);
+      nodes.push(petnameSpan(petname));
+      return nodes;
+    }
+    // App voice ONLY through the constructor (invariant (h)): this file
+    // never writes the `foreign` class itself.
+    const fresh = document.createElement("span");
+    fresh.className = "fresh";
+    fresh.textContent = "NEW";
+    return [nicknameQuote(info.artifact), fresh];
+  };
+
+  const pickerTenant = visor.drawer.tenant<PickerSession>({
+    name: "storage-picker",
+    // NOT EXCLUSIVE: the credential sheet this one hands off to is, and
+    // an exclusive picker would refuse its own successor. Not `dim`med
+    // either — the picker deliberately survives a walk to a config page
+    // (sheets are orthogonal to navigation), and a dim would grey out
+    // the very page it just sent the user to.
+    armed: true,
+    // The strip names the sheet hanging off it. The picker is about the
+    // APP's storage, so the cluster keeps naming the app above and says
+    // which visor sheet is open below.
+    context: () => (appSurface ? { ...appSurface, kind: "storage" } : null),
+    // SUSPENDABLE ONLY WHILE BANDED. During the configuration detour the
+    // picker is a breadcrumb, not an occupant — a ceremony started from
+    // the strip (naming the arriving panel is the invited case) displaces
+    // it sideways and it comes back when that ceremony closes. EXPANDED,
+    // it is an occupant like any other and the ordinary eviction rule
+    // applies: a user who opens another sheet while looking at the full
+    // picker has changed their mind, and a picker that survived that
+    // would be re-asserting a choice they walked away from.
+    suspendable: () => pickerMode === "band",
+  });
+
+  /** THE PICKER'S SHAPE. `expanded` is the full two-list sheet;
+   * `band` is the collapsed breadcrumb it wears while the user is off
+   * on a provider's configuration page (#22's collapse-to-band). The
+   * SESSION is the same throughout — this is one ceremony that changes
+   * shape, never a close and a reopen, because "what step of MY ceremony
+   * is this" is a question only a surviving session can answer. */
+  let pickerMode: "expanded" | "band" = "expanded";
+  /** Which entry the band shrink-wraps: the provider the user chose to
+   * configure. Null whenever the mode is `expanded`. */
+  let bandProvider: InstalledProvider | null = null;
+
+  /** COLLAPSE: the user pressed "set it up" and is being sent to that
+   * provider's page. */
+  const bandPicker = (info: InstalledProvider) => {
+    if (!pickerTenant.isOpen()) return;
+    pickerMode = "band";
+    bandProvider = info;
+    pickerTenant.rebuild();
+  };
+
+  /** RE-EXPAND: the detour is over, by whichever door (Cancel, Save, the
+   * strip's chevron, browser Back — they all run `closeStorage`).
+   *
+   * THE LISTS ARE REBUILT, NOT RESTORED, and that is the point of the
+   * whole shape change: a provider the user just configured has moved
+   * from list (b) to list (a), and seeing it move is the confirmation
+   * that the detour did something. Arming restarts with the new
+   * presentation, so the entry that appears under the user's cursor
+   * cannot be pressed for another ARM_MS.
+   *
+   * SUSPENDED IS NOT A SPECIAL CASE, it is a DEFERRAL: if a ceremony
+   * (naming the panel, say) is holding the drawer when the page exits,
+   * the band is off-stage and must stay there — re-expanding underneath
+   * a ceremony would be the picker shoving its way back on screen while
+   * the user is in the middle of something else. Setting the mode is
+   * enough: the host rebuilds from the same builder when it resumes the
+   * tenant, and by then the mode says `expanded`. */
+  const expandPicker = () => {
+    if (!pickerTenant.isOpen()) return;
+    pickerMode = "expanded";
+    bandProvider = null;
+    // No-op while suspended, by the host's own rule — the resume does it.
+    pickerTenant.rebuild();
+  };
+
+  /** THE BAND — the picker collapsed to a ceremony breadcrumb while the
+   * user is off configuring the provider they chose (#22).
+   *
+   * WHAT IT IS FOR. Two questions are live during the detour and they
+   * have different answers: the STRIP says who is drawing the page below
+   * ("this is the panel, it is NEW, here is the offer to name it"), and
+   * the band says what step of the USER'S OWN ceremony this is ("you
+   * were choosing where your data goes; you are configuring this one").
+   * Both are trust-grade pixels and together they stay in the two-to-
+   * three strip-heights the ruling budgets, which is why the picker
+   * shrink-wraps instead of sitting there at full height over the place
+   * it just sent the user to.
+   *
+   * INERT BY CONSTRUCTION. The entry is a plain element, not a control:
+   * there is no selection to make here, nothing to arm, and nowhere to
+   * navigate — the page below IS the navigation. Building it inert is
+   * stronger than disabling a button, because there is no handler to
+   * reach at all. The single interaction that survives is DISMISSAL: a
+   * user's own sheet is always theirs to close, and closing it ends the
+   * ceremony (the return then lands plain, with no picker). */
+  const buildPickerBand = (info: InstalledProvider): DrawerSheet => {
+    const root = document.createElement("div");
+    root.className = "cred-sheet picker-sheet picker-band armed";
+
+    const row = document.createElement("div");
+    row.className = "band-row";
+
+    // The chosen entry, in the SAME voice it wore in the list — the
+    // user's own word and pet icon if they have named this provider,
+    // the plated provenance key and NEW if they have not. A breadcrumb
+    // that renamed the thing it is a breadcrumb for would be useless.
+    const entry = document.createElement("span");
+    entry.className = "band-entry";
+    entry.dataset.provider = info.key;
+    entry.append(...pickerIdentityNodes(info));
+
+    const status = document.createElement("span");
+    status.className = "band-status";
+    status.textContent = "configuring — save on the page below";
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "band-close";
+    close.textContent = "Close";
+    close.onclick = () => pickerTenant.close();
+
+    row.append(entry, status, close);
+    root.append(row);
+    // NO `controls`: nothing here is armed, because nothing here spends.
+    return { root };
+  };
+
+  // Installed now that the picker exists (see the forward reference at
+  // `closeStorage`).
+  onPlaceLeft = () => expandPicker();
+
+  let pickerSerial = 0;
+  const openPicker = () => {
+    // A NEW CEREMONY STARTS EXPANDED, always. The shape is a property of
+    // THIS ceremony's progress, and the last one's progress must not
+    // leak into it: a picker dismissed while it was a band would
+    // otherwise re-open as a band for a detour that is over, offering a
+    // breadcrumb to a place nobody is going.
+    pickerMode = "expanded";
+    bandProvider = null;
+    const session: PickerSession = { opened: ++pickerSerial };
+    pickerTenant.open(session, () => {
+      // THE SAME BUILDER, TWO SHAPES. The host re-invokes this on every
+      // presentation — a collapse, a re-expansion, a resume after a
+      // ceremony — so the shape is read from the mode each time rather
+      // than captured when the ceremony started.
+      if (pickerMode === "band" && bandProvider !== null) {
+        return buildPickerBand(bandProvider);
+      }
+      const root = document.createElement("div");
+      // `.cred-sheet` is the SHARED SHEET SHAPE every drawer tenant
+      // wears (visor.css's note on it), not the credential sheet's
+      // private name; `.picker-sheet` carries only what is this sheet's.
+      root.className = "cred-sheet picker-sheet";
+
+      const h = document.createElement("h2");
+      h.textContent = "Where your data goes";
+
+      const lead = document.createElement("div");
+      lead.className = "cred-line said";
+      lead.textContent =
+        "choosing here connects this app to a provider — the choice is made in the bar's own pixels, never on a page";
+
+      const store = loadStorageStore();
+      const configured = INSTALLED_PROVIDERS.filter((p) => store.providers[p.key]);
+      const unconfigured = INSTALLED_PROVIDERS.filter((p) => !store.providers[p.key]);
+
+      const armedControls: HTMLButtonElement[] = [];
+      const lists = document.createElement("div");
+      lists.className = "picker-lists";
+
+      // --- LIST (a): configured, offered for SELECTION -------------------
+      const listA = document.createElement("div");
+      listA.className = "picker-group";
+      listA.id = "picker-configured";
+      const headA = document.createElement("div");
+      headA.className = "picker-head";
+      headA.textContent = configured.length > 0
+        ? "configured — pick one to connect"
+        : "nothing configured yet";
+      listA.append(headA);
+      for (const info of configured) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "picker-entry";
+        btn.dataset.provider = info.key;
+        const line = document.createElement("span");
+        line.className = "picker-entry-id";
+        line.append(...pickerIdentityNodes(info));
+        // The visor's own description of the provider sits BESIDE the
+        // identity token, never inside it: framework voice, so it can
+        // never be mistaken for something the component said.
+        const what = document.createElement("span");
+        what.className = "picker-entry-what";
+        what.textContent = info.label;
+        btn.append(line, what);
+        btn.onclick = () => selectProvider(session, info);
+        armedControls.push(btn);
+        listA.append(btn);
+      }
+
+      // --- LIST (b): installed, offered for CONFIGURATION ----------------
+      const listB = document.createElement("div");
+      listB.className = "picker-group";
+      listB.id = "picker-unconfigured";
+      if (unconfigured.length > 0) {
+        const headB = document.createElement("div");
+        headB.className = "picker-head";
+        headB.textContent = "installed, not configured yet";
+        listB.append(headB);
+        for (const info of unconfigured) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "picker-entry";
+          btn.dataset.provider = info.key;
+          const line = document.createElement("span");
+          line.className = "picker-entry-id";
+          line.append(...pickerIdentityNodes(info));
+          const what = document.createElement("span");
+          what.className = "picker-entry-what";
+          what.textContent = `${info.label} — set it up`;
+          btn.append(line, what);
+          // NOT ARMED, deliberately, and this is the same weight-class
+          // judgement the naming sheet makes: arming defends an act that
+          // SPENDS something against a baited mis-tap. This one walks to
+          // a configuration page and can be walked back from with the
+          // strip's own chevron. Paying the tax where nothing is spent
+          // trains users to click through a delay that means something
+          // elsewhere.
+          btn.onclick = () => {
+            // THE SHEET SURVIVES THE DETOUR, COLLAPSED. Sheets are
+            // orthogonal to navigation (the ruling, gated by
+            // tenant-precedence), so the ceremony the user started is
+            // not closed by the walk to the page it sent them to — but
+            // it does not sit at full height over that page either. It
+            // shrink-wraps to this entry and waits.
+            //
+            // ORDER MATTERS: navigate first, collapse second. The band's
+            // status line is about a place the user is already in, and
+            // `openStorage` mounts the panel, which claims the strip;
+            // collapsing first would animate the drawer twice.
+            openStorage(info.key);
+          };
+          listB.append(btn);
+        }
+      }
+
+      lists.append(listA);
+      if (unconfigured.length > 0) lists.append(listB);
+
+      const reason = document.createElement("div");
+      reason.className = "cred-reason";
+      // Where the visor's refusals land for as long as this sheet is up.
+      // IN THE SHEET, which is the move: a destination refusal used to
+      // print on the storage page, below the bar, and it is a statement
+      // about a commitment the user just tried to make in trusted
+      // pixels — so it belongs in the trusted pixels.
+      visor.drawer.setNote(reason);
+
+      const note = document.createElement("div");
+      note.className = "cred-note";
+      note.textContent =
+        "a provider is configured on its own page, below this bar; it is only connected here, above it";
+
+      const row = document.createElement("div");
+      row.className = "cred-row picker-row";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "Close";
+      // Cancel is NOT armed: the delay defends against spending, and
+      // dismissing the sheet spends nothing. A way out that cannot be
+      // taken for the first 700ms is a trap, not a defence.
+      cancelBtn.onclick = () => pickerTenant.close();
+      row.append(cancelBtn);
+
+      root.append(h, lead, lists, reason, note, row);
+      return { root, controls: armedControls };
+    });
+  };
+
+  /** SELECTION — the one commitment in this flow, and the reason the
+   * sheet exists. It runs the destination checks the storage page's Save
+   * used to run, then binds and hands off to the credential sheet.
+   *
+   * WHAT THE CHECKS BECAME. On the page they defended a LIVE PANEL: the
+   * visor re-read `destination()` at click time and held it against the
+   * binding and against the committed blob, because a component can
+   * re-point itself between the render and the click. There is no panel
+   * here — the record was written on an earlier visit and has been
+   * sitting in storage since — so the TOCTOU those checks defended
+   * cannot arise, and the checks that remain are the ones that still
+   * mean something about a STORED record:
+   *   - it is filed under the provider it claims to be (storage is
+   *     hand-editable; a record in the wrong slot would be offered as a
+   *     provider it is not);
+   *   - the visor can derive a usable destination from it.
+   * Each refusal renders IN THIS SHEET, in framework voice, and leaves
+   * it open: nothing is bound, no credential is askable for. */
+  const selectProvider = (session: PickerSession, info: InstalledProvider) => {
+    if (!pickerTenant.owns(session)) return;
+    const cfg = loadStorageStore().providers[info.key] ?? null;
+    if (cfg === null) {
+      drawerNote("that provider has no configuration on this device — set it up first");
+      return;
+    }
+    if (cfg.provider !== info.key) {
+      drawerNote("that configuration is filed under a different provider — nothing was connected");
+      return;
+    }
+    const destination = configDestination(cfg);
+    if (destination === null) {
+      drawerNote("no usable destination in that configuration — nothing was connected");
+      return;
+    }
+    void (async () => {
+      // THE BINDING THE FOLLOWING SHEET WILL NAME. `rebind` is what the
+      // panel session used to establish keystroke by keystroke; the
+      // picker establishes it once, from the record the user just chose,
+      // and the credential sheet's binding line reads it exactly as
+      // before.
+      rebind(destination, { note: false });
+      const { prefill, mismatch } = credPrefill(cfg, info.key, destination);
+      const held = info.key === "s3" && (await getSigningKey(destination)) !== null;
+      if (!pickerTenant.owns(session)) return;
+      // Anything the OAuth broker deposited during a panel session is the
+      // visor's own capture of a ceremony the visor ran; it survives into
+      // the sheet, where the user can see it before releasing it.
+      for (const [kind, value] of credValues) {
+        if (value !== "") prefill[kind] = value;
+      }
+      const { petname, icon } = pickerIdentity(info);
+      const credSession = {
+        cfg,
+        destination,
+        // WHO ASKED, resolved the same way the row above was: by
+        // provenance, out of the trust table. The nickname falls back to
+        // the provenance key for a provider that has not run — the same
+        // fallback `mountPanel` uses before instantiation.
+        surface: {
+          name: info.artifact,
+          nickname: info.artifact,
+          icon,
+          isNew: petname === "",
+          petname: petname === "" ? undefined : petname,
+        } as SurfaceIdentity,
+      };
+      credentialTenant.claim(credSession);
+      // THE CEREMONY IS COMPLETE, so the picker goes. Then the ordering
+      // invariant, which survives the move intact and is now enforced in
+      // one place instead of depending on where the user was: NO
+      // COMPONENT SURFACE IS ALIVE WHEN A SECRET IS ON SCREEN.
+      // `closeStorage` retires the panel and leaves the config page — and
+      // it is called unconditionally, because the picker can be selected
+      // from OVER that page (the sheet survives the detour), which is
+      // exactly the state in which a panel would still be live.
+      pickerTenant.close({ context: false });
+      closeStorage();
+      const needs = info.needs;
+      if (needs.length === 0) {
+        credentialTenant.claim(null);
+        const full = withCredentials(cfg);
+        clearCredentials();
+        persistAndConnect(full);
+        return;
+      }
+      openCredentialDrawer(credSession, [...needs], prefill, mismatch, held);
+    })();
+  };
+
+  // THE OPENER CARRIES NO PAYLOAD (#22 ruling). The page's "Storage…"
+  // button REQUESTS the picker and passes nothing — no preselected
+  // provider, no filter, no label. It is the `requestNaming` shape: an
+  // app affordance may ask the visor to start one of its ceremonies, and
+  // the visor then runs it entirely out of its own state. An argument
+  // here would be app influence reaching system UI unmarked — the
+  // requesting button would be choosing what the trusted sheet shows.
+  (document.getElementById("storage-open") as HTMLButtonElement).onclick = () => openPicker();
+  // THE VISOR'S SAVE, DEMOTED TO A CONFIG WRITE (#22 "the storage picker
+  // moves above the bar"). It asks the panel for its configuration, the
+  // visor decides the configuration is well-formed, the record is
+  // written, and the page walks back. That is all it does now.
+  //
+  // WHAT LEFT, AND WHY IT HAD TO. This handler used to be phase 1 of the
+  // two-phase commit: it revalidated the destination, bound it, retired
+  // the panel and opened the credential drawer — a COMMITMENT, entered
+  // from a button on a page below the bar. The page is visor pixels by
+  // construction, but it sits in scrollable content an app can imitate,
+  // so the most consequential act in the demo was reachable from the
+  // most forgeable place it could be. Binding moved into the picker
+  // sheet above the bar, where it is armed and unforgeable. The page's
+  // trust sentence collapses to: CONFIGURATION HAPPENS ON THE PAGE;
+  // COMMITMENT ONLY ABOVE THE BAR.
+  //
+  // A panel refusing (none) leaves the page up with its own explanation
+  // showing inside its region. Nothing here connects, binds, releases a
+  // credential or opens a sheet.
   (document.getElementById("storage-save") as HTMLButtonElement).onclick = (ev) => {
     ev.preventDefault();
     const active = activePanel;
     if (!active) return;
     active.runner.call(() => active.panel.commit())
-      .then(async (out) => {
+      .then((out) => {
         if (out === undefined || out === "") return;
-        // COMMIT-TIME REVALIDATION (#22 rule 4). Everything above was
-        // read before the user clicked; between the render and the click
-        // the panel could have re-pointed itself. So the visor re-reads the
-        // destination NOW and holds it to three tests, in order — each
-        // refusal in the visor's own words, storage page left up, NO drawer
-        // opened and so no credential even askable for.
-        const raw = await active.runner.call(() => active.panel.destination());
         if (activePanel !== active) return;
-        const now = normalizeOrigin(raw ?? "");
-        if (now === null) {
-          storageNote("no destination configured — credentials were not released");
-          return;
-        }
-        if (now !== boundDestination) {
-          // The binding the visor has been tracking is what the following
-          // sheet would name; a panel that moved since then gets the
-          // held values dropped, not carried.
-          rebind(raw ?? "");
-          storageNote(
-            "the destination changed since these credentials were entered — nothing was released",
-          );
-          return;
-        }
         let cfg: StorageConfig | null = null;
-        let cfgDest: string | null = null;
         try {
           cfg = JSON.parse(out) as StorageConfig;
-          cfgDest = configDestination(cfg);
         } catch {
           cfg = null;
-          cfgDest = null;
         }
-        if (cfg === null || cfgDest === null || cfgDest !== boundDestination) {
-          // The TOCTOU that motivates all of this: `destination()` says
-          // one thing and the committed config points somewhere else.
-          storageNote(
-            "the panel's configuration points somewhere else than the destination shown — nothing was released",
-          );
+        // WELL-FORMEDNESS IS STILL THE VISOR'S CALL, even for a write
+        // that commits to nothing: a record filed under a provider it
+        // does not belong to would be a configuration the picker could
+        // later offer as that provider's. The panel is told nothing —
+        // the refusal is in the visor's words, on the visor's line.
+        if (cfg === null || cfg.provider !== active.provider) {
+          storageNote("the panel returned a configuration for a different provider — nothing was saved");
           return;
         }
-        // The visor asks ONE more time what the panel needs: the drawer's
-        // fields are drawn from this answer, and it must be the answer
-        // the committed configuration was produced with.
-        const needs = (await active.runner.call(() => active.panel.credentialNeeds())) ?? [];
-        if (activePanel !== active) return;
-        const stored = loadStorage();
-        // Prefill is decided BEFORE teardown, while the visor still knows
-        // which provider produced this config (#22 rule 5, unchanged).
-        const { prefill, mismatch } = credPrefill(stored, active.provider, now);
-        // Does the visor already hold a signing key for THIS destination?
-        // Keyed by the origin the revalidation above just agreed on, so
-        // the destination binding governs this exactly as it governs
-        // prefill: a panel pointing somewhere else finds nothing held.
-        const held = active.provider === "s3" && (await getSigningKey(now)) !== null;
-        if (activePanel !== active) return;
-        // Anything the OAuth broker deposited during the panel session is
-        // the visor's own capture of a ceremony the visor ran; it survives into
-        // the sheet, where the user can see it before releasing it.
-        for (const [kind, value] of credValues) {
-          if (value !== "") prefill[kind] = value;
-        }
-        const session = {
-          cfg,
-          destination: now,
-          surface: active.surface,
-        };
-        // Claim the handoff BEFORE the teardown, so the panel's retirement
-        // (and any late `close` event) leaves the held values alone. A
-        // claim is state only: no sheet, no DOM, no context move.
-        credentialTenant.claim(session);
-        // ORDERING IS THE INVARIANT, and the page slide does not change
-        // it: the panel is retired and the storage page is left FIRST,
-        // so no component surface is alive anywhere when the credential
-        // sheet appears. `closeStorage` does both, in that order.
+        // CONFIGURATION, NOT COMMITMENT: the record is written under its
+        // provider's key and the BINDING IS UNTOUCHED. A user who
+        // configures a provider and walks away is connected to exactly
+        // what they were connected to before.
+        saveProviderConfig(cfg);
         closeStorage();
-        if (needs.length === 0) {
-          // Nothing to ask for: no sheet, connect straight away.
-          credentialTenant.claim(null);
-          const full = withCredentials(cfg);
-          clearCredentials();
-          persistAndConnect(full);
-          return;
-        }
-        openCredentialDrawer(session, needs, prefill, mismatch, held);
+        tablet.status(
+          "provider configuration saved — choose it in Storage… to connect",
+          true,
+        );
       })
       .catch((e) => console.warn(`[panel] commit: ${err(e)}`));
   };
@@ -2895,7 +3536,14 @@ async function boot() {
     closeStorage();
   };
 
-  const stored = loadStorage();
+  // BOOT ARMS FROM THE BINDING, and only from it. A provider whose
+  // record exists but was never selected in the picker is CONFIGURED,
+  // not in force: arming from it would be the visor committing on the
+  // user's behalf to a destination they never confirmed — precisely the
+  // silent choice the picker exists to make explicit. (The one-record
+  // device is unaffected: its record adopts its key AND the binding on
+  // migration, so a returning user is armed exactly as before.)
+  const stored = loadBoundStorage();
   // Migration runs FIRST: a config written before #11 still carries a
   // readable secret, which is escrowed and scrubbed here, so the setup
   // below finds a keystore entry instead of a field.
@@ -3266,7 +3914,80 @@ async function boot() {
     part,
     pull,
     bobPull: () => bobPull(),
-    openStorage: () => openStorage(),
+    /** Walk straight to ONE provider's config page, skipping the picker.
+     * Driving only: the USER's way in is the picker, and the page's own
+     * opener passes no payload. */
+    openStorage: (provider?: ProviderKey) =>
+      openStorage(provider ?? loadBoundStorage()?.provider ?? "s3"),
+    /** THE PICKER, for driving. `open` clicks nothing — the opener is
+     * payload-free by construction, so there is nothing to pass here
+     * either. `select`/`configure` CLICK the real entry buttons rather
+     * than calling the handlers, so a driver meets the arming delay
+     * exactly as a user does: a click before ARM_MS lands on a disabled
+     * button and does nothing. */
+    picker: {
+      open: () => openPicker(),
+      isOpen: () => pickerTenant.isOpen(),
+      /** What each list holds, by provider key — the lists' membership,
+       * without reading it back out of the DOM. */
+      lists: () => {
+        const store = loadStorageStore();
+        return {
+          configured: INSTALLED_PROVIDERS.filter((p) => store.providers[p.key]).map((p) => p.key),
+          unconfigured: INSTALLED_PROVIDERS.filter((p) => !store.providers[p.key]).map((p) =>
+            p.key
+          ),
+        };
+      },
+      /** The picker's SHAPE, for driving: `expanded`, `band`, or
+       * `suspended` while another ceremony holds the drawer over it. */
+      mode: () =>
+        !pickerTenant.isOpen()
+          ? "closed"
+          : pickerTenant.isSuspended()
+          ? "suspended"
+          : pickerMode,
+      /** What the band shrink-wraps, or null when the band is not the
+       * drawer's OCCUPANT. `:not(.visor-swap-out)` is the difference
+       * between the two: a band that is travelling off-stage is still on
+       * screen for the length of the motion (that is the motion), and it
+       * has already stopped being the occupant. */
+      band: () => {
+        const el = drawerInner.querySelector(
+          ".picker-band:not(.visor-swap-out) .band-entry",
+        ) as HTMLElement | null;
+        return el === null ? null : {
+          provider: el.dataset.provider ?? "",
+          /** A CONTROL would be a mis-tap that spends something; the
+           * band's entry is deliberately not one. */
+          isControl: el.tagName === "BUTTON",
+          entries: drawerInner.querySelectorAll(
+            ".picker-band:not(.visor-swap-out) .band-entry",
+          ).length,
+        };
+      },
+      /** Click the band's own dismissal — the one interaction it keeps. */
+      dismissBand: () =>
+        (drawerInner.querySelector(".picker-band .band-close") as HTMLButtonElement | null)?.click(),
+      select: (provider: string) =>
+        (drawerInner.querySelector(
+          `#picker-configured .picker-entry[data-provider="${provider}"]`,
+        ) as HTMLButtonElement | null)?.click(),
+      configure: (provider: string) =>
+        (drawerInner.querySelector(
+          `#picker-unconfigured .picker-entry[data-provider="${provider}"]`,
+        ) as HTMLButtonElement | null)?.click(),
+      close: () => pickerTenant.close(),
+    },
+    /** The config store, for driving and inspection: which providers have
+     * a record, and which one is BOUND (what boot arms from). */
+    storageStore: () => {
+      const store = loadStorageStore();
+      return {
+        bound: store.bound,
+        configured: INSTALLED_PROVIDERS.filter((p) => store.providers[p.key]).map((p) => p.key),
+      };
+    },
     // Exposed for driving: re-running setup is also how the in-flight
     // guard is exercised without racing a 20 s consumer-API window.
     setupBucket: (cfg: StorageConfig) => setupBucket(cfg),

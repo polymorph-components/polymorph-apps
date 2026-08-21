@@ -29,6 +29,7 @@ import {
   onStoragePage,
   sheetOpen,
   stripText,
+  stripUnobscured,
   UI_TIMEOUT,
   waitForDrawerHidden,
   waitForPanelSurface,
@@ -126,6 +127,19 @@ const scenario: Scenario = {
         false,
         "the drawer after walking to the storage page",
       );
+      // THE BRACKET IS RESOLVED AT OPEN, NOT CONTINUOUSLY. This sheet
+      // was opened at HOME, where a lightweight ceremony dims nothing;
+      // walking a place in underneath it does not retroactively bracket
+      // it. That is deliberate rather than incidental: the host
+      // remembers what `dim` resolved to when the sheet opened so the
+      // undo matches the do, and a dim that switched itself on under a
+      // sheet already on screen would have no matching moment to switch
+      // itself off.
+      assertEquals(
+        await page.evaluate(() => (document.getElementById("visor-dim") as HTMLElement).hidden),
+        true,
+        "the visor dim for a sheet the storage page arrived underneath",
+      );
     });
 
     await act("leaving the storage page leaves no panel behind, and the sheet is still the user's", async () => {
@@ -144,13 +158,23 @@ const scenario: Scenario = {
       assertIncludes(bottom, "TodoMVC", "the surface-name line after leaving the storage page");
     });
 
-    await act("the naming ceremony opens ABOVE the storage page, disturbing nothing", async () => {
+    await act("the naming ceremony opens ABOVE the storage page, over a DIMMED and frozen place", async () => {
       // Requested from the strip while the panel's page is up. The modal
       // forced a choice — the sheet or the dialog, never both — so the
       // visor had to retire the panel and take the page back first. Now
       // the sheet unfolds above the strip while the storage page stays
-      // exactly where it is, with its panel still live: the ceremony is
-      // about a SURFACE, not about which page is on screen.
+      // exactly where it is: the ceremony is about a SURFACE, not about
+      // which page is on screen.
+      //
+      // WHAT THIS ACT ASSERTS THAT IT DID NOT BEFORE (#22's mid-config
+      // clause). "Disturbing nothing" was too weak: a ceremony over a
+      // NESTED PLACE leaves a live component underneath it, free to
+      // solicit input while the visor's own sheet is on screen — the
+      // interleaving the anchor exists to prevent. So the place is now
+      // BRACKETED for the ceremony's duration: the visor's dim goes up
+      // and the page goes inert. The old claim (page still up, panel
+      // still live, sheet open above the strip) is kept in full below
+      // and three claims are added on top of it.
       await hook(page, "openStorage");
       await waitForStoragePage(page, true);
       await waitForPanelSurface(page);
@@ -163,6 +187,32 @@ const scenario: Scenario = {
         true,
         "the panel surface after the ceremony started",
       );
+      // ADDED (1): the visor's own dim is up over the place.
+      assertEquals(
+        await page.evaluate(() => (document.getElementById("visor-dim") as HTMLElement).hidden),
+        false,
+        "the visor dim while a ceremony is up over the config page",
+      );
+      // ADDED (2): and the place itself takes no input.
+      assertEquals(
+        await page.evaluate(() => document.getElementById("page-storage")!.hasAttribute("inert")),
+        true,
+        "the config page while a ceremony is up over it",
+      );
+      // ADDED (3): THE PANEL IS STILL LIVE. Inert is not retirement —
+      // the component keeps running and keeps its grants, and what it
+      // loses is the user's input for as long as the ceremony is up.
+      // Retiring it would destroy a configuration session the user is
+      // in the middle of and is coming back to.
+      assertEquals(
+        await page.evaluate(() => document.querySelectorAll("#panel-region iframe").length),
+        1,
+        "the panel's surface while a ceremony is up over its page",
+      );
+      // The strip is not covered by any of it: dim sits BELOW the visor
+      // zone, which is the whole point of the layering.
+      const bracketed = await stripUnobscured(page);
+      assertEquals(bracketed.hitInStrip, true, "the strip while the place is dimmed");
       // The strip's back control is up too, and it is REACHABLE with the
       // sheet open: the sheet unfolds ABOVE the strip and the strip stays
       // whole underneath, so the way out of the place is never covered by
@@ -184,6 +234,24 @@ const scenario: Scenario = {
       await page.click("#visor-back");
       await waitForStoragePage(page, false);
       assertEquals(await sheetOpen(page, "naming"), true, "the naming sheet after the chevron");
+      // THE EXIT ORDER THE BRACKET HAS TO SURVIVE: the place is LEFT
+      // while the ceremony that froze it is still up. The freeze must
+      // not follow the user home — the lightweight ceremonies have
+      // always left the app alone — and the page that is now off-screen
+      // must stay inert for the ordinary reason (a control nobody can
+      // see must not be reachable). Both are recomputed rather than
+      // undone in pairs, which is what makes every exit order land on
+      // the same answer.
+      assertEquals(
+        await page.evaluate(() => document.getElementById("page-main")!.hasAttribute("inert")),
+        false,
+        "the main page after walking home under an open ceremony",
+      );
+      assertEquals(
+        await page.evaluate(() => document.getElementById("page-storage")!.hasAttribute("inert")),
+        true,
+        "the off-screen config page after the chevron",
+      );
       assertEquals(
         await page.evaluate(() => (document.getElementById("visor-drawer") as HTMLElement).hidden),
         false,
@@ -203,12 +271,22 @@ const scenario: Scenario = {
       await hook(page, "naming.cancel");
       await waitForSheet(page, "naming", false);
       await waitForDrawerHidden(page);
-      // The chevron act above walked the page back, so this one walks in
-      // again — the commit under test needs a live panel to commit.
-      await hook(page, "openStorage");
-      await waitForStoragePage(page, true);
-      await waitForPanelSurface(page);
-      await page.click("#storage-save");
+      // HOW THE CREDENTIAL SHEET IS REACHED NOW. It used to be the
+      // storage page's Save; that button is a config-write since #22
+      // ("commitment never leaves the bar"), and the sheet follows the
+      // picker's armed SELECTION instead. What this act is about — that
+      // an open credential sheet is never displaced — is unchanged, and
+      // it is if anything better provoked from here: the sheet now
+      // arrives with another visor sheet (the picker) having just held
+      // the drawer, so the eviction path is exercised on the way in.
+      await hook(page, "picker.open");
+      await waitForSheet(page, "picker", true);
+      await page.waitForFunction(
+        () => document.querySelector(".picker-sheet")?.classList.contains("armed") === true,
+        undefined,
+        { timeout: UI_TIMEOUT },
+      );
+      await hook(page, "picker.select", "s3");
       await waitForSheet(page, "drawer", true, 30_000);
       credOpen = true;
 

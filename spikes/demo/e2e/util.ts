@@ -131,6 +131,12 @@ export const ANNOUNCE_MS = 8_000;
  * mirrored by `PULSE_MS` in visor/ui/visor.ts's cleanup fallback. The
  * `pulse` class is off the element by then. */
 export const PULSE_MS = 1_800;
+/** The drawer's OCCUPANT SWAP — the band sliding out while a ceremony
+ * slides in, and back again (visor/ui/visor.ts's `SWAP_MS`, matched by
+ * the `.visor-swap-*` transitions in visor/ui/visor.css). The departing
+ * sheet is on screen for exactly this long and is then removed by the
+ * host. */
+export const SWAP_MS = 420;
 
 export async function newContext(
   browser: Browser,
@@ -368,19 +374,24 @@ export async function waitForBottom(
 
 /** Is a visor sheet of the given tenant open? Read through `__demo`,
  * which is the demo's own account of its drawer state. */
-export function sheetOpen(page: Page, tenant: "naming" | "settings" | "drawer"): Promise<boolean> {
+export function sheetOpen(
+  page: Page,
+  tenant: "naming" | "settings" | "drawer" | "picker",
+): Promise<boolean> {
   return page.evaluate((t: string) => {
     const d = (globalThis as Record<string, unknown>).__demo as Record<
       string,
-      { open?: () => boolean }
+      { open?: () => boolean; isOpen?: () => boolean }
     >;
-    return d[t].open?.() === true;
+    // The picker's handle reads `isOpen` (its `open` OPENS it — the
+    // handle is the ceremony's entry point, not a predicate).
+    return t === "picker" ? d[t].isOpen?.() === true : d[t].open?.() === true;
   }, tenant);
 }
 
 export async function waitForSheet(
   page: Page,
-  tenant: "naming" | "settings" | "drawer",
+  tenant: "naming" | "settings" | "drawer" | "picker",
   want: boolean,
   timeout = UI_TIMEOUT,
 ): Promise<void> {
@@ -390,9 +401,10 @@ export async function waitForSheet(
       ({ t, want }: { t: string; want: boolean }) => {
         const d = (globalThis as Record<string, unknown>).__demo as Record<
           string,
-          { open?: () => boolean }
+          { open?: () => boolean; isOpen?: () => boolean }
         >;
-        return (d[t].open?.() === true) === want;
+        const open = t === "picker" ? d[t].isOpen?.() === true : d[t].open?.() === true;
+        return open === want;
       },
       { t: tenant, want },
       { timeout },

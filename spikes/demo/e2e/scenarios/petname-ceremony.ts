@@ -326,9 +326,16 @@ const scenario: Scenario = {
       // act is about the panel's ceremony, not about evicting one.
       await hook(page, "naming.cancel");
       await waitForSheet(page, "naming", false);
-      await hook(page, "openStorage");
+      // THE PROVIDER TABS ARE GONE (#22 "the storage picker moves above
+      // the bar"): a page no longer offers to change which provider it
+      // is configuring, because that choice is a commitment and
+      // commitments happen above the bar. The page is opened FOR a
+      // provider instead — same destination, one fewer forgeable
+      // control. (The picker's own entry into this page is
+      // storage-picker.ts's business; here the driving hook goes
+      // straight there, which is what it is for.)
+      await hook(page, "openStorage", "dropbox");
       await waitForStoragePage(page, true);
-      await page.click("#prov-dropbox");
       await page.waitForFunction(
         // deno-lint-ignore no-explicit-any
         () => (globalThis as any).__demo.naming.openFor("panel-dropbox") === true,

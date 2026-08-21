@@ -1592,6 +1592,64 @@ exists (#5-adjacent), and revoke-on-leave (the departed device stays
 in the grant table until another device revokes it); account-wide
 erase, if ever, is its own ceremony with its own statement.
 
+**The storage picker moves above the bar; commitment never leaves it**
+(2026-08-21, #22, ruling set — implementation follows). The provider
+CHOICE was the last consequential act living in forgeable territory
+(the config page's tabs). It moves into a visor drawer sheet with two
+voice-marked lists: (a) providers the user has CONFIGURED, offered
+for immediate ARMED selection; (b) INSTALLED but unconfigured
+providers, offered for configuration, which only then navigates to
+that provider's config page. Voice follows naming state, list follows
+config state — orthogonal axes: a configured-but-unnamed provider
+sits in (a) wearing app voice + NEW. Rulings:
+- SAVE IS DEMOTED to a config-write: the page's save stores the
+  record and walks back. BINDING — the app's storage destination —
+  only ever happens in the picker, as an armed confirmation, and the
+  credential sheet follows SELECTION, not save. Commit-time
+  destination refusals move into the sheet (framework voice). The
+  page's trust sentence collapses to: configuration happens on the
+  page; COMMITMENT ONLY ABOVE THE BAR.
+- The picker STAYS OPEN across the config detour (the existing
+  sheets-are-orthogonal-to-navigation ruling does the work; no
+  close-and-reopen machinery). During the detour it COLLAPSES to a
+  band shrink-wrapping the chosen entry — inert, visually disabled,
+  ~2-3 strip heights of total trusted chrome: a ceremony breadcrumb
+  in trust-grade pixels, answering "what step of MY ceremony is this"
+  where the strip answers "who draws below". Return re-expands;
+  closing the band dismisses the ceremony and return lands plain.
+- MID-CONFIG CEREMONIES (naming is invited — NEW + "name it" sit on
+  the strip during config): the drawer gains a SECOND MOTION, not a
+  second region. The occupant slides out left, the ceremony slides in
+  from the right — the page-nesting grammar replayed at drawer scale,
+  entirely inside trusted pixels — and the suspended band returns
+  from the left when the ceremony closes. "One expanded occupant at a
+  time" stays literally true. The app area DIMS AND INERTS for the
+  ceremony's duration (the existing per-sheet dim option; the panel
+  stays LIVE — inert is not retirement, and it closes the
+  decoy-input interleaving where a live panel solicits text while a
+  ceremony is up). Sheets stay orthogonal to history and the chevron
+  still marks place nesting only: the ceremony exits through its own
+  controls, no new exit machinery.
+- SHEET-IN-APP-AREA was proposed and REJECTED: positional bracketing
+  ("visor business happens attached to the bar") is the one binding
+  users can operate; a sanctioned exception is the precedent a
+  phishing page needs, and a page that dims itself can fake the rest.
+  The strip naming the open sheet is a label binding, not a
+  substitute for position.
+- THE OPENER CARRIES NO PAYLOAD: any page or app affordance may
+  REQUEST the picker (the requestNaming pattern) but passes nothing —
+  no preselection, no filter. App influence must not reach system UI
+  unmarked; the requesting UI explains its own purpose in its own
+  pixels.
+- The config store becomes PLURAL: one record per configured
+  provider, keyed by provider; the existing single record adopts its
+  key on migration.
+- DISCOVERY is parked as its own future pass (web-of-trust
+  recommendation shaped, never app-driven, never a public-store
+  free-for-all) — and whenever it lands, a discovered entry is never
+  visually adjacent-equal to lists (a)/(b): a recommender's words for
+  a provider are still not the user's words.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic

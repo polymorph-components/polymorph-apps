@@ -46,6 +46,7 @@ import credentialFlow from "./scenarios/credential-flow.ts";
 import transportRefusal from "./scenarios/transport-refusal.ts";
 import tenantPrecedence from "./scenarios/tenant-precedence.ts";
 import storagePageNavigation from "./scenarios/storage-page-navigation.ts";
+import storagePicker from "./scenarios/storage-picker.ts";
 import stripOwnership from "./scenarios/strip-ownership.ts";
 import devicePairing from "./scenarios/device-pairing.ts";
 import visorReset from "./scenarios/visor-reset.ts";
@@ -81,6 +82,7 @@ const SCENARIOS: Scenario[] = [
   credentialFlow,
   transportRefusal,
   tenantPrecedence,
+  storagePicker,
   storagePageNavigation,
   // The two pairing ceremonies. It runs against the in-page mock driver
   // (see the scenario's own header for why, and PAIRING.md §6), so it

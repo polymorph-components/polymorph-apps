@@ -460,7 +460,7 @@ export interface BackAction {
  * two have no component behind them at all, which is why they are bare
  * `kind`s rather than surfaces. */
 export type VisorContext =
-  | (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" })
+  | (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" | "storage" })
   | { kind: "settings" }
   // THE ERASE CEREMONY (sheets.ts's third sheet). Like "settings" it is
   // about the VISOR, not about any component, so it carries no surface —
@@ -596,8 +596,32 @@ export interface DrawerTenantSpec<S> {
   armed?: boolean;
   /** Dim and freeze the page behind the sheet (the host owns #visor-dim;
    * freezing whatever else the consumer runs is `beforeShow`/
-   * `afterCollapse` work). */
-  dim?: boolean;
+   * `afterCollapse` work).
+   *
+   * A PREDICATE when the answer depends on what is on screen. The
+   * lightweight ceremonies dim NOTHING at home — nothing secret is typed
+   * there and the tax would be noise — but the same ceremony opened over
+   * a consumer's NESTED PLACE (the demo's provider-config page) must
+   * bracket it: the place dims and goes inert for the ceremony's
+   * duration, which closes the interleaving where a live component
+   * solicits input while a visor ceremony is on screen. The resolved
+   * value is REMEMBERED for the close, so a predicate that flips while
+   * the sheet is up still undoes exactly what the open did. */
+  dim?: boolean | ((session: S) => boolean);
+  /** MAY THIS TENANT BE SUSPENDED RATHER THAN CLOSED when another one
+   * opens over it? Undefined = the ordinary rule (an opening tenant
+   * evicts every other one).
+   *
+   * A suspended tenant keeps its SESSION and loses only the drawer: it
+   * slides out to the left, waits, and slides back from the left when
+   * the tenant that displaced it closes. This is not stacking — "one
+   * expanded occupant at a time" stays literally true — but it stops a
+   * ceremony the user is in the middle of from being silently destroyed
+   * by a ceremony they start from the strip. The demo suspends its
+   * storage picker while it is collapsed to a band (a breadcrumb during
+   * a configuration detour) and not while it is expanded, where ordinary
+   * eviction is what a user would expect. */
+  suspendable?: (session: S) => boolean;
   /** The strip context this tenant claims while it holds the drawer. Also
    * what `restoreContext` recomputes from. */
   context: (session: S) => VisorContext;
@@ -633,6 +657,23 @@ export interface DrawerTenant<S> {
   /** Reveal the sheet. Returns false when a higher-precedence tenant
    * holds the drawer (see `exclusive`), in which case nothing happened. */
   open(session: S, build: (session: S) => DrawerSheet): boolean;
+  /** REBUILD THE SHEET FOR THE SAME SESSION, at whatever size its
+   * builder now produces, animating the drawer from the current height
+   * to the new one.
+   *
+   * It is how a sheet CHANGES SHAPE without ceasing to exist: the demo's
+   * picker collapses to a band when it sends the user off to a config
+   * page and re-expands when they come back, and it is the same ceremony
+   * throughout — a close-and-reopen would drop the session, and with it
+   * the answer to "what step of MY ceremony is this".
+   *
+   * Arming is PER PRESENTATION: a rebuilt sheet arms from zero, so a
+   * control the user armed before a detour is not already armed when
+   * they return. No-op while closed; a SUSPENDED tenant rebuilds when it
+   * resumes, from the same builder, so this is a no-op there too. */
+  rebuild(): void;
+  /** Session alive, drawer held by somebody else (see `suspendable`). */
+  isSuspended(): boolean;
   close(opts?: DrawerCloseOptions): void;
 }
 
@@ -1033,7 +1074,7 @@ export function initVisor(config: VisorConfig): Visor {
     // line names the sheet.
     const kind = ctx === null ? "app" : (ctx.kind ?? "panel");
     const sheet = kind === "credentials" || kind === "naming" ||
-      kind === "settings" || kind === "reset";
+      kind === "settings" || kind === "storage" || kind === "reset";
 
     // --- the TOP line: THE USER'S RECOGNITION PAIR ---------------------
     // The mark the user picked and the word the user chose, side by side,
@@ -1155,6 +1196,12 @@ export function initVisor(config: VisorConfig): Visor {
         ? "storage credentials"
         : kind === "naming"
         ? "naming"
+        // The storage PICKER: the sheet where a provider is chosen and
+        // the app is connected to it. Named on the strip like every
+        // other sheet, so "which pixels am I choosing in" has a
+        // visor-side answer.
+        : kind === "storage"
+        ? "storage"
         // The visor's own words for its own destructive ceremony, and
         // deliberately the same words the button that opened it used:
         // the anchor and the sheet hanging off it must not describe the
@@ -1178,7 +1225,11 @@ export function initVisor(config: VisorConfig): Visor {
     // surface and no credential/naming sheet already owns the drawer —
     // a control that would be a no-op must not announce itself as a
     // button to assistive tech.
-    const tappable = surface !== null && kind !== "credentials" && kind !== "naming";
+    // "storage" joins the two ceremonies that are NOT tappable: the
+    // picker owns the drawer, and offering to open the naming sheet from
+    // the cluster would evict the very sheet the user is choosing in.
+    const tappable = surface !== null && kind !== "credentials" && kind !== "naming" &&
+      kind !== "storage";
     if (tappable) {
       context.setAttribute("role", "button");
       context.setAttribute("tabindex", "0");
@@ -1337,6 +1388,13 @@ export function initVisor(config: VisorConfig): Visor {
 
   interface TenantImpl<S> extends DrawerTenant<S> {
     readonly spec: DrawerTenantSpec<S>;
+    /** May this tenant be suspended INSTEAD of closed, right now? Asked
+     * by whichever tenant is about to displace it (see `suspendable`). */
+    suspendableNow(): boolean;
+    /** Give up the drawer, keep the session. */
+    suspend(): void;
+    /** Take the drawer back, rebuilt, from the left. */
+    resume(): void;
   }
 
   let noteEl: HTMLElement | null = null;
@@ -1391,14 +1449,177 @@ export function initVisor(config: VisorConfig): Visor {
     drawerInner.style.height = `${target}px`;
   };
 
+  /** Animate the CURRENT height to a newly measured one, for a drawer
+   * that is already open (a rebuilt sheet, an occupant swap, a resize).
+   * Same single-property curve as `reveal`; the momentary `auto` is
+   * never rendered, since style is only resolved at frame time. */
+  const retarget = () => {
+    drawerInner.style.height = "auto";
+    drawerInner.style.height = `${drawerInner.offsetHeight}px`;
+  };
+
+  /** THE SWAP: how one occupant replaces another INSIDE the drawer.
+   *
+   * The grammar is the page track's, replayed at drawer scale — the
+   * outgoing occupant leaves to the left, the incoming arrives from the
+   * right, and the reverse when the incoming one closes and the
+   * suspended occupant comes back. Same motion, so a user reads it as
+   * the same thing: you have gone one step further in, and now you are
+   * back. Entirely inside trusted pixels; nothing about it is a second
+   * drawer region.
+   *
+   * The outgoing element is taken OUT OF FLOW for the duration
+   * (`.visor-swap-out` is absolutely positioned), so the drawer's height
+   * animates to the INCOMING sheet's height while both are on screen —
+   * one height curve, the existing one, and a real frame in which the
+   * two occupants are side by side. Under prefers-reduced-motion the
+   * transforms are dropped and the outgoing element simply goes. */
+  const SWAP_MS = 420;
+
   function makeTenant<S>(spec: DrawerTenantSpec<S>): TenantImpl<S> {
     let session: S | null = null;
     let anchor: (() => void) | null = null;
     let armTimer = 0;
+    /** Kept so the sheet can be rebuilt (a shape change) or re-presented
+     * (a resume) for the SAME session. */
+    let builder: ((session: S) => DrawerSheet) | null = null;
+    /** Session alive, drawer held by somebody else. */
+    let suspended = false;
+    /** What `dim` RESOLVED to at open. The undo must match the do even
+     * if the predicate's answer changed while the sheet was up. */
+    let dimmedNow = false;
 
     const detach = () => {
       if (anchor) globalThis.removeEventListener("resize", anchor);
       anchor = null;
+    };
+
+    /** PUT THIS TENANT'S SHEET ON SCREEN, from its builder, and animate
+     * the drawer to fit it. The one place a sheet is mounted: a fresh
+     * open (`enter: "up"`, growing out of the bar from zero), a rebuild
+     * at a new shape (`"none"`, height only), or an occupant swap
+     * (`"right"` for a sheet arriving over a suspended one, `"left"` for
+     * a suspended one coming back).
+     *
+     * Arming is re-run on EVERY presentation, which is the rule the band
+     * needs: a picker that was armed before a configuration detour must
+     * not still be armed when it re-expands on the user's return. */
+    const present = (s: S, enter: "up" | "none" | "right" | "left") => {
+      const sheet = builder!(s);
+      // THE CURRENT OCCUPANT, which is NOT simply the first child: a
+      // sheet that is already travelling out is still in the DOM for the
+      // length of its own motion, and a second swap started inside that
+      // window would otherwise animate the wrong element and leave the
+      // real occupant sitting there. Ceremonies opened and closed in
+      // quick succession do exactly this.
+      const occupantEl = Array.from(drawerInner.children).reverse().find(
+        (el) => !el.classList.contains("visor-swap-out"),
+      ) as HTMLElement | undefined;
+      // Anything already on its way out has been superseded: its travel
+      // is over, whatever its timer thinks.
+      for (const el of Array.from(drawerInner.children)) {
+        if (el !== occupantEl && el.classList.contains("visor-swap-out")) el.remove();
+      }
+      const outgoing = (enter === "right" || enter === "left") ? occupantEl ?? null : null;
+      if (outgoing) {
+        // OUT OF FLOW for the travel, so the drawer's height animates to
+        // the INCOMING sheet's height while both are visible.
+        outgoing.classList.add("visor-swap-out", enter === "right" ? "to-left" : "to-right");
+        drawerInner.append(sheet.root);
+        // Start off-stage, then release in the next style resolution:
+        // the class removal is what the transition runs on.
+        sheet.root.classList.add("visor-swap-in", enter === "right" ? "from-right" : "from-left");
+        void sheet.root.offsetWidth;
+        sheet.root.classList.remove("from-right", "from-left");
+        setTimeout(() => {
+          outgoing.remove();
+          sheet.root.classList.remove("visor-swap-in");
+        }, SWAP_MS);
+      } else if (enter !== "none") {
+        drawerInner.replaceChildren(sheet.root);
+      } else {
+        drawerInner.replaceChildren(sheet.root);
+      }
+
+      const refit = () => {
+        fit();
+        // The animated height is a pixel target, so it goes stale when
+        // the budget changes under it; re-measure at auto and retarget.
+        if (session !== s) return;
+        retarget();
+      };
+      detach();
+      fit();
+      anchor = refit;
+      globalThis.addEventListener("resize", refit);
+
+      const controls = sheet.controls ?? [];
+      if (spec.armed) {
+        // Disabled BEFORE the first frame, inputs included: a secret must
+        // not be typeable into a sheet the user has not yet had time to
+        // see.
+        for (const c of controls) c.disabled = true;
+      }
+
+      if (enter === "up") reveal();
+      else retarget();
+
+      clearTimeout(armTimer);
+      if (spec.armed) {
+        armTimer = setTimeout(() => {
+          if (session !== s || suspended) return;
+          for (const c of controls) c.disabled = false;
+          sheet.onArmed?.();
+          sheet.root.classList.add("armed");
+        }, ARM_MS);
+      }
+      // Where a sheet with no arming delay takes focus: there is nothing
+      // on it a mis-tap could spend.
+      sheet.onShown?.();
+    };
+
+    /** SUSPEND: keep the session, give up the drawer. Called by the
+     * tenant that is displacing this one, which owns the travel (it has
+     * to: the outgoing element only slides once the incoming sheet is
+     * there to slide in over it). Bookkeeping only. */
+    const suspend = () => {
+      if (session === null || suspended) return;
+      suspended = true;
+      clearTimeout(armTimer);
+      detach();
+      // A note belongs to the sheet that declared it.
+      noteEl = null;
+      if (dimmedNow) {
+        dim.hidden = true;
+        dimmedNow = false;
+      }
+    };
+
+    /** RESUME: the tenant that displaced this one has closed, so the
+     * suspended sheet comes back from the left, rebuilt from its builder
+     * — rebuilt, not restored, because the world moved while it was away
+     * (the demo's band re-expands with its lists refreshed, which is the
+     * point of the whole detour). */
+    const resume = () => {
+      const s = session;
+      if (s === null || !suspended) return;
+      suspended = false;
+      drawer.hidden = false;
+      dimmedNow = typeof spec.dim === "function" ? spec.dim(s) : spec.dim === true;
+      if (dimmedNow) dim.hidden = false;
+      // RECOMPUTED, NEVER ASSERTED — the discipline `restoreContext`
+      // exists for, and this is exactly the site that gets it wrong if
+      // nobody says so. A resuming tenant knows what IT is about; it
+      // does not know what the strip should say, because something with
+      // a stronger claim may have arrived while it was suspended. It
+      // routinely has: the demo's band resumes over a live component
+      // surface, and `setContext(spec.context(s))` here took the panel's
+      // name off the anchor while the panel was still drawing the page
+      // below — the anchor making a false statement about who draws
+      // there, plus the loss of the "name it" offer that goes with a
+      // named surface.
+      restoreContext();
+      present(s, "left");
     };
 
     const tenant: TenantImpl<S> = {
@@ -1413,21 +1634,44 @@ export function initVisor(config: VisorConfig): Visor {
       close(opts: DrawerCloseOptions = {}) {
         const s = session;
         if (s === null) return;
+        const wasSuspended = suspended;
         session = null;
+        suspended = false;
+        builder = null;
         clearTimeout(armTimer);
         detach();
         // A note aimed at a sheet that is gone must not land in the next
         // one; the tenant re-declares its own on the way up.
         noteEl = null;
         spec.beforeCollapse?.(s, opts);
-        drawerInner.style.height = "0px";
-        if (spec.dim) dim.hidden = true;
+        // A SUSPENDED tenant does not own the drawer, so closing it must
+        // not touch the drawer's height, its content, or the dim — all
+        // three belong to whoever displaced it. It is a session ending
+        // off-screen (the demo's band, dismissed while a ceremony is up
+        // over it), and the only thing it changes is that nothing comes
+        // back when that ceremony closes.
+        if (!wasSuspended) {
+          drawerInner.style.height = "0px";
+          // By the REMEMBERED value, not by re-asking: `dim` may be a
+          // predicate whose answer changed while the sheet was up, and
+          // the undo has to match the do.
+          if (dimmedNow) dim.hidden = true;
+        }
+        dimmedNow = false;
         spec.afterCollapse?.(s, opts);
         // Ownership-aware, never a bare `setContext(null)`: this close may
         // be running late, and the strip may already belong to somebody
         // else (see restoreContext).
-        if (opts.context !== false) restoreContext();
+        if (opts.context !== false && !wasSuspended) restoreContext();
         spec.afterRestore?.(s, opts);
+        if (!wasSuspended) {
+          // THE SUSPENDED OCCUPANT COMES BACK, if there is one: this
+          // close is the end of the ceremony that displaced it. Done
+          // synchronously, before the deferred blank below, so the
+          // drawer never flashes empty between the two.
+          const waiting = tenants.find((t) => t !== tenant && t.isSuspended());
+          waiting?.resume();
+        }
         setTimeout(() => {
           // Occupancy-aware, not tenant-scoped: another tenant may have
           // claimed the drawer in the meantime, and blanking it here
@@ -1438,6 +1682,17 @@ export function initVisor(config: VisorConfig): Visor {
           }
         }, ARM_MS);
       },
+      rebuild() {
+        const s = session;
+        // A suspended tenant rebuilds when it RESUMES, from the same
+        // builder, so there is nothing to do here.
+        if (s === null || suspended || builder === null) return;
+        present(s, "none");
+      },
+      isSuspended: () => suspended,
+      suspendableNow: () => session !== null && spec.suspendable?.(session) === true,
+      suspend,
+      resume,
       open(s, build) {
         // MUTUAL EXCLUSION. An exclusive tenant holding the drawer refuses
         // every other opener outright.
@@ -1445,12 +1700,22 @@ export function initVisor(config: VisorConfig): Visor {
           if (other === tenant) continue;
           if (other.isOpen() && other.spec.exclusive) return false;
         }
-        // Everything else is evicted — in registration (precedence) order,
+        // Everything else gives way — in registration (precedence) order,
         // and WITHOUT touching the strip context, which this tenant is
-        // about to claim.
+        // about to claim. A SUSPENDABLE tenant gives way without dying:
+        // it keeps its session and slides out (the travel is run by the
+        // presentation below, which needs both sheets in the DOM at
+        // once), and it comes back when this one closes.
+        let displaced = false;
         for (const other of tenants) {
           if (other === tenant) continue;
-          if (other.isOpen()) other.close({ context: false });
+          if (!other.isOpen() || other.isSuspended()) continue;
+          if (other.suspendableNow()) {
+            other.suspend();
+            displaced = true;
+            continue;
+          }
+          other.close({ context: false });
         }
         // Re-entry with a NEW session closes the old one first (the
         // lightweight tenants are re-opened this way, and the old sheet's
@@ -1464,50 +1729,19 @@ export function initVisor(config: VisorConfig): Visor {
         // one's state.
         if (session !== null && session !== s) tenant.close({ context: false });
         session = s;
+        suspended = false;
+        builder = build;
         spec.beforeShow?.(s);
-        if (spec.dim) dim.hidden = false;
+        dimmedNow = typeof spec.dim === "function" ? spec.dim(s) : spec.dim === true;
+        if (dimmedNow) dim.hidden = false;
         drawer.hidden = false;
         // The strip names the sheet hanging off it, in the same colour it
         // has always had (the anchor never changes colour per surface).
         setContext(spec.context(s));
-
-        const sheet = build(s);
-        drawerInner.replaceChildren(sheet.root);
-
-        const refit = () => {
-          fit();
-          // The animated height is a pixel target, so it goes stale when
-          // the budget changes under it; re-measure at auto and retarget.
-          if (session !== s) return;
-          drawerInner.style.height = "auto";
-          drawerInner.style.height = `${drawerInner.offsetHeight}px`;
-        };
-        fit();
-        anchor = refit;
-        globalThis.addEventListener("resize", refit);
-
-        const controls = sheet.controls ?? [];
-        if (spec.armed) {
-          // Disabled BEFORE the first frame, inputs included: a secret must
-          // not be typeable into a sheet the user has not yet had time to
-          // see.
-          for (const c of controls) c.disabled = true;
-        }
-
-        reveal();
-
-        if (spec.armed) {
-          clearTimeout(armTimer);
-          armTimer = setTimeout(() => {
-            if (session !== s) return;
-            for (const c of controls) c.disabled = false;
-            sheet.onArmed?.();
-            sheet.root.classList.add("armed");
-          }, ARM_MS);
-        }
-        // Where a sheet with no arming delay takes focus: there is nothing
-        // on it a mis-tap could spend.
-        sheet.onShown?.();
+        // A sheet arriving OVER a suspended occupant enters from the
+        // right; one opening into an empty (or evicted) drawer grows up
+        // out of the bar as it always has.
+        present(s, displaced ? "right" : "up");
         return true;
       },
     };
