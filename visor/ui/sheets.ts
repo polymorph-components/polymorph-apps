@@ -578,6 +578,22 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     afterCollapse: thawPlace,
   });
 
+  /** TRUE ONLY FOR THE SYNCHRONOUS DURATION OF THE ERASE ENTRY (raised
+   * and lowered around `requestReset()` in the reset button's handler),
+   * and read by the tenant's `suspendable` below.
+   *
+   * The flag is what scopes suspension to exactly the settings→reset
+   * step. Suspension means "one step further into a ceremony you will
+   * come back from", which is true of the erase entry — the user leaves
+   * settings to answer a question settings asked, and Cancel means
+   * "back to what I was doing" — and NOT true of anything else that
+   * displaces this sheet. A naming ceremony opened from the strip, the
+   * storage picker, an add-device flow and a consumer's own exclusive
+   * sheet are all separate errands started from outside; for those,
+   * plain eviction (and a deliberate re-open) is what a user expects,
+   * and a settings sheet sliding back in afterwards would be a ghost. */
+  let settingsSuspends = false;
+
   /** THE SETTINGS SESSION. `hueAtOpen` is the colour the anchor had when
    * the sheet opened: the swatch row previews LIVE, so Cancel (and
    * eviction) must be able to put the anchor back exactly as it was.
@@ -588,6 +604,7 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
   const settingsTenant = visor.drawer.tenant<{ hueAtOpen: number }>({
     name: "settings",
     context: () => ({ kind: "settings" }),
+    suspendable: () => settingsSuspends,
     dim: overNestedPlace,
     beforeShow: freezePlace,
     beforeCollapse: (s, opts) => {
@@ -1102,11 +1119,21 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     cancelBtn.textContent = "Cancel";
     row.append(saveBtn, cancelBtn);
 
-    // THE DANGER ENTRY, and it goes LAST — after the Save/Cancel row, the
-    // same placement (and the same reasoning) as the naming sheet's
-    // forget row. A destructive control above the ordinary way out would
-    // sit in the path of every routine visit to this sheet; below it, it
-    // is somewhere the user has to travel to on purpose.
+    // THE DANGER ENTRY, in the sheet's UPPER-RIGHT CORNER, beside the
+    // heading. It used to sit last, past the Save/Cancel row, buying
+    // distance from the routine controls by making the user travel to
+    // it. The corner buys the same distance a different way: the button
+    // has NO interactive neighbour at all — the heading beside it is
+    // inert text, so a mis-aim anywhere near it costs nothing, which is
+    // more than "below the way out" ever guaranteed (a fat-fingered
+    // Cancel is one row away from the old position).
+    //
+    // And the corner is VISIBLE ON ARRIVAL rather than discovered by
+    // travel, which is what an exit deserves: a visor whose way out has
+    // to be found by scrolling is a visor that keeps you by inertia. The
+    // ceremony behind the button — the arming delay plus the typed word
+    // — is the actual guard, so once it exists, discoverability stops
+    // trading against safety and the two can both be had.
     //
     // It is FRAMEWORK POLICY, not a consumer `extraAction`: what it
     // erases is the visor's own record, and a consumer that had to
@@ -1128,18 +1155,47 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     resetHint.textContent =
       "wipes your name, this device's word, the colour and every petname — a confirmation explains first";
     resetBtn.onclick = () => {
-      // A PLAIN close (no `commit`), exactly as the consumer-action path
-      // does it: an uncommitted colour preview reverts precisely as
-      // Cancel would, so walking into the erase ceremony cannot silently
-      // keep a colour the user never saved. Closing first also frees the
-      // drawer for the tenant that is about to claim it.
-      closeSettings();
-      requestReset();
+      // THE PREVIEW IS REVERTED BY HAND HERE, because this path no
+      // longer closes the settings sheet — it SUSPENDS it, and
+      // suspension deliberately bypasses `beforeCollapse` (the session
+      // is not ending, so the tenant's revert never runs). Two things
+      // would otherwise go wrong, and either alone would be enough: an
+      // uncommitted colour would ride INTO the erase ceremony's frame,
+      // painting a statement of consequence in a colour the user never
+      // saved; and on resume the rebuilt sheet re-preselects `hueAtOpen`
+      // in the swatch row, so the applied colour and the picked swatch
+      // would disagree. Both are fixed by the same line: applied and
+      // picked must both be hueAtOpen.
+      visor.applyHue(hueAtOpen);
+      // SUSPEND, NOT CLOSE, for exactly this one step (see
+      // `settingsSuspends`): the host's `suspend` runs synchronously
+      // inside the reset tenant's `open`, so the flag is raised for the
+      // duration of that call and lowered again immediately — try/finally
+      // so a throw on the way in cannot leave every later displacer
+      // suspending settings instead of evicting it.
+      //
+      // Unsaved name/device edits still drop: the sheet is REBUILT on
+      // resume, not restored, which is the host's ruling ("the world
+      // moved while it was away"). No regression — the old
+      // close-and-reopen dropped precisely the same edits.
+      settingsSuspends = true;
+      try {
+        requestReset();
+      } finally {
+        settingsSuspends = false;
+      }
     };
     resetBlock.append(resetBtn, resetHint);
 
+    // The header row: the sheet's own title on the left, the way out on
+    // the right (see the danger-entry comment above). One row, so the
+    // corner is the corner at every width the sheet is drawn at.
+    const head = document.createElement("div");
+    head.className = "settings-head";
+    head.append(h, resetBlock);
+
     root.append(
-      h,
+      head,
       lead,
       nameField.field,
       deviceField.field,
@@ -1151,8 +1207,6 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     );
     if (actions.length > 0) root.append(actionsBlock);
     root.append(row);
-    // Danger last, past the ordinary way out (see the block above).
-    root.append(resetBlock);
     return {
       root,
       nameInput: nameField.input,
@@ -1394,7 +1448,10 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
         // cache on the page — the consumer's surfaces, the strip's own
         // context — is now a copy of records that no longer exist, and a
         // visor still speaking a name it has forgotten is precisely the
-        // failure this ceremony was about.
+        // failure this ceremony was about. (The suspended settings sheet
+        // goes the same way — its session is page state, and the page is
+        // about to be replaced by a fresh boot of a visor that remembers
+        // nothing to settle.)
         location.reload();
       };
       built.cancelBtn.onclick = () => {
@@ -1402,6 +1459,12 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
         // A plain close and NO announcement, the settings-cancel
         // precedent: nothing happened, and saying so on the anchor would
         // spend the bottom line on a non-event.
+        //
+        // THE RETURN TRAVEL IS NOT THIS SHEET'S. The settings sheet that
+        // opened this one is suspended, not closed, and the drawer host
+        // resumes it on this close — rebuilt, sliding back in from the
+        // left. So there is nothing to re-open here; adding one would
+        // race the host into a second settings session.
         closeReset();
       };
 

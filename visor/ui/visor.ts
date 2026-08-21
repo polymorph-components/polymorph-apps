@@ -1228,8 +1228,21 @@ export function initVisor(config: VisorConfig): Visor {
     // "storage" joins the two ceremonies that are NOT tappable: the
     // picker owns the drawer, and offering to open the naming sheet from
     // the cluster would evict the very sheet the user is choosing in.
+    //
+    // "reset" joins them for a heavier reason, twice over. TRUST: a tap
+    // on the cluster opens the NAMING ceremony, and a destructive
+    // ceremony the user is mid-decision on must not be displaceable by a
+    // stray tap on the anchor it hangs from — the erase sheet is the one
+    // sheet where "I brushed the bar and my question went away" is a
+    // real cost. MECHANICS: the erase sheet is opened from settings,
+    // which SUSPENDS beneath it (visor/ui/sheets.ts's settings tenant),
+    // so naming's eviction of reset would resume the settings sheet
+    // mid-open and then immediately clobber it — `present("up")`
+    // replaces the drawer's children — leaving a tenant that believes it
+    // is open with no DOM of its own. There is no ordering of those two
+    // that ends well, so the tap is refused instead.
     const tappable = surface !== null && kind !== "credentials" && kind !== "naming" &&
-      kind !== "storage";
+      kind !== "storage" && kind !== "reset";
     if (tappable) {
       context.setAttribute("role", "button");
       context.setAttribute("tabindex", "0");
@@ -1411,6 +1424,27 @@ export function initVisor(config: VisorConfig): Visor {
       return;
     }
     for (const t of tenants) {
+      // A SUSPENDED TENANT IS NOT A CLAIMANT. Its session is alive, but
+      // its claim to the strip is DORMANT: its sheet is off-screen and
+      // the drawer belongs to whoever displaced it, so naming it here
+      // would have the anchor describe a sheet the user cannot see while
+      // the visible one goes unnamed — the exact false statement
+      // `restoreContext` exists to prevent. Eligibility comes back on
+      // its own: `resume` clears the flag BEFORE it calls in here, so a
+      // returning tenant is a claimant again precisely when its sheet is
+      // on its way back.
+      //
+      // GENERAL, not a fix for one sheet. The demo's picker suspension
+      // never tripped this only because every tenant that displaces the
+      // picker is registered BEFORE it and therefore wins the scan
+      // anyway — masked by registration order, not immune to the bug.
+      // The settings sheet suspending under the erase ceremony is the
+      // opposite order (settings is registered first), and any consumer
+      // `restoreContext` while that ceremony is up — the demo restores
+      // the strip when a panel retires, which can happen mid-ceremony
+      // because the erase sheet does not pause runners — would have put
+      // "visor settings" on the anchor above the erase sheet.
+      if (t.isSuspended()) continue;
       const s = t.session();
       if (s !== null) {
         setContext(t.spec.context(s));

@@ -823,14 +823,24 @@
                                         border: 1px solid rgba(255,255,255,.45); }
 .settings-sheet .picked { outline: 2px solid #fff; outline-offset: 1px; }
 .settings-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
-/* THE DANGER ENTRY, below the Save/Cancel row (danger last, the same
-   placement as the naming sheet's forget row) and separated from it by
-   the same hairline rule .name-forget uses, so "past the way out" is
-   visible and not merely a matter of order. */
+/* THE HEAD ROW: the sheet's title on the left, the erase entry in the
+   upper-right corner (see buildSettingsSheet). flex-start on the cross
+   axis, so the button aligns with the TOP of the heading rather than
+   floating to the middle of a wrapped hint. */
+.settings-sheet .settings-head { display: flex; justify-content: space-between;
+                                 align-items: flex-start; gap: 1em;
+                                 margin-bottom: .35em; }
+/* The h2's own bottom margin belongs to the row now — otherwise the
+   heading pushes the row taller than either of its two children. Scoped
+   to the head row, so every other sheet's h2 keeps the shared rule. */
+.settings-sheet .settings-head h2 { margin: 0; }
+/* THE DANGER ENTRY, in the corner. No separator rule and no top margin:
+   it is not a section divider any more, it is a column hanging off the
+   heading's row. Right-aligned to the corner it lives in, and clamped so
+   the hint wraps into its own column instead of crowding the title. */
 .settings-sheet .settings-reset { display: flex; flex-direction: column;
-                                  gap: .25em; margin-top: .9em;
-                                  padding-top: .6em;
-                                  border-top: 1px solid rgba(255,255,255,.18); }
+                                  align-items: flex-end; gap: .25em;
+                                  max-width: 18rem; text-align: right; }
 /* The `.forget` idiom escalated one step — same font, padding and radius,
    a warmer red on the text and a stronger border. ALPHA-BASED (like every
    plate and every control here) so it reads on all ten anchor hues at 38%
@@ -839,10 +849,12 @@
 .settings-sheet .settings-reset button.reset { font: inherit; font-size: 12px;
                                                cursor: pointer; padding: .3em .7em;
                                                border-radius: 4px; color: #ffd0d0;
-                                               align-self: flex-start;
+                                               align-self: flex-end;
+                                               white-space: nowrap;
                                                background: transparent;
                                                border: 1px solid rgba(255,140,140,.6); }
-.settings-sheet .settings-reset .hint { font-size: 10px; opacity: .75; }
+.settings-sheet .settings-reset .hint { font-size: 10px; opacity: .75;
+                                        text-align: right; }
 
 /* --- the reset sheet -------------------------------------------------
    THE HEAVY TENANT of the same drawer, and the only one of the three
@@ -903,4 +915,13 @@
   .cred-sheet q.foreign, .cred-sheet span.foreign { max-width: 100%; }
   .cred-sheet .cred-row { gap: .6em; }
   .cred-sheet .cred-line { row-gap: .2em; }
+  /* The head row WRAPS at phone width rather than squeezing the title
+     into a column of single letters: the erase entry drops onto its own
+     line under the heading, still right-aligned, still the corner. The
+     button keeps full-size padding — a destructive control must stay a
+     comfortable tap target — and the hint's clamp goes, because at this
+     width the line it wraps against is the viewport. */
+  .settings-sheet .settings-head { flex-wrap: wrap; row-gap: .4em; }
+  .settings-sheet .settings-head h2 { flex: 1 1 100%; }
+  .settings-sheet .settings-reset { max-width: 100%; margin-left: auto; }
 }
