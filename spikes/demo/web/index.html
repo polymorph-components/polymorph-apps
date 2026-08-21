@@ -24,7 +24,7 @@
        visor/ui/visor.ts (#22/#20). Linked BEFORE the page's own <style>
        block below so the cascade order matches what visor.css was
        authored against — the demo's page-specific rules (sheet content,
-       panes, storage dialog) come after, as they always did in this
+       panes, storage page) come after, as they always did in this
        file. -->
   <link rel="stylesheet" href="./visor.css">
   <style>
@@ -54,12 +54,71 @@
     #bob-pane.revoked { opacity: .75; }
     #bob-pane.revoked h2::after { content: " — revoked"; color: #b03030; }
 
-    /* The storage dialog: visor frame vs. sandboxed panel. The boundary
-       is deliberately VISIBLE — #22's position-based trust says the user
-       must be able to see WHERE untrusted provider content lives. */
-    #storage-dialog { border: 1px solid #2a2a44; border-radius: 4px; padding: 0;
-                      background: #16213e; color: #ddd; min-width: 30em; }
-    #storage-dialog::backdrop { background: rgba(10,10,20,.55); }
+    /* --- THE PAGE TRACK: storage is a PLACE, not a modal ---------------
+       The storage configuration used to be a <dialog> opened with
+       showModal(). It is a sibling PAGE now, and the whole page slides
+       sideways to reach it while the visor strip stays exactly where it
+       is. Three reasons, in order of weight:
+
+         - A MODAL PAINTS IN THE TOP LAYER, above #visor-zone, and its
+           ::backdrop dims the page underneath. So the moment the panel
+           surface arrives — the strip flipping to NEW + "name it", the
+           whole TOFU beat #22 is built around — happened in pixels the
+           user was being visually pushed away from. Nothing may paint
+           over or dim a component surface's anchor except the visor
+           itself. A dialog does both, by construction.
+         - THE MOTION POINTS AT THE ANCHOR. The strip is the one element
+           that does NOT move while everything else translates, which
+           makes the anchor the fixed point of the transition rather than
+           something the transition covers up.
+         - IT DELETES MACHINERY. No top layer means nothing to close:
+           the sheets' "take the page back" precondition, the ESC-close
+           retirement observer and the close-event-arrives-late ordering
+           class all go away because the states they reconciled no longer
+           exist.
+
+       The visor zone and the dim layer stay OUTSIDE this track: they are
+       pinned, and they must not translate with the page. */
+    /* THE TRACK IS TWICE THE VIEWPORT WIDE, so the page it is not
+       showing has to be CLIPPED rather than allowed to widen the
+       document — a horizontal scrollbar here would let the user scroll
+       the pinned anchor sideways out of view, which is the one thing the
+       strip's geometry must never permit (the strip-geometry e2e
+       scenario asserts zero document overflow).
+       `overflow-x: clip` and not `hidden`: `hidden` on one axis forces
+       the other axis to `auto`, turning this wrapper into a scroll
+       container — which changes what `position: sticky` resolves
+       against elsewhere on the page. `clip` leaves overflow-y visible. */
+    #page-viewport { overflow-x: clip; }
+    #page-track { display: flex; width: 200%;
+                  /* Faster than the drawer's 700ms: the drawer's slowness
+                     is an ARMING delay with a visible form, while this
+                     is only travel between two places the user asked
+                     for. Same easing, so the two motions read as one
+                     system. */
+                  transition: transform 420ms cubic-bezier(.2,.8,.2,1); }
+    #page-track > * { width: 50%; flex: none; }
+    #page-track.show-storage { transform: translateX(-50%); }
+    /* THE OFF-SCREEN PAGE IS INERT, not merely invisible. `inert` is what
+       actually removes it from the tab order, from hit-testing and from
+       the accessibility tree; `visibility: hidden` would do the first
+       two but is animation-hostile (it would have to be delayed until
+       the transition ended, and a mid-slide interruption then leaves a
+       page that is visible and untabbable). The attribute is toggled by
+       host/demo.ts at the same moment as the class. */
+    #page-track > [inert] { pointer-events: none; }
+    @media (prefers-reduced-motion: reduce) {
+      /* The STATE CHANGE is the content; the travel is decoration. */
+      #page-track { transition: none; }
+    }
+    /* The storage page's own frame: visor chrome vs. sandboxed panel. The
+       boundary is deliberately VISIBLE — #22's position-based trust says
+       the user must be able to see WHERE untrusted provider content
+       lives. */
+    #page-storage { padding: 1em; box-sizing: border-box; }
+    #storage-frame { border: 1px solid #2a2a44; border-radius: 4px;
+                     background: #16213e; color: #ddd;
+                     max-width: 40em; margin: 0 auto; }
     .visor-head { display: flex; flex-direction: column; gap: .25em;
                    padding: .7em .9em; border-bottom: 1px solid #2a2a44; }
     .visor-head strong { font-size: 14px; }
@@ -94,19 +153,19 @@
                       padding: .6em .9em .8em; border-top: 1px solid #2a2a44; }
     .visor-actions .spacer { flex: 1 1 auto; }
     .visor-actions .visor-note { max-width: 26em; line-height: 1.35; }
-    #storage-dialog form { display: flex; justify-content: flex-end;
-                           padding: .3em .9em .8em; margin: 0; }
+
 
     /* --- Mobile geometry fixes (<=480px). Narrow-viewport layout only;
        does not touch the >=900px desktop rules above. The strip's real
        height budget and safe-area insets (notches) are an open #22
        question, not attempted here — this just stops horizontal
-       overflow and keeps the strip/controls/dialog usable on a phone. */
+       overflow and keeps the strip/controls/storage page usable on a
+       phone. */
     @media (max-width: 480px) {
       /* The visor's own narrow-viewport cluster rules (context/identity
          truncation) moved to visor/ui/visor.css alongside the rest of
          the strip's chrome, and the sheets' own narrow-viewport rules
-         went with the sheets; only this page's own controls/dialog
+         went with the sheets; only this page's own controls/storage
          narrow-viewport fixes stay here. */
       #controls { padding: .5em 0; font-size: 12px; }
       #controls .bar-inner { flex-wrap: wrap; gap: .5em; padding: 0 .6em; }
@@ -116,8 +175,11 @@
       .controls-note { margin-left: 0 !important; font-size: 10px !important;
                         flex: 1 1 100%; }
 
-      #storage-dialog { min-width: min(30em, calc(100vw - 2em));
-                         max-width: calc(100vw - 2em); }
+      /* The storage page keeps the same edge-to-edge behaviour the
+         dialog's mobile rule gave it: the frame is already fluid
+         (max-width + auto margins), so all that is left is trimming the
+         page padding. */
+      #page-storage { padding: .5em; }
       .provider-tabs { flex-wrap: wrap; }
       .visor-actions { flex-wrap: wrap; }
       .visor-actions .visor-note { max-width: 100%; }
@@ -167,6 +229,12 @@
     </div>
   </div>
   <div id="visor-dim" hidden></div>
+  <!-- THE PAGE TRACK. Two sibling pages side by side; host/demo.ts slides
+       between them. Everything above this line is pinned visor chrome and
+       does not travel — that is the whole point of the arrangement. -->
+  <div id="page-viewport">
+  <div id="page-track">
+  <div id="page-main">
   <div id="banner"><div class="bar-inner">booting…</div></div>
   <div id="controls">
     <div class="bar-inner">
@@ -180,33 +248,6 @@
       </span>
     </div>
   </div>
-  <!-- The visor owns this frame; the provider's panel is a component with
-       its own grants, mounted into #panel-region (#22). -->
-  <dialog id="storage-dialog">
-    <div class="visor-head">
-      <strong>Storage</strong>
-      <span class="visor-note">the visor owns this frame; the provider's config panel below is a sandboxed component with its own grants</span>
-    </div>
-    <div class="provider-tabs">
-      <button id="prov-s3">S3-compatible</button>
-      <button id="prov-dropbox">Dropbox</button>
-    </div>
-    <div id="panel-region"></div>
-    <!-- The visor's own affordances: OUTSIDE the granted region, so committing
-         is an act of the shell rather than of the component (#22). -->
-    <div class="visor-actions">
-      <span class="visor-note">Sign-in opens a browser window showing the provider's address.
-        Secrets are never typed in this dialog — Save &amp; connect makes the coloured
-        bar at the top of the page slide down and open the visor's own sheet above it.</span>
-      <span class="spacer"></span>
-      <button id="storage-save"><b>Save &amp; connect</b></button>
-      <button id="storage-cancel">Cancel</button>
-    </div>
-    <!-- The visor's refusal line for the commit-time destination checks: they
-         fail while this dialog is still open, before any sheet exists. -->
-    <div id="storage-reason" class="visor-note"
-         style="color:#f5c16c; padding:0 .9em .7em; line-height:1.35"></div>
-  </dialog>
   <div id="panes">
     <div class="pane" id="alice-pane">
       <h2>Alice — laptop <small>wire hub + bucket owner</small></h2>
@@ -224,6 +265,42 @@
       <div id="tablet-app"></div>
     </div>
   </div>
+  </div><!-- /#page-main -->
+  <!-- THE STORAGE PAGE. A sibling of the main page under the same pinned
+       strip: the visor owns this frame, and the provider's panel is a
+       component with its own grants, mounted into #panel-region (#22).
+       The user can watch the strip flip to the panel's identity as this
+       page arrives, which a modal made impossible. -->
+  <div id="page-storage" inert>
+    <div id="storage-frame">
+      <div class="visor-head">
+        <strong>Storage</strong>
+        <span class="visor-note">the visor owns this frame; the provider's config panel below is a sandboxed component with its own grants</span>
+      </div>
+      <div class="provider-tabs">
+        <button id="prov-s3">S3-compatible</button>
+        <button id="prov-dropbox">Dropbox</button>
+      </div>
+      <div id="panel-region"></div>
+      <!-- The visor's own affordances: OUTSIDE the granted region, so committing
+           is an act of the shell rather than of the component (#22). -->
+      <div class="visor-actions">
+        <span class="visor-note">Sign-in opens a browser window showing the provider's address.
+          Secrets are never typed on this page — Save &amp; connect slides back to the
+          main page and opens the visor's own sheet above the coloured bar, which has
+          not moved the whole time.</span>
+        <span class="spacer"></span>
+        <button id="storage-save"><b>Save &amp; connect</b></button>
+        <button id="storage-cancel">Cancel</button>
+      </div>
+      <!-- The visor's refusal line for the commit-time destination checks: they
+           fail while this page is still up, before any sheet exists. -->
+      <div id="storage-reason" class="visor-note"
+           style="color:#f5c16c; padding:0 .9em .7em; line-height:1.35"></div>
+    </div>
+  </div>
+  </div><!-- /#page-track -->
+  </div><!-- /#page-viewport -->
   <!-- Build stamp: the copy step rewrites __BUILD__ (see the justfile).
        Unversioned assets meant returning visitors ran a cached bundle
        against fresh artifacts — the miniature of NOTES §Release

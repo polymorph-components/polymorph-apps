@@ -26,14 +26,17 @@ import {
   assertIncludes,
   hook,
   KEYS,
+  onStoragePage,
   sheetText,
   sleep,
+  stripUnobscured,
   UI_TIMEOUT,
   waitForBoot,
   recordStorageWrites,
   waitForPaneStatus,
   waitForPanelSurface,
   waitForSheet,
+  waitForStoragePage,
 } from "../util.ts";
 import type { Page } from "npm:playwright@1.57.0";
 
@@ -197,22 +200,27 @@ const scenario: Scenario = {
 
     await act("the visor's Save leads to a sheet offering the HELD key, not a field", async () => {
       await hook(page, "openStorage");
-      await page.waitForFunction(
-        () => (document.getElementById("storage-dialog") as HTMLDialogElement)?.open === true,
-        undefined,
-        { timeout: UI_TIMEOUT },
-      );
+      await waitForStoragePage(page, true);
       // The panel needs to have mounted and seeded itself from the
       // (secret-free) stored config before the visor can ask it to commit.
       await waitForPanelSurface(page);
       await page.click("#storage-save");
       await waitForSheet(page, "drawer", true, 30_000);
-      // ORDERING IS THE INVARIANT: by the time a secret is on screen
-      // there is no component surface alive on the page at all.
-      const dialogOpen = await page.evaluate(() =>
-        (document.getElementById("storage-dialog") as HTMLDialogElement).open
+      // ORDERING IS THE INVARIANT, and the page slide keeps it: by the
+      // time a secret is on screen the visor has retired the panel AND
+      // walked back to the main page, so there is no component surface
+      // alive anywhere and none on a page the user cannot see.
+      assertEquals(
+        await onStoragePage(page),
+        false,
+        "the storage page while the credential sheet is up",
       );
-      assertEquals(dialogOpen, false, "the storage dialog while the credential sheet is up");
+      // The anchor is under the sheet, where it always is — never
+      // painted over. The sheet is the visor's own, so the visor's own
+      // dim is up; what matters is that the STRIP itself is not covered.
+      const strip = await stripUnobscured(page);
+      assertEquals(strip.visible, true, "the strip while the credential sheet is up");
+      assertEquals(strip.hitInStrip, true, "the strip was painted over by the credential sheet");
       const placeholder = await page.evaluate(() =>
         Array.from(document.querySelectorAll("#visor-drawer-inner input")).map((i) =>
           (i as HTMLInputElement).placeholder
@@ -357,14 +365,15 @@ const scenario: Scenario = {
 
     await act("a reload re-arms from the persisted handle, with no ceremony", async () => {
       // The beat nobody re-checks by hand, because a success looks like
-      // nothing happening: no dialog, no sheet, no typing — the visor finds
-      // the handle, and the bucket comes back by itself.
+      // nothing happening: no storage page, no sheet, no typing — the visor
+      // finds the handle, and the bucket comes back by itself.
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForBoot(page);
       await waitForBucketReady(page);
-      assertEquals(await page.evaluate(() =>
-        (document.getElementById("storage-dialog") as HTMLDialogElement).open
-      ), false, "the storage dialog after a silent re-arm");
+      // A reload lands on the MAIN page: the panel session is not
+      // durable, so boot rewrites the history entry rather than
+      // restoring a half-finished configuration (host/demo.ts).
+      assertEquals(await onStoragePage(page), false, "the storage page after a silent re-arm");
       assertEquals(
         // deno-lint-ignore no-explicit-any
         await page.evaluate(() => (globalThis as any).__demo.drawer.open()),

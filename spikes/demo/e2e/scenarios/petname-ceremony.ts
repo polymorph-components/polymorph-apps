@@ -31,6 +31,7 @@ import {
   waitForBoot,
   waitForBottom,
   waitForSheet,
+  waitForStoragePage,
 } from "../util.ts";
 
 const PETNAME = "tasks board";
@@ -246,14 +247,10 @@ const scenario: Scenario = {
 
     await act("a SECOND component cannot be given the same word", async () => {
       // The collision is only meaningful across two records, so the s3
-      // panel is named first — through the storage dialog, which is the
+      // panel is named first — through the storage page, which is the
       // only place that surface exists.
       await hook(page, "openStorage");
-      await page.waitForFunction(
-        () => (document.getElementById("storage-dialog") as HTMLDialogElement)?.open === true,
-        undefined,
-        { timeout: UI_TIMEOUT },
-      );
+      await waitForStoragePage(page, true);
       // Wait for the panel surface to be registered before naming it:
       // `openFor` is provenance-keyed and opens NOTHING for a key the visor
       // does not already hold (host/demo.ts, `naming.openFor`).
@@ -287,7 +284,20 @@ const scenario: Scenario = {
       const afterPanel = await marks(page) as Record<string, { icon?: string }>;
       assertEquals(afterPanel["panel-s3"]?.icon, S3_NOMINATION, "the panel's adopted mark");
 
-      // Now try to give the APP the panel's word.
+      // Now try to give the APP the panel's word — which means walking
+      // back to the app's page first. The strip's cluster is about the
+      // surface the user is looking at, and while the storage page is up
+      // that is the PANEL: naming from the cluster here would re-open the
+      // panel's own ceremony, not the app's.
+      //
+      // THIS STEP USED TO BE INVISIBLE. The sheets' `beforeOpen` hook
+      // tore the panel down and closed the storage <dialog> before any
+      // sheet could open — a modal would otherwise have painted over it —
+      // so "open the ceremony" silently meant "and leave the panel". A
+      // sibling page needs no eviction, so the walk back is a gesture the
+      // scenario makes for itself, as the user would.
+      await page.click("#storage-cancel");
+      await waitForStoragePage(page, false);
       await hook(page, "naming.openCluster");
       await waitForSheet(page, "naming", true);
       await hook(page, "naming.type", "s3 config");
@@ -317,11 +327,7 @@ const scenario: Scenario = {
       await hook(page, "naming.cancel");
       await waitForSheet(page, "naming", false);
       await hook(page, "openStorage");
-      await page.waitForFunction(
-        () => (document.getElementById("storage-dialog") as HTMLDialogElement)?.open === true,
-        undefined,
-        { timeout: UI_TIMEOUT },
-      );
+      await waitForStoragePage(page, true);
       await page.click("#prov-dropbox");
       await page.waitForFunction(
         // deno-lint-ignore no-explicit-any
@@ -350,13 +356,22 @@ const scenario: Scenario = {
     await act("forgetting drops the name AND the mark, and promises NEW next time", async () => {
       // Re-opened on the APP: the previous act took the ceremony to the
       // Dropbox panel and closed it, so the sheet this one forgets from
-      // is opened here rather than inherited. (`beforeOpen` takes the
-      // page back from the storage dialog on the way.)
+      // is opened here rather than inherited.
+      //
+      // LEAVING THE STORAGE PAGE IS EXPLICIT NOW. It used to happen as a
+      // side effect: the sheets' `beforeOpen` hook took the page back
+      // from the modal <dialog> before any sheet could open, because a
+      // modal would have painted over it. A sibling page needs no such
+      // eviction — a sheet opens above the strip while the storage page
+      // sits where it is (tenant-precedence.ts asserts exactly that) —
+      // so this act, which is about the APP's record, walks back itself.
+      await page.click("#storage-cancel");
+      await waitForStoragePage(page, false);
       await hook(page, "naming.openFor", "app");
       await waitForSheet(page, "naming", true);
       // Arm the announcement watcher BEFORE triggering the forget — the
       // honest observation order, and the one that caught a real bug: the
-      // storage dialog this act just took the page back from retires on a
+      // panel this act just left behind retires on a
       // DEFERRED restore, which used to land milliseconds after the forget
       // announcement and clobber it (CI run 32442122042; visor.ts's
       // sameContext is the fix). Armed-late only ever passed by winning

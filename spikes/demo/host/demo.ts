@@ -282,7 +282,7 @@ async function escrowPending(cfg: StorageConfig | null): Promise<void> {
 
 const INFRA_HELP = `the live path needs the relay to be reachable (default: n0's public
 relay; ?relay=… to override). The bucket pane is configured via the
-Storage… dialog and is optional for boot.`;
+Storage… page and is optional for boot.`;
 
 // --- artifacts -----------------------------------------------------------------
 
@@ -336,18 +336,18 @@ function randomHex(n: number): string {
 
 const AUTH_TIMEOUT_MS = 5 * 60_000;
 
-/** The visor's credential store for the live dialog session. Installed by
- * the dialog wiring in `boot`; module-level so the broker and the scoped
+/** The visor's credential store for the live panel session. Installed by
+ * the storage-page wiring in `boot`; module-level so the broker and the scoped
  * fetch shim (both visor capabilities defined out here) can deposit and
  * read WITHOUT the values ever passing through a panel. Per-session: the
- * dialog's teardown clears them. */
+ * panel's teardown clears them. */
 let depositCredential: (kind: string, value: string) => void = () => {};
 let heldCredential: (kind: string) => string = () => "";
 /** The destination the visor's held credentials are BOUND to: a normalized
  * origin, or null while there is none. Module-level for the same reason
  * the store above is — the scoped fetch shim is a visor capability
  * defined out here, and injection is conditioned on this binding (#22).
- * The dialog wiring maintains it; teardown clears it. */
+ * The storage-page wiring maintains it; teardown clears it. */
 let boundDestination: string | null = null;
 
 /**
@@ -940,7 +940,7 @@ function isCleartextDestination(origin: string): boolean {
 //
 // The phishing surface this closes: a panel that draws its own secret
 // inputs is asking for credentials in ITS pixels while sitting inside
-// the visor's dialog, borrowing the visor's authority. So a panel may only
+// the visor's storage page, borrowing the visor's authority. So a panel may only
 // DECLARE a kind from a fixed vocabulary; the visor renders the field with
 // THE VISOR'S OWN WORDS. The visor never renders a panel-supplied label — that
 // is the whole point: otherwise a panel declares "your Dropbox password"
@@ -1567,23 +1567,57 @@ async function boot() {
     bobPull();
   };
 
-  // --- the storage dialog: visor frame, sandboxed provider panel ----------
+  // --- the storage PAGE: visor frame, sandboxed provider panel ------------
   //
   // #22's provisional ruling: a provider's config panel is an APP — its
   // own region, its own grants, launched FROM the visor, never rendered AS
-  // the visor. The visor owns the dialog, the tabs and the OAuth ceremony; the
+  // the visor. The visor owns the page, the tabs and the OAuth ceremony; the
   // panel owns the fields and hands back an opaque config blob.
   // Credentials never touch app code or visor-rendered provider code.
+  //
+  // IT WAS A MODAL <dialog> AND IS NOW A SIBLING PAGE (web/index.html's
+  // #page-track). The reason is the anchor: a modal paints in the TOP
+  // LAYER, above #visor-zone, and its ::backdrop dims everything under
+  // it — so the strip's identity flip to the arriving panel (NEW + "name
+  // it", the TOFU beat this whole demo is about) happened in the one
+  // place the user was being visually pushed away from. Nothing may
+  // paint over or dim a component surface's anchor except the visor
+  // itself. As a page, the panel becomes a PLACE: the strip is the one
+  // element that does not move while everything else slides, so the
+  // motion points AT the anchor instead of covering it.
+  //
+  // It also deleted machinery rather than adding it. Gone with the top
+  // layer: the sheets' "take the page back first" precondition, the
+  // ESC-close retirement observer, and the close-event-arrives-late
+  // ordering class that observer belonged to. There is no top layer, so
+  // there is nothing to close and nothing to close it out of order.
 
-  const dialog = document.getElementById("storage-dialog") as HTMLDialogElement;
   const region = document.getElementById("panel-region") as HTMLElement;
   const saveBtn = document.getElementById("storage-save") as HTMLButtonElement;
+  const pageTrack = document.getElementById("page-track") as HTMLElement;
+  const pageMain = document.getElementById("page-main") as HTMLElement;
+  const pageStorage = document.getElementById("page-storage") as HTMLElement;
+
+  /** Which page the track is showing. The CLASS is the state — one
+   * source of truth that the CSS, the e2e harness and this file all read
+   * the same way. */
+  const onStoragePage = () => pageTrack.classList.contains("show-storage");
+  /** Move the track, and move `inert` with it. The off-screen page must
+   * not be tabbable, hit-testable or visible to assistive tech: a
+   * control the user cannot see but can still reach is worse than a
+   * modal, not better. */
+  const showPage = (which: "main" | "storage") => {
+    const storage = which === "storage";
+    pageTrack.classList.toggle("show-storage", storage);
+    pageStorage.toggleAttribute("inert", !storage);
+    pageMain.toggleAttribute("inert", storage);
+  };
 
   // --- the visor's own credential entry: the anchored drawer (#22) -----------
   //
   // The phishing surface this closes: a panel that draws its own secret
   // inputs is asking for credentials in ITS pixels while sitting inside
-  // the visor's dialog, borrowing the visor's authority. So a panel may only
+  // the visor's storage page, borrowing the visor's authority. So a panel may only
   // DECLARE a kind from a fixed vocabulary; the visor renders the field with
   // THE VISOR'S OWN WORDS (CREDENTIAL_VOCABULARY above). The visor never
   // renders a panel-supplied label — that is the whole point: otherwise a
@@ -1592,7 +1626,7 @@ async function boot() {
   // a label the visor writes.
   //
   // What the drawer changes is WHERE those visor-owned fields live. In
-  // the dialog they sat mid-page between the sandboxed region and the
+  // the old dialog they sat mid-page between the sandboxed region and the
   // action row: the visor's pixels by construction, but not RECOGNISABLY so
   // — an app can draw that same rectangle, pixel for pixel, inside its
   // own region. They now live on a sheet that unfolds ABOVE the pinned
@@ -1607,11 +1641,11 @@ async function boot() {
   /** The drawer's content box, for the driving handles at the bottom of
    * this file. The host owns it; the queries below only read it. */
   const drawerInner = document.getElementById("visor-drawer-inner") as HTMLElement;
-  /** The dialog's own refusal line: the commit-time destination checks
-   * fail while the dialog is still open and no sheet exists yet. */
-  const dialogReason = document.getElementById("storage-reason") as HTMLElement;
-  const dialogNote = (text: string) => {
-    dialogReason.textContent = text;
+  /** The storage page's own refusal line: the commit-time destination
+   * checks fail while that page is still up and no sheet exists yet. */
+  const storageReason = document.getElementById("storage-reason") as HTMLElement;
+  const storageNote = (text: string) => {
+    storageReason.textContent = text;
   };
 
   /** The visor's per-session credential state, keyed by WIT kind. The
@@ -1706,7 +1740,7 @@ async function boot() {
     for (const input of credInputs.values()) input.value = "";
     renderBinding();
     if (note && had !== null) {
-      dialogNote("destination changed — credentials will be requested for the new destination");
+      storageNote("destination changed — credentials will be requested for the new destination");
     }
     return next;
   };
@@ -1717,7 +1751,7 @@ async function boot() {
    * An unrecognised kind is REFUSED rather than guessed at: the visor will
    * not lend its pixels to a request it has no words for, and Confirm
    * stays disabled so the refusal cannot be clicked past (Save is
-   * likewise disabled back in the dialog, at mount time). Returns whether
+   * likewise disabled back on the storage page, at mount time). Returns whether
    * anything was refused. */
   const renderCredentials = (kinds: string[], prefill: Record<string, string>): boolean => {
     credKinds = kinds;
@@ -1867,13 +1901,13 @@ async function boot() {
   };
 
 
-  // --- the two-phase commit: dialog decides, drawer collects (#22) --------
+  // --- the two-phase commit: the page decides, the drawer collects (#22) ---
   //
-  // Phase 1 is the storage dialog: tabs, the sandboxed panel region and
+  // Phase 1 is the storage page: tabs, the sandboxed panel region and
   // Save/Cancel — and NO credential field anywhere in it. Phase 2 is this
   // drawer. Between them the visor tears the panel down, so by the time a
   // secret is on screen there is no component surface alive on the page
-  // at all: not in the dialog (closed), not in a pane (paused), nowhere.
+  // at all: not on the storage page (left), not in a pane (paused), nowhere.
   // That invariant is the reason for the ordering below, and it must be
   // preserved by anything that touches this flow.
 
@@ -1940,15 +1974,26 @@ async function boot() {
    * sheet that may be holding secrets must outrank both of these. Moving
    * this call above `credentialTenant` would silently invert that.
    *
-   * The two hooks are the DEMO'S preconditions, and only those: the
-   * refusal while secrets are on screen, and taking the page back from a
-   * modal <dialog> (which paints in the top layer, above the visor zone
-   * and so above the sheet the strip is about to reveal — naming
-   * outliving the panel session is correct anyway, since the name is a
-   * statement about the component, not about this visit to its
-   * configuration). `dialog` and `teardownPanel` are declared further
-   * down this same function; the arrows are only ever called after that
-   * point, exactly as `contextOverride`'s `activePanel` is. */
+   * ONE HOOK NOW, and it is the demo's only real precondition: no
+   * lightweight sheet may open while the credential sheet holds secrets
+   * on screen.
+   *
+   * WHAT WENT WITH THE MODAL. There used to be a `beforeOpen` here that
+   * tore down the panel and closed the storage <dialog>, because a modal
+   * paints in the top layer — above the visor zone, and therefore above
+   * the very sheet the strip was about to reveal. The storage
+   * configuration is a sibling PAGE now, under the same pinned strip, so
+   * a sheet can simply unfold above the strip while the storage page sits
+   * where it is: no top layer, no occlusion, nothing to take back.
+   *
+   * AND THE SHEET STAYS CORRECT WHILE IT DOES. A naming sheet is about a
+   * SURFACE, and it says which one — it is not a statement about which
+   * page is on screen. Naming the app and then walking to the storage
+   * page leaves a sheet that still names the app, truthfully, with the
+   * strip's own line naming the sheet. That was already the accepted
+   * semantics: the old comment here noted that naming outliving the panel
+   * session is correct, since the name is a statement about the
+   * component rather than about this visit to its configuration. */
   /** Installed by the pairing block near the end of `boot` — the
    * settings sheet's "add a device…" action calls through here. A
    * forward reference because the ceremony needs the engine panes and
@@ -1969,12 +2014,6 @@ async function boot() {
   const sheets = registerVisorSheets(visor, {
     marksKey: MARKS_KEY,
     canOpen: () => !credentialTenant.isOpen(),
-    beforeOpen: () => {
-      if (dialog.open) {
-        teardownPanel();
-        dialog.close();
-      }
-    },
     // The demo's in-memory surfaces are caches of the trust record; the
     // strip renders from them, so a commit that only touched storage
     // would leave the anchor showing yesterday's answer. FIRST SIGHT IS
@@ -2054,8 +2093,11 @@ async function boot() {
   // owner and blanking the drawer only if nobody else claimed it
   // meanwhile — is the host's now, driven by the specs above.
   const closeDrawer = () => credentialTenant.close();
-  const closeNamingDrawer = sheets.closeNaming;
-  const closeSettingsDrawer = sheets.closeSettings;
+  // (The naming/settings closes used to be bound here too, for the
+  // openStorage path that closed a sheet before showing the modal. A
+  // page slide does not fight a sheet, so nothing calls them; the
+  // tenants' own `closeNaming`/`closeSettings` remain on `sheets` for
+  // any consumer that needs them.)
 
 
   /** Build the visor's sheet. Every word here is the visor's; the only foreign
@@ -2300,8 +2342,8 @@ async function boot() {
    * and its DOM is the whole of the retirement we can express today.) */
   // Every mount takes a generation; teardown bumps it. Mounting is
   // async (artifact fetch + frame handshake), so without this a mount
-  // that completes AFTER its dialog closed would append a live
-  // component frame to a region nobody is looking at — an invisible
+  // that completes AFTER the user left the storage page would append a
+  // live component frame to a region nobody is looking at — an invisible
   // surface holding a granted rectangle.
   let panelGeneration = 0;
   /** THE COMPLETION SIGNAL FOR THE LAST TEARDOWN — the thing this file's
@@ -2331,22 +2373,23 @@ async function boot() {
     panelMounted = null;
     activePanel = null;
     // The strip goes back to whoever rightfully owns it now (see
-    // restoreVisorContext): NOT unconditionally to the app, because the
-    // dialog's close event/observer fires AFTER a handoff and would
-    // otherwise blank a live sheet's line.
+    // restoreVisorContext): NOT unconditionally to the app, because a
+    // teardown can land AFTER a handoff (the Save path retires the panel
+    // and then opens the credential sheet) and would otherwise blank a
+    // live sheet's line.
     restoreVisorContext();
     region.style.removeProperty("--component-color");
     saveBtn.disabled = false;
-    dialogNote("");
+    storageNote("");
     // Held credentials are PER-SESSION visor state: when the panel goes,
     // so do the values — UNLESS this teardown is the handoff into the
     // credential drawer, which is the one case where the visor must keep
     // holding them (the OAuth broker deposits during the panel session,
     // and the sheet that will show them opens a moment later). The drawer
     // clears them itself on Confirm or Cancel. Testing the credential session
-    // rather than a transient flag matters because at least one embedding
-    // delivers the dialog's `close` event LATE — after the drawer is
-    // already up — and that stray teardown must not wipe the sheet.
+    // rather than a transient flag is what makes the ORDER of the Save
+    // path irrelevant: the teardown runs while the handoff is already
+    // claimed, so it cannot wipe the values the sheet is about to show.
     if (credentialTenant.session() === null) clearCredentials();
     // Publish the completion, and retire it once it lands so a later
     // mount does not await a teardown that finished long ago. The
@@ -2362,7 +2405,9 @@ async function boot() {
   const mountPanel = async (provider: "s3" | "dropbox") => {
     const gone = teardownPanel();
     const generation = ++panelGeneration;
-    if (!dialog.open) return;
+    // NOTHING MOUNTS INTO A PAGE NOBODY IS ON. Same claim the old
+    // `dialog.open` guards made, read off the page state instead.
+    if (!onStoragePage()) return;
     for (const [k, btn] of Object.entries(tabs)) {
       btn.classList.toggle("active", k === provider);
     }
@@ -2419,7 +2464,7 @@ async function boot() {
     // stale mount must not resurrect itself into a region a newer one
     // already owns.
     if (generation !== panelGeneration) return;
-    if (!dialog.open) return;
+    if (!onStoragePage()) return;
 
     // Same sandboxed-frame treatment as the app panes: the panel handles
     // provider credentials, so the argument for keeping it out of
@@ -2542,53 +2587,111 @@ async function boot() {
 
     const unknown = (needs ?? []).some((kind) => !CREDENTIAL_VOCABULARY[kind]);
     saveBtn.disabled = unknown;
-    dialogNote(unknown ? "panel requested an unknown credential kind — refused" : "");
+    storageNote(unknown ? "panel requested an unknown credential kind — refused" : "");
+
+    // THE LOUD HANDOFF. The page has changed under the user and the
+    // pixels below the strip now belong to a component — so the visor
+    // says so, on its own line, at the moment the surface actually
+    // arrives rather than when the navigation started. The modal made
+    // this beat invisible (top layer above the anchor, backdrop dimming
+    // the page); the slide makes it visible, and this makes it SAID.
+    //
+    // ANNOUNCEMENT POLICY (visor/ui/visor.ts's `announce`): an
+    // announcement is a flat string and cannot carry class marking, so
+    // it speaks in framework voice and may embed USER-voice words
+    // inline — the petname, which the user wrote — but never the
+    // component's nickname and never its provenance key. Those are app
+    // voice; they belong on the strip and on sheets where `foreignToken`
+    // can plate them. Hence the unnamed branch DESCRIBES rather than
+    // names, and points at the strip, where the offer to fix that is.
+    const named = (identity.petname ?? "").trim().slice(0, 40);
+    visor.announce(
+      named !== ""
+        ? `this page is drawn by ${named} — a component, in its own sandbox`
+        : "this page is drawn by a component you have not named — the strip above says NEW",
+    );
   };
 
-  // <dialog> closes natively on ESC, which used to leave the component
-  // running in a hidden region — so retirement must cover every close
-  // path. The close EVENT should be that place, but at least one
-  // embedding (the paseo webview: native close(), listener verified by
-  // manual dispatch) flips `open` without ever delivering the queued
-  // event, and also closes modals spuriously. So retirement triggers on
-  // the STATE CHANGE itself — the `open` attribute — with the event kept
-  // as belt-and-braces for engines where the attribute mutation and the
-  // event race differently. teardownPanel is idempotent, so double
-  // firing is free.
-  //
-  // BOTH PATHS ARE GUARDED ON `open` BEING FALSE AT THE MOMENT THEY RUN,
-  // and that is the fourth member of this file's late-teardown ordering
-  // class rather than a redundancy. The `close` event is delivered as a
-  // TASK, so a reopen can land between the close and the event: the
-  // event then arrives describing a session that is already over, while
-  // a NEW surface is mid-handshake in the region. Retiring on it would
-  // destroy that new frame before it was ready. A close event that finds
-  // the dialog open again is by construction stale — its session ended,
-  // and a later one has already begun — so it is dropped.
-  dialog.addEventListener("close", () => {
-    if (dialog.open) return;
+  /** LEAVING THE STORAGE PAGE, by every path there is. Cancel, the Save
+   * commit's handoff, and the browser's own Back button all come through
+   * here, because the property being defended is a single sentence: NO
+   * PATH MAY LEAVE A LIVE PANEL SESSION OFF-SCREEN. A component holding a
+   * granted rectangle on a page the user has walked away from is a
+   * surface with no anchor.
+   *
+   * WHAT THIS REPLACED is worth recording, because it was three
+   * mechanisms rather than one. A <dialog> closes natively on ESC, so
+   * retirement had to cover every close path; the close EVENT was the
+   * obvious place, but at least one embedding (the paseo webview: native
+   * close(), listener verified by manual dispatch) flips `open` without
+   * ever delivering the queued event, and also closes modals
+   * spuriously — so there was a MutationObserver on the `open` attribute
+   * as well, and both were guarded on `open` being false at the moment
+   * they ran, because a close event is delivered as a TASK and a reopen
+   * could land in between, making the event describe a session that was
+   * already over while a NEW surface was mid-handshake. None of that
+   * exists here: leaving is a function call, synchronous, with no event
+   * to arrive late and no engine-specific behaviour to reconcile.
+   * `teardownPanel` is still idempotent, so a double call is free.
+   *
+   * History is SYNCED rather than driven: the entry is rewritten in
+   * place instead of calling `history.back()`, because `back()` is
+   * asynchronous and would land a popstate in the middle of the Save
+   * path's handoff into the credential sheet. Rewriting keeps the stack
+   * honest about where the user is, at the cost of a Back press that
+   * lands on the main page twice — the honest, boring outcome. */
+  const closeStorage = () => {
     teardownPanel();
+    showPage("main");
+    if ((history.state as { page?: string } | null)?.page === "storage") {
+      history.replaceState({ page: "main" }, "");
+    }
+  };
+
+  // THE BROWSER'S OWN BACK BUTTON IS A CLOSE PATH. It was not one before
+  // — a modal is not a history entry — and it is the reason the storage
+  // page pushes state at all: a place the user can walk to should be a
+  // place they can walk back from with the gesture they already know.
+  globalThis.addEventListener("popstate", (ev) => {
+    if ((ev.state as { page?: string } | null)?.page === "storage") {
+      // FORWARD into a storage entry whose session no longer exists. The
+      // panel session is not durable (nothing about a half-finished
+      // provider configuration should survive a navigation), so the
+      // visor refuses to fake one: it rewrites the entry to the main page
+      // rather than showing an empty region that looks like a mount that
+      // failed.
+      history.replaceState({ page: "main" }, "");
+    }
+    closeStorage();
   });
-  new MutationObserver(() => {
-    if (!dialog.open && panelMounted !== null) teardownPanel();
-  }).observe(dialog, { attributes: true, attributeFilter: ["open"] });
 
   // THE STRIP'S LATE-BOUND CONTROLS are the framework's now: the "name
   // it" affordance, the context cluster and the settings button were
   // installed by `registerVisorSheets` above, which also holds the
-  // demo's two preconditions (the credential-sheet refusal, and taking
-  // the page back from a modal dialog that would paint over the sheet).
+  // demo's one precondition (the credential-sheet refusal).
   // What remains here is the demo's own entry point into the ceremony,
   // for its driving hooks.
   const requestNaming = sheets.requestNaming;
 
+  // A RELOAD LANDS ON THE MAIN PAGE. The panel session is not durable —
+  // there is no half-configured provider to restore — so the boot state
+  // is rewritten in place rather than left saying "storage" from a
+  // previous visit. `replaceState` and not `pushState`: boot must not add
+  // an entry the user did not navigate to.
+  history.replaceState({ page: "main" }, "");
+  showPage("main");
+
   const openStorage = () => {
-    // The dialog would paint over either lightweight sheet (top layer);
-    // close them rather than leave a live sheet stranded behind a modal.
-    closeNamingDrawer();
-    closeSettingsDrawer();
-    dialogNote("");
-    dialog.showModal();
+    // NO SHEET IS CLOSED HERE ANY MORE. The modal used to paint over
+    // whatever lightweight sheet was open, so both were closed first;
+    // a page slide has nothing to paint over. A sheet is about a
+    // SURFACE and says which one, so one that was naming the app stays
+    // open, stays correct, and keeps its line on the strip while the
+    // page changes underneath it.
+    storageNote("");
+    showPage("storage");
+    // A PLACE THE USER CAN WALK BACK FROM. See the popstate handler.
+    history.pushState({ page: "storage" }, "");
     mountPanel(loadStorage()?.provider ?? "s3").catch((e) => {
       region.textContent = `panel failed to mount: ${err(e)}`;
     });
@@ -2606,11 +2709,11 @@ async function boot() {
   }
   // The visor's Save: the commit belongs to the shell, so it is the visor that
   // asks the panel for a configuration and the visor that decides the
-  // dialog is done. A panel refusing (none) leaves the dialog open with
-  // its own explanation showing inside its region.
+  // configuration is done. A panel refusing (none) leaves the storage
+  // page up with its own explanation showing inside its region.
   //
   // PHASE 1 OF TWO. On success this does not connect: it takes the
-  // secret-free config, retires the panel, closes the dialog, and hands
+  // secret-free config, retires the panel, leaves the storage page, and hands
   // the interaction to the visor's credential drawer. Nothing is persisted
   // and no credential is released until the sheet's Confirm.
   (document.getElementById("storage-save") as HTMLButtonElement).onclick = (ev) => {
@@ -2624,13 +2727,13 @@ async function boot() {
         // read before the user clicked; between the render and the click
         // the panel could have re-pointed itself. So the visor re-reads the
         // destination NOW and holds it to three tests, in order — each
-        // refusal in the visor's own words, dialog left open, NO drawer
+        // refusal in the visor's own words, storage page left up, NO drawer
         // opened and so no credential even askable for.
         const raw = await active.runner.call(() => active.panel.destination());
         if (activePanel !== active) return;
         const now = normalizeOrigin(raw ?? "");
         if (now === null) {
-          dialogNote("no destination configured — credentials were not released");
+          storageNote("no destination configured — credentials were not released");
           return;
         }
         if (now !== boundDestination) {
@@ -2638,7 +2741,7 @@ async function boot() {
           // sheet would name; a panel that moved since then gets the
           // held values dropped, not carried.
           rebind(raw ?? "");
-          dialogNote(
+          storageNote(
             "the destination changed since these credentials were entered — nothing was released",
           );
           return;
@@ -2655,7 +2758,7 @@ async function boot() {
         if (cfg === null || cfgDest === null || cfgDest !== boundDestination) {
           // The TOCTOU that motivates all of this: `destination()` says
           // one thing and the committed config points somewhere else.
-          dialogNote(
+          storageNote(
             "the panel's configuration points somewhere else than the destination shown — nothing was released",
           );
           return;
@@ -2690,11 +2793,11 @@ async function boot() {
         // (and any late `close` event) leaves the held values alone. A
         // claim is state only: no sheet, no DOM, no context move.
         credentialTenant.claim(session);
-        // ORDERING IS THE INVARIANT: the panel is retired and the dialog
-        // is closed FIRST, so no component surface is alive on the page
-        // when the credential sheet appears.
-        teardownPanel();
-        dialog.close();
+        // ORDERING IS THE INVARIANT, and the page slide does not change
+        // it: the panel is retired and the storage page is left FIRST,
+        // so no component surface is alive anywhere when the credential
+        // sheet appears. `closeStorage` does both, in that order.
+        closeStorage();
         if (needs.length === 0) {
           // Nothing to ask for: no sheet, connect straight away.
           credentialTenant.claim(null);
@@ -2709,8 +2812,7 @@ async function boot() {
   };
   (document.getElementById("storage-cancel") as HTMLButtonElement).onclick = (ev) => {
     ev.preventDefault();
-    teardownPanel();
-    dialog.close();
+    closeStorage();
   };
 
   const stored = loadStorage();

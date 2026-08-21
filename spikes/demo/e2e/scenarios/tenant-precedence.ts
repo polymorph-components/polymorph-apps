@@ -25,32 +25,21 @@ import {
   assertEquals,
   assertIncludes,
   hook,
+  onStoragePage,
   sheetOpen,
   stripText,
   UI_TIMEOUT,
   waitForDrawerHidden,
   waitForPanelSurface,
   waitForSheet,
+  waitForStoragePage,
 } from "../util.ts";
 import type { Page } from "npm:playwright@1.57.0";
 
-const dialogOpen = (page: Page) =>
-  page.evaluate(() =>
-    (document.getElementById("storage-dialog") as HTMLDialogElement | null)?.open === true
-  );
-
-const waitForDialog = (page: Page, want: boolean) =>
-  page.waitForFunction(
-    (want: boolean) =>
-      ((document.getElementById("storage-dialog") as HTMLDialogElement | null)?.open === true) ===
-        want,
-    want,
-    { timeout: UI_TIMEOUT },
-  );
-
 const scenario: Scenario = {
   name: "tenant-precedence",
-  why: "the credential sheet is never displaced; the lightweight sheets evict each other; the modal takes the page back first",
+  why:
+    "the credential sheet is never displaced; the lightweight sheets evict each other; the storage page and the sheets coexist",
   minio: "up",
   // A COMMITTABLE config: with empty fields the panel refuses to commit
   // (and says so in its own region), so there would be no credential
@@ -115,56 +104,78 @@ const scenario: Scenario = {
       );
     });
 
-    await act("opening the storage dialog evicts a lightweight sheet outright", async () => {
-      // The dialog is a MODAL in the top layer: it would paint over the
-      // sheet rather than replace it, leaving a live sheet stranded
-      // behind something the user cannot see past.
+    await act("walking to the storage page leaves an open sheet ALONE", async () => {
+      // THE CLAIM INVERTED, and strengthened. This act used to assert
+      // that opening the storage <dialog> EVICTED whatever lightweight
+      // sheet was up — necessary then, because a modal paints in the top
+      // layer and would have left a live sheet stranded behind something
+      // the user cannot see past. The storage configuration is a sibling
+      // PAGE now, under the same pinned strip, so there is nothing to
+      // paint over the sheet and no reason to close it: the page changes
+      // underneath, the sheet stays, and the strip stays between them.
       assertEquals(await sheetOpen(page, "settings"), true, "the settings sheet before openStorage");
       await hook(page, "openStorage");
-      await waitForDialog(page, true);
-      assertEquals(await sheetOpen(page, "settings"), false, "the settings sheet after openStorage");
-      assertEquals(await sheetOpen(page, "naming"), false, "the naming sheet after openStorage");
-      // The drawer HIDES on a transition rather than instantly (the
-      // sheet collapses its height first), so this is a wait, not a
-      // sample — the claim is that it ends up away, not that it vanishes
-      // within one microtask.
-      await waitForDrawerHidden(page);
+      await waitForStoragePage(page, true);
+      assertEquals(await sheetOpen(page, "settings"), true, "the settings sheet after openStorage");
+      // Not merely "still registered": still SHOWING. A sheet that
+      // survived in state while its drawer collapsed would be worse than
+      // one that closed honestly.
+      assertEquals(
+        await page.evaluate(() => (document.getElementById("visor-drawer") as HTMLElement).hidden),
+        false,
+        "the drawer after walking to the storage page",
+      );
     });
 
-    await act("cancelling the dialog leaves no sheet and no panel behind", async () => {
+    await act("leaving the storage page leaves no panel behind, and the sheet is still the user's", async () => {
       await page.click("#storage-cancel");
-      await waitForDialog(page, false);
+      await waitForStoragePage(page, false);
       assertEquals(await sheetOpen(page, "drawer"), false, "a credential sheet after Cancel");
       assertEquals(await sheetOpen(page, "naming"), false, "a naming sheet after Cancel");
-      assertEquals(await sheetOpen(page, "settings"), false, "a settings sheet after Cancel");
+      // The settings sheet the previous act left open is STILL open: the
+      // user opened it, and only the user closes it.
+      assertEquals(await sheetOpen(page, "settings"), true, "the settings sheet after Cancel");
+      await hook(page, "settings.cancel");
+      await waitForSheet(page, "settings", false);
+      await waitForDrawerHidden(page);
       // The context is back on the app: the strip follows the page.
       const { bottom } = await stripText(page);
-      assertIncludes(bottom, "TodoMVC", "the surface-name line after the dialog closed");
+      assertIncludes(bottom, "TodoMVC", "the surface-name line after leaving the storage page");
     });
 
-    await act("the naming ceremony takes the page back BEFORE opening its sheet", async () => {
-      // Requested from the strip while the modal is up: the dialog is in
-      // the top layer, so the visor retires the panel and closes the dialog
-      // first rather than opening a sheet underneath it.
+    await act("the naming ceremony opens ABOVE the storage page, disturbing nothing", async () => {
+      // Requested from the strip while the panel's page is up. The modal
+      // forced a choice — the sheet or the dialog, never both — so the
+      // visor had to retire the panel and take the page back first. Now
+      // the sheet unfolds above the strip while the storage page stays
+      // exactly where it is, with its panel still live: the ceremony is
+      // about a SURFACE, not about which page is on screen.
       await hook(page, "openStorage");
-      await waitForDialog(page, true);
+      await waitForStoragePage(page, true);
+      await waitForPanelSurface(page);
       await hook(page, "naming.openCluster");
       await waitForSheet(page, "naming", true);
-      assertEquals(await dialogOpen(page), false, "the dialog after the ceremony started");
+      assertEquals(await onStoragePage(page), true, "the storage page after the ceremony started");
+      assertEquals(
+        // deno-lint-ignore no-explicit-any
+        await page.evaluate(() => (globalThis as any).__demo.boundDestination() !== null),
+        true,
+        "the panel surface after the ceremony started",
+      );
     });
 
     let credOpen = false;
     await act("a credential sheet is NEVER displaced — not by naming, not by settings", async () => {
       // SETTLE FIRST. The previous act left a naming sheet up, and its
-      // close runs a transition before the drawer goes away; re-opening
-      // the dialog on top of that tears down a panel that is still
-      // mounting ("frame backend destroyed before it was ready"). A user
+      // close runs a transition before the drawer goes away; committing
+      // on top of that would race the sheet's own teardown. A user
       // cannot click this fast, and the race is not what is under test.
+      // The storage page and its panel are still up from that act —
+      // nothing closed them, which is the point it made.
       await hook(page, "naming.cancel");
       await waitForSheet(page, "naming", false);
       await waitForDrawerHidden(page);
-      await hook(page, "openStorage");
-      await waitForDialog(page, true);
+      assertEquals(await onStoragePage(page), true, "the storage page before the commit");
       await waitForPanelSurface(page);
       await page.click("#storage-save");
       await waitForSheet(page, "drawer", true, 30_000);
