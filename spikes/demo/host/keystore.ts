@@ -123,6 +123,46 @@ export async function deleteSigningKey(origin: string): Promise<void> {
   await tx("readwrite", (s) => s.delete(origin) as IDBRequest<undefined>);
 }
 
+/**
+ * ERASE THE WHOLE KEYSTORE (the erase ceremony's `onReset`, visor/ui/
+ * sheets.ts:1329-1339): every escrowed credential for every origin,
+ * gone, by deleting the database itself rather than clearing the one
+ * store — the version number and any store this module grows later go
+ * with it, so a future migration starts from nothing rather than from a
+ * store this call forgot to clear.
+ *
+ * ON `onblocked`: IndexedDB will not run a `deleteDatabase` to
+ * completion while ANY connection to it is still open — the delete sits
+ * pending until every open handle closes. This module already closes
+ * every connection it opens as soon as its one transaction completes
+ * (`tx`'s `t.oncomplete`), so under this module's own usage there should
+ * be nothing left open by the time this runs. But "should be" is not the
+ * same guarantee as blocking-cannot-happen, and the failure mode of
+ * resolving anyway on `onblocked` is a SILENT PARTIAL ERASE — the ceremony
+ * would report success while a stale connection kept the store alive
+ * underneath it, which is precisely the "this device leaves" promise
+ * broken invisibly. So `onblocked` is treated as a real error: it rejects
+ * rather than resolves, and the erase ceremony's own contract
+ * (visor/ui/sheets.ts:1329-1339, "the fallible half first") takes it from
+ * there — the ceremony refuses the whole erase and the user can retry
+ * rather than walking away believing a device that can no longer sign is
+ * still a device that can no longer sign for reasons other than the ones
+ * it was told.
+ */
+export function eraseKeystore(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error ?? new Error("keystore: erase failed"));
+    req.onblocked = () =>
+      reject(
+        new Error(
+          "keystore: erase blocked by an open connection — nothing was erased",
+        ),
+      );
+  });
+}
+
 // --- the `store-signer` seam ---------------------------------------------------
 
 /** The WIT `result<_, string>` err side: the branded exception the deltic

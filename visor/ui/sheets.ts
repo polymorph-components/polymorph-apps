@@ -1,10 +1,10 @@
-// The visor's OWN TWO CEREMONIES: naming a component, and the user's
-// settings for the visor itself — plus the trust table both of them read
-// and write.
+// The visor's OWN THREE CEREMONIES: naming a component, the user's
+// settings for the visor itself, and erasing everything the visor holds
+// on this device — plus the trust table all three read and write.
 //
 // This is the second half of the framework layer. visor/ui/visor.ts holds
 // what a visor IS (the strip, the anchor colour, the identity record, the
-// context line, the drawer host and its tenancy); this file holds the two
+// context line, the drawer host and its tenancy); this file holds the
 // sheets EVERY consumer of that visor wants, because they are not any one
 // app's content — they are the visor talking about itself and about the
 // components it drew. A consumer that had to reimplement them would
@@ -12,6 +12,13 @@
 // live-preview/revert discipline, and would get one of them subtly wrong;
 // the todomvc spike proved the milder version of that failure by
 // rendering a clickable petname with no ceremony behind it at all.
+//
+// THE THIRD CEREMONY IS THE HEAVY ONE. Naming and settings are
+// lightweight tenants (a mis-tap costs a form the user closes); the reset
+// sheet destroys the user's whole visor-side memory of this device, so it
+// wears the full weight — arming delay, page dim, a statement of
+// consequence and a typed confirmation, in the shape pairing's add flow
+// established (visor/ui/pairing.ts:700-770).
 //
 // It is a SEPARATE MODULE from visor.ts on purpose: visor.ts is the
 // mechanism (geometry, tenancy, timing) and is consumed by things that
@@ -163,6 +170,15 @@ export interface SurfaceMarks {
    * dropped but whose mark survived would still be greeted as familiar.
    * After this the next mount is genuinely NEW again. */
   forget(provenance: string): void;
+  /** DROP THE WHOLE TABLE — the marks half of the reset ceremony, and
+   * nothing else's business. Per-record forgetting stays `forget`; this
+   * one exists because the erase ceremony must not have to enumerate
+   * records to be complete (a record the enumeration missed would come
+   * back wearing a mark and a name after a wipe the user was told was
+   * total). The key itself is removed rather than overwritten with an
+   * empty table, so what is left behind is indistinguishable from a
+   * device that never had one. */
+  eraseAll(): void;
   /** The pet icons no OTHER record is using. Local uniqueness is the
    * property assignment buys, so the ceremony only ever offers marks
    * that keep it. This record's OWN icon is included (re-picking what
@@ -302,6 +318,11 @@ export function createSurfaceMarks(marksKey: string): SurfaceMarks {
       delete table[provenance];
       save(table);
     },
+    eraseAll() {
+      try {
+        localStorage.removeItem(marksKey);
+      } catch { /* nothing durable to remove from */ }
+    },
     freeIcons,
     iconOffers(provenance, nomination) {
       const free = freeIcons(provenance);
@@ -398,6 +419,41 @@ export interface VisorSheetsConfig {
    * visor's own record half-committed; a mirror that fails is the
    * consumer's problem to announce. */
   onIdentityCommitted?: (rec: VisorIdentity, hue: number) => void;
+  /** THE CONSUMER'S OWN HALF OF THE ERASE. The reset ceremony wipes what
+   * the VISOR holds (the identity record, the anchor hue, the trust
+   * table); a consumer holds the rest — boot caches, its storage
+   * configuration, keystores, whatever it built on top. This is where it
+   * drops them, and it may be async because most of those live in
+   * IndexedDB.
+   *
+   * IT RUNS FIRST, BEFORE THE VISOR ERASES ANYTHING OF ITS OWN, and the
+   * ordering is the whole design: this is the FALLIBLE half. If it
+   * throws, the ceremony refuses with a reason line and NOTHING has been
+   * forgotten yet — the user is looking at a visor that still holds
+   * everything it held a second ago, which is a true sentence the sheet
+   * can say. Doing the infallible half first would buy a state nobody can
+   * describe: a visor with no name, no colour and no marks, in front of a
+   * consumer that still has every cache it had.
+   *
+   * THIS IS THE EXACT INVERSE OF `onIdentityCommitted`, deliberately.
+   * There the visor writes FIRST and the consumer mirrors after, because
+   * a mirror can only ever be LATE, never contradictory. An erase inverts
+   * the risk — a late erase is a record that survived a wipe — so the
+   * rule inverts with it: fallible first, infallible last. */
+  onReset?: () => void | Promise<void>;
+  /** EXTRA LINES IN THE RESET SHEET'S STATEMENT OF CONSEQUENCE — what
+   * ELSE this particular consumer is about to destroy, which only it
+   * knows ("your saved storage provider", "the devices you paired").
+   * Rendered by the visor, in the visor's own chrome, one line each,
+   * after the framework's own lines.
+   *
+   * SAME DISCIPLINE AS `SheetAction.label`: these must be the CONSUMER'S
+   * OWN WORDS. A consumer that put a component-influenced string here
+   * would be lending the visor's voice — and worse than on a button,
+   * because these lines are the sentence the user is about to act on.
+   * The visor cannot check it; the rule is the consumer's to keep
+   * (nothing on this path is component-influenced in either spike). */
+  resetConsequences?: string[];
   /** Consumer-supplied actions on the settings sheet.
    *
    * THE ONE EXTENSION POINT ON A VISOR-OWNED SHEET, and deliberately a
@@ -442,10 +498,16 @@ export interface VisorSheets {
   /** Open the visor's own settings sheet. Installed as the strip's
    * `requestSettings` handler. */
   requestSettings(): void;
+  /** Open the erase ceremony. Reachable in the UI ONLY from the settings
+   * sheet's danger entry; exposed here for a consumer's driving hooks and
+   * for the e2e suite. */
+  requestReset(): void;
   closeNaming(opts?: { context?: boolean }): void;
   closeSettings(opts?: { context?: boolean; commit?: boolean }): void;
+  closeReset(opts?: { context?: boolean }): void;
   namingOpen(): boolean;
   settingsOpen(): boolean;
+  resetOpen(): boolean;
 }
 
 /** Register the visor's naming and settings ceremonies on a visor.
@@ -491,9 +553,35 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     },
   });
 
+  /** THE ERASE SESSION, registered AFTER settings so the two lightweight
+   * tenants keep the precedence they had and this one sits behind them
+   * in `restoreContext`'s order. It carries no state: there is nothing to
+   * preview, nothing to revert, and the only thing the user can put into
+   * it is the typed confirmation, which must never outlive the sheet.
+   *
+   * IT IS THE OPPOSITE WEIGHT CLASS FROM THE OTHER TWO, and deliberately
+   * so. The registration comment above explains why naming and settings
+   * refuse the arming tax: nothing secret is typed on either and the
+   * worst a mis-tap costs is a form the user closes — and paying the tax
+   * where it buys nothing would train users to click through a delay that
+   * means something elsewhere. THIS SHEET IS THE CASE THAT RATIONALE
+   * RESERVES THE DELAY FOR. A mis-tap here is not a form; it is the
+   * user's whole visor-side memory of this device, with no undo. So it
+   * pays the full price: `armed` (a baited tap sequence cannot reach the
+   * erase button, which does not exist as a live control until ARM_MS has
+   * passed) and `dim` (the page behind it stops competing for the gesture
+   * while the user reads a statement of consequence). */
+  const resetTenant = visor.drawer.tenant<Record<string, never>>({
+    name: "reset",
+    armed: true,
+    dim: true,
+    context: () => ({ kind: "reset" }),
+  });
+
   const closeNaming = (opts: { context?: boolean } = {}) => namingTenant.close(opts);
   const closeSettings = (opts: { context?: boolean; commit?: boolean } = {}) =>
     settingsTenant.close(opts);
+  const closeReset = (opts: { context?: boolean } = {}) => resetTenant.close(opts);
 
   /** Build the visor's App settings sheet — the naming ceremony GROWN into
    * the one place the visor says everything it knows about a component.
@@ -971,6 +1059,42 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     cancelBtn.textContent = "Cancel";
     row.append(saveBtn, cancelBtn);
 
+    // THE DANGER ENTRY, and it goes LAST — after the Save/Cancel row, the
+    // same placement (and the same reasoning) as the naming sheet's
+    // forget row. A destructive control above the ordinary way out would
+    // sit in the path of every routine visit to this sheet; below it, it
+    // is somewhere the user has to travel to on purpose.
+    //
+    // It is FRAMEWORK POLICY, not a consumer `extraAction`: what it
+    // erases is the visor's own record, and a consumer that had to
+    // contribute this button could also decline to, leaving a visor whose
+    // memory of the user has no exit. It is rendered here for every
+    // consumer, exactly like the naming and settings sheets themselves.
+    const resetBlock = document.createElement("div");
+    resetBlock.className = "settings-reset";
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.id = "visor-settings-reset";
+    resetBtn.className = "reset";
+    // THE ELLIPSIS IS THE PROMISE: this button opens a ceremony, it does
+    // not perform the act. The hint says the same thing in words, because
+    // a typographic convention is not a warning.
+    resetBtn.textContent = "erase this visor…";
+    const resetHint = document.createElement("div");
+    resetHint.className = "hint";
+    resetHint.textContent =
+      "wipes your name, this device's word, the colour and every petname — a confirmation explains first";
+    resetBtn.onclick = () => {
+      // A PLAIN close (no `commit`), exactly as the consumer-action path
+      // does it: an uncommitted colour preview reverts precisely as
+      // Cancel would, so walking into the erase ceremony cannot silently
+      // keep a colour the user never saved. Closing first also frees the
+      // drawer for the tenant that is about to claim it.
+      closeSettings();
+      requestReset();
+    };
+    resetBlock.append(resetBtn, resetHint);
+
     root.append(
       h,
       lead,
@@ -984,6 +1108,8 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     );
     if (actions.length > 0) root.append(actionsBlock);
     root.append(row);
+    // Danger last, past the ordinary way out (see the block above).
+    root.append(resetBlock);
     return {
       root,
       nameInput: nameField.input,
@@ -1046,6 +1172,212 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     });
   };
 
+  /** THE ERASE CEREMONY. Same construction style as the other two sheets,
+   * a different weight class: this one is armed and dimmed (see the reset
+   * tenant), states its consequence before it offers the control, and
+   * asks the user to TYPE something before the control does anything.
+   *
+   * The shape is pairing's heavy ceremony (visor/ui/pairing.ts:700-770),
+   * for the same reason it was heavy there: an irreversible, total act
+   * deserves a statement of consequence, an arming delay and a typed
+   * confirmation, and none of the three is a substitute for the others. */
+  const buildResetSheet = (rec: VisorIdentity) => {
+    const root = document.createElement("div");
+    // NO `.armed` here, unlike the other two sheets. This tenant IS
+    // armed, so the drawer host adds the class itself once ARM_MS has
+    // elapsed (visor.ts:1462-1470) — shipping it pre-armed would draw the
+    // buttons at full strength for a delay that is really running, which
+    // is the exact inverse of the honesty the class exists for.
+    root.className = "cred-sheet reset-sheet";
+    root.style.maxWidth = "72rem"; // rem: aligns with the page's --content-max column
+    root.style.marginLeft = "auto";
+    root.style.marginRight = "auto";
+
+    const h = document.createElement("h2");
+    h.textContent = "Erase this visor";
+
+    // THE STATEMENT OF CONSEQUENCE, in framework voice: what is about to
+    // be destroyed, said BEFORE the control that destroys it, and said
+    // concretely — "your settings will be reset" is the sentence a user
+    // clicks through, an itemised list is the one they read.
+    const danger = document.createElement("div");
+    danger.className = "cred-danger";
+    const dangerLines = [
+      "this erases what the visor holds on this device: your name, your word for this device, the bar's colour and mark, and every petname and pet icon you gave a component.",
+      "every component will be NEW again, and there is no undo.",
+    ];
+    for (const line of dangerLines) {
+      const el = document.createElement("div");
+      el.textContent = line;
+      danger.append(el);
+    }
+    // THE CONSUMER'S OWN EXTRA LINES (see `resetConsequences`): what else
+    // this consumer is about to destroy, which only it knows. The visor
+    // draws them in its own chrome; the WORDS are the consumer's, and
+    // must be the consumer's own (never component-influenced) — nothing
+    // here can check that, so it is stated at the option instead.
+    for (const line of config.resetConsequences ?? []) {
+      const el = document.createElement("div");
+      el.textContent = line;
+      danger.append(el);
+    }
+
+    // THE TYPED CONFIRMATION. The challenge is the user's OWN NAME when
+    // the record holds one: it is a word the user chose, in the visor's
+    // pixels, and typing it is a signature nothing on the page could
+    // supply for them.
+    //
+    // WHEN THERE IS NO NAME the ceremony does NOT simply skip the step —
+    // the name is optional, but petnames, pet icons and (for a consumer
+    // that paired) rather more than that may exist regardless, so the
+    // deliberateness is still worth buying. It falls back to the visor's
+    // own fixed word.
+    const challenge = (rec.name ?? "").trim();
+    const named = challenge !== "";
+    const want = named ? challenge : "erase";
+
+    const field = document.createElement("div");
+    field.className = "cred-field";
+    const label = document.createElement("label");
+    label.htmlFor = "visor-reset-confirm";
+    if (named) {
+      // Built from spans rather than one string, because the user's name
+      // is USER VOICE inside a framework-voice sentence: the user wrote
+      // it, the visor is entitled to say it, and `.who` carries the
+      // weight-600 dress it already wears in the identity cluster.
+      const leadSpan = document.createElement("span");
+      leadSpan.textContent = "type your name — ";
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = challenge.slice(0, IDENTITY_MAX);
+      const tail = document.createElement("span");
+      tail.textContent = " — to confirm";
+      label.append(leadSpan, who, tail);
+    } else {
+      label.textContent = "type erase to confirm";
+    }
+    const input = document.createElement("input");
+    input.id = "visor-reset-confirm";
+    input.type = "text";
+    input.autocomplete = "off";
+    input.maxLength = IDENTITY_MAX;
+    // NEVER PREFILLED, and here the rule is doing its most literal work:
+    // a prefilled confirmation is not a confirmation at all, it is a
+    // second Save button wearing a text field's clothes.
+    field.append(label, input);
+
+    const reason = document.createElement("div");
+    reason.className = "cred-reason";
+
+    const note = document.createElement("div");
+    note.className = "cred-note";
+    note.textContent =
+      "this sheet is the visor's, opened from the bar below it — a component cannot draw here, and cannot see what you type";
+
+    const row = document.createElement("div");
+    row.className = "cred-row";
+    const eraseBtn = document.createElement("button");
+    eraseBtn.type = "button";
+    eraseBtn.className = "erase-confirm";
+    // The arming state says so in words as well as in dress (pairing.ts's
+    // countdown courtesy): the disabled attribute is the enforcement, the
+    // text is what tells the user the control is coming rather than
+    // broken.
+    eraseBtn.textContent = "arming…";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    row.append(eraseBtn, cancelBtn);
+
+    root.append(h, danger, field, note, reason, row);
+    return { root, input, eraseBtn, cancelBtn, reason, want };
+  };
+
+  const openResetDrawer = () => {
+    // The session carries nothing: there is no preview to revert and the
+    // typed confirmation must not outlive the sheet. It is still an
+    // OBJECT rather than a boolean, because `owns` is identity-compared
+    // and every handler below is guarded on it.
+    const session: Record<string, never> = {};
+    resetTenant.open(session, () => {
+      const built = buildResetSheet(visor.identity());
+      // Defence-in-depth, exactly as in pairing.ts:736-740: the host's
+      // `disabled` is the enforcement, and this flag is the second
+      // refusal for anything that got past it (a synthetic click,
+      // accessibility tooling driving the DOM).
+      let armed = false;
+
+      built.eraseBtn.onclick = async () => {
+        if (!resetTenant.owns(session)) return;
+        if (!armed) return;
+        // DELIBERATENESS, NOT AUTHENTICATION. The challenge is compared
+        // trimmed and case-insensitively — the same posture the petname
+        // collision check takes — because nothing here is a secret: the
+        // user's name is on the strip in front of them. What the field
+        // buys is that the erase cannot be reached by a gesture, only by
+        // a sentence; typing your own name modulo case is exactly the
+        // signature we want, and refusing it over a capital letter would
+        // teach the user that the visor is fussy rather than serious.
+        if (built.input.value.trim().toLowerCase() !== built.want.toLowerCase()) {
+          built.reason.textContent = "that doesn't match — nothing has been erased";
+          return;
+        }
+        // No second chance to press either control while the wipe runs.
+        built.eraseBtn.disabled = true;
+        built.cancelBtn.disabled = true;
+        try {
+          // THE FALLIBLE HALF FIRST (see `onReset`): if the consumer's
+          // own wipe throws, the ceremony refuses and everything the
+          // visor holds is still held — a state the sheet can describe
+          // truthfully and the user can retry from.
+          await config.onReset?.();
+        } catch {
+          built.eraseBtn.disabled = false;
+          built.cancelBtn.disabled = false;
+          built.reason.textContent = "could not erase — the visor still holds everything; try again";
+          return;
+        }
+        // THE INFALLIBLE HALF, in two pieces: the trust table (this
+        // file's), then the visor's own keys (visor.ts's `erase`).
+        marks.eraseAll();
+        visor.erase();
+        // THE RELOAD IS PART OF THE CEREMONY, not a convenience. Two
+        // reasons, and either alone would be enough. First, honesty about
+        // the end state: a fresh boot rolls a fresh anchor colour and
+        // announces it (the `fresh` mechanics), and every component comes
+        // back genuinely NEW — which is what was just promised, said by
+        // the same machinery that says it on a first run. Second, nothing
+        // that survived this line may keep rendering: every in-memory
+        // cache on the page — the consumer's surfaces, the strip's own
+        // context — is now a copy of records that no longer exist, and a
+        // visor still speaking a name it has forgotten is precisely the
+        // failure this ceremony was about.
+        location.reload();
+      };
+      built.cancelBtn.onclick = () => {
+        if (!resetTenant.owns(session)) return;
+        // A plain close and NO announcement, the settings-cancel
+        // precedent: nothing happened, and saying so on the anchor would
+        // spend the bottom line on a non-event.
+        closeReset();
+      };
+
+      return {
+        root: built.root,
+        // The input is held disabled too — nothing on this sheet is
+        // typeable before the user has had time to see what it says. The
+        // Cancel button deliberately is NOT in this list: the way out
+        // must never be behind the arming delay, or the delay becomes a
+        // trap rather than a guard.
+        controls: [built.input, built.eraseBtn],
+        onArmed: () => {
+          armed = true;
+          built.eraseBtn.textContent = "erase everything";
+        },
+      };
+    });
+  };
+
   // The visor's naming ceremony, reachable ONLY from the strip's own
   // pixels — and the consumer's preconditions, in that order: the refusal
   // first (so a click while an exclusive sheet is up is a pure no-op),
@@ -1066,6 +1398,19 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     openSettingsDrawer();
   };
 
+  // THE ERASE CEREMONY, and it does NOT re-run the consumer's
+  // preconditions. `canOpen`/`beforeOpen` are the price of entry to a
+  // visor sheet from OUTSIDE — from the strip's own pixels, where a
+  // consumer may be holding an exclusive sheet or a modal dialog that has
+  // to be taken down first. This one is reached only from the settings
+  // sheet, which already paid both a moment ago: re-running `beforeOpen`
+  // would ask the consumer to retire a page it has already retired, and
+  // re-running `canOpen` would ask about a precondition that has not
+  // changed. The refusal that still applies is the drawer host's own —
+  // an exclusive tenant that claimed the drawer in between refuses this
+  // `open` outright, and nothing happens.
+  const requestReset = () => openResetDrawer();
+
   // THE STRIP'S LATE-BOUND CONTROLS. The strip is built by `initVisor`,
   // long before the drawer's tenants exist, so the "name it" affordance,
   // the context cluster and the settings button call through the visor's
@@ -1076,9 +1421,12 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     marks,
     requestNaming,
     requestSettings,
+    requestReset,
     closeNaming,
     closeSettings,
+    closeReset,
     namingOpen: () => namingTenant.isOpen(),
     settingsOpen: () => settingsTenant.isOpen(),
+    resetOpen: () => resetTenant.isOpen(),
   };
 }
