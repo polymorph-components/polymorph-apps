@@ -67,6 +67,24 @@ visor (page JS, trusted)           panel component (sandboxed, per-provider)
   the arrival is ANNOUNCED on the visor's own line. It also deleted
   machinery rather than adding it — see the `<dialog>` findings below,
   every one of which is now moot by construction.
+- **The way out is on the anchor**: while the storage page is up, the
+  strip carries a back chevron at its leading edge (`#visor-back`,
+  `visor.setBack(...)`). The page's own *Cancel* is visor pixels by
+  construction, but it sits in scrollable content — and an app can paint
+  a pixel-perfect copy of it inside its own rectangle, so a user cannot
+  tell the real exit from a decoy by looking. A control in STRIP pixels
+  can't be copied: the guarantee "you can always leave through the bar"
+  replaces the convention "the page offers a cancel button", which is
+  what makes it the trust-grade exit. It is also the strip's only
+  PERSISTENT nesting signal — the arrival announcement is timed and the
+  NEW badge is about naming, so without it nothing says "you are
+  somewhere, not home" for the whole stay. All three doors (chevron,
+  Cancel, browser Back) run the same `closeStorage`, and the chevron is
+  orthogonal to sheets: clicking it navigates the page under an open
+  sheet without disturbing it, because a sheet is about a surface and
+  names outlive visits. Pages only — a drawer sheet is bracketed by the
+  strip and has its own dismissal, and the credential sheet must not
+  gain a second cancel path.
 - **The visor brokers OAuth.** Navigation, popups and redirect handling are
   visor capabilities a sandboxed panel must not have, so the Dropbox
   panel calls `oauth-broker.authorize(app-key)` and the visor runs the

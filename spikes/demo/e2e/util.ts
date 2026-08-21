@@ -268,6 +268,27 @@ export function waitForStoragePage(
   });
 }
 
+/** THE STRIP'S BACK CHEVRON (visor/ui/visor.ts's `setBack`), as the DOM
+ * has it. `present` is the whole control's existence — null renders
+ * nothing at all, so absence is the honest reading of "not in a nested
+ * place" — and `inStrip` is the claim that makes it worth having: the
+ * control lives in the one region no component can draw, which is what
+ * separates it from a page's own cancel button that an app can
+ * reproduce pixel for pixel. */
+export function backControl(page: Page): Promise<
+  { present: boolean; inStrip: boolean; label: string; glyph: string }
+> {
+  return page.evaluate(() => {
+    const el = document.getElementById("visor-back");
+    return {
+      present: el !== null,
+      inStrip: el?.closest("#visor-strip") !== null && el?.closest("#visor-strip") !== undefined,
+      label: el?.getAttribute("aria-label") ?? "",
+      glyph: el?.textContent ?? "",
+    };
+  });
+}
+
 /** IS THE VISOR STRIP ACTUALLY VISIBLE AND UNOBSCURED? The whole point of
  * replacing the storage modal with a page slide: a modal paints in the
  * top layer, above #visor-zone, and dims everything under it, so the

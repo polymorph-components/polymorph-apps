@@ -24,6 +24,7 @@ import {
   assert,
   assertEquals,
   assertIncludes,
+  backControl,
   hook,
   onStoragePage,
   sheetOpen,
@@ -162,6 +163,35 @@ const scenario: Scenario = {
         true,
         "the panel surface after the ceremony started",
       );
+      // The strip's back control is up too, and it is REACHABLE with the
+      // sheet open: the sheet unfolds ABOVE the strip and the strip stays
+      // whole underneath, so the way out of the place is never covered by
+      // the ceremony that happens to be on screen.
+      const back = await backControl(page);
+      assertEquals(back.present, true, "the back control with a sheet open above the storage page");
+      assertEquals(back.inStrip, true, "the back control with a sheet open above the storage page");
+    });
+
+    await act("the chevron navigates the PAGE and leaves the sheet alone", async () => {
+      // THE ORTHOGONALITY RULING, made a gate. Back is about PLACE; a
+      // sheet is about a SURFACE and says which one. So clicking back
+      // walks the page out from under an open naming sheet without
+      // touching it — and the sheet stays truthful, because the name it
+      // is collecting is a statement about the component rather than
+      // about this visit to its configuration. (The same reason
+      // `beforeOpen` no longer exists: see host/demo.ts.)
+      assertEquals(await sheetOpen(page, "naming"), true, "the naming sheet before the chevron");
+      await page.click("#visor-back");
+      await waitForStoragePage(page, false);
+      assertEquals(await sheetOpen(page, "naming"), true, "the naming sheet after the chevron");
+      assertEquals(
+        await page.evaluate(() => (document.getElementById("visor-drawer") as HTMLElement).hidden),
+        false,
+        "the drawer after the chevron",
+      );
+      // And the control itself is gone with the place it exited, while
+      // the sheet it did not touch is still up.
+      assertEquals((await backControl(page)).present, false, "the back control after the chevron");
     });
 
     let credOpen = false;
@@ -170,12 +200,13 @@ const scenario: Scenario = {
       // close runs a transition before the drawer goes away; committing
       // on top of that would race the sheet's own teardown. A user
       // cannot click this fast, and the race is not what is under test.
-      // The storage page and its panel are still up from that act —
-      // nothing closed them, which is the point it made.
       await hook(page, "naming.cancel");
       await waitForSheet(page, "naming", false);
       await waitForDrawerHidden(page);
-      assertEquals(await onStoragePage(page), true, "the storage page before the commit");
+      // The chevron act above walked the page back, so this one walks in
+      // again — the commit under test needs a live panel to commit.
+      await hook(page, "openStorage");
+      await waitForStoragePage(page, true);
       await waitForPanelSurface(page);
       await page.click("#storage-save");
       await waitForSheet(page, "drawer", true, 30_000);

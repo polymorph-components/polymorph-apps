@@ -1509,6 +1509,26 @@ OAuth ceremony keeps its window); never for same-origin component
 surfaces whose anchor is the visor. Multi-window visors would need
 their own design pass; parked.
 
+**The strip's own back chevron** (2026-08-21, #22, executed same
+day; addendum to the entry above). Nested places get a visor-owned
+back control at the strip's leading edge — "‹" (U+2039: single BMP
+scalar, text-presentation, Latin-1-era coverage; ← reads as
+"previous item", not "up and out"). Two jobs: a STRUCTURALLY
+UNFORGEABLE EXIT (the page's own Cancel is visor pixels by
+construction but sits in scrollable content an app can counterfeit;
+browser Back is outside the visor's vocabulary; strip pixels are the
+one region no component can draw) and the strip's only PERSISTENT
+nesting signal (the arrival announcement is timed). Scope rulings:
+PAGES ONLY, never sheets (the credential sheet's exclusive/armed
+semantics must not gain a second cancel path); sheets are orthogonal
+— back navigates the page under an open sheet without touching it
+(names outlive visits); null-or-one API (`setBack`), not a stack,
+until a second nesting level exists. Rectangular on purpose: round
+means "me" in this visor and back is a place verb. All exits — Cancel,
+Save, popstate, chevron — share the one `closeStorage` teardown, and
+the affordance is cleared there: an exit control that outlived its
+place would be the anchor making a false statement.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
