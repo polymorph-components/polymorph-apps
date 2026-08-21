@@ -133,6 +133,164 @@ export function applyVisorHue(hue: number) {
 export const VISOR_ICONS = ["⛨", "✶", "✦", "◆", "▲", "☘", "⚑", "✿", "☾", "⚙"];
 export const DEFAULT_ICON = VISOR_ICONS[0];
 
+// --- the pet icons: the user's recognition mark for a COMPONENT ---------------
+//
+// WHAT REPLACED THE COLOUR SWATCH, and why (#22 discussion). A surface
+// mark used to be a hue out of the anchor palette, shown as a small chip
+// beside the component's quoted nickname. That device is gone. The
+// ANCHOR colour stays exactly as it was — it is doing a different job
+// (visor-vs-app contrast, plus a spoof lottery an impersonator has to
+// win) — but per-app colour MEMORY was the weak half: "the blue one" is
+// not a thing a user can name, rehearse, or check, and ten hues run out
+// after ten components. A glyph is nameable ("the little envelope"),
+// discriminable at a glance, and the vocabulary is large enough to keep
+// local uniqueness real.
+//
+// THE CURATION CRITERIA ARE INVARIANTS, not taste. Every member of this
+// array satisfies all of them, and a candidate that fails any one is
+// out — there is no "but it looks nice" exception, because each rule is
+// closing a concrete failure:
+//
+//   (1) ONE Unicode scalar, in the BMP. Not a sequence, not a
+//       surrogate pair, not a ZWJ join. `isAppMarkIcon` can then decide
+//       membership by exact string equality against a fixed list, and a
+//       mark is a fixed-width thing at every render site.
+//
+//   (2) TEXT PRESENTATION BY DEFAULT (Emoji_Presentation=No, UTS #51).
+//       A glyph that renders as full-colour emoji by default is a
+//       PICTURE the platform draws, in colours the visor did not choose,
+//       with a shape that changes between OS versions and vendors — a
+//       recognition device the user has to re-learn on a new device is
+//       not a recognition device. It also composites badly against the
+//       anchor colour. So ☕ U+2615, ⌛ U+231B, ⚡ U+26A1 and ⚓ U+2693
+//       are DISQUALIFIED however apt they look; the members below all
+//       need a VS16 they will never be given to go colour.
+//
+//   (3) LONG LEGACY FONT COVERAGE. Preference for Geometric Shapes,
+//       Miscellaneous Symbols and Dingbats, and for codepoints that
+//       existed by Unicode 5.2 — a mark that renders as a tofu box on
+//       somebody's machine is worse than no mark, because two different
+//       components then wear the same empty rectangle.
+//
+//   (4) ONE GLYPH PER VISUAL-CONFUSABILITY CLASS, and NO class overlap
+//       with VISOR_ICONS (the USER's own set, above). Marks exist to be
+//       told apart at 14px in peripheral vision, so near-duplicates are
+//       worse than useless — and a component mark that could be mistaken
+//       for the visor's own button glyph is an impersonation aid. Since
+//       VISOR_ICONS spans shields, stars, diamonds, triangles, clovers,
+//       flags, flowers, moons and gears, there are NO stars, shields,
+//       diamonds, triangles, clovers/clubs, flags, flowers, moons or
+//       gears here AT ALL — which is why the obvious ☀ ❄ ☄ ⚜ ♠ are
+//       absent (sun/snowflake/comet read as stars; fleur-de-lis as a
+//       flower; the spade as a clover).
+//
+//   (5) NO SECURITY OR UI SEMANTICS: no locks, keys, chains, warning
+//       signs, check or cross marks, arrows. The visor must never appear
+//       to be VOUCHING for a component, and a padlock beside a name is
+//       exactly that claim — made in the visor's pixels, about a
+//       component, on the user's own authority. (Also no religious or
+//       political symbols: a mark is a label, and the visor does not put
+//       words in the user's mouth. ☯ went out on this rule.)
+//
+//   (6) FILLED SILHOUETTES PREFERRED. Outline glyphs lose their
+//       interior detail first as size drops.
+//
+// Local uniqueness is what the SIZE buys: the naming ceremony only ever
+// offers icons no other record holds, so two components on this device
+// never wear the same mark while the vocabulary lasts.
+export const APP_MARK_ICONS: readonly string[] = [
+  // Geometric Shapes — the two plainest silhouettes there are.
+  "●", // U+25CF BLACK CIRCLE
+  "■", // U+25A0 BLACK SQUARE
+  // Miscellaneous Technical / Symbols — everyday objects.
+  "⌂", // U+2302 HOUSE
+  "⌨", // U+2328 KEYBOARD
+  "☎", // U+260E BLACK TELEPHONE
+  "☁", // U+2601 CLOUD
+  "☂", // U+2602 UMBRELLA
+  "☃", // U+2603 SNOWMAN  (NOT ⛄ U+26C4, which is Emoji_Presentation=Yes)
+  "☻", // U+263B BLACK SMILING FACE
+  "♥", // U+2665 BLACK HEART SUIT  (NOT ❤ + VS16)
+  "♨", // U+2668 HOT SPRINGS
+  "♪", // U+266A EIGHTH NOTE
+  "⚒", // U+2692 HAMMER AND PICK
+  "⛏", // U+26CF PICK
+  "⚖", // U+2696 SCALES
+  "⚗", // U+2697 ALEMBIC
+  "⚛", // U+269B ATOM SYMBOL
+  "⚄", // U+2684 DIE FACE-5
+  // Chess pieces: five silhouettes that stay distinct when small.
+  "♛", // U+265B BLACK CHESS QUEEN
+  "♜", // U+265C BLACK CHESS ROOK
+  "♝", // U+265D BLACK CHESS BISHOP
+  "♞", // U+265E BLACK CHESS KNIGHT
+  "♟", // U+265F BLACK CHESS PAWN
+  // Dingbats — the old, well-covered end of the block.
+  "✂", // U+2702 BLACK SCISSORS
+  "✇", // U+2707 TAPE DRIVE
+  "✈", // U+2708 AIRPLANE
+  "✉", // U+2709 ENVELOPE
+  "✎", // U+270E LOWER RIGHT PENCIL
+];
+
+/** THE VALIDATION GATE for every pet icon that did not come out of
+ * `APP_MARK_ICONS` itself — and that is every interesting one.
+ *
+ * This is the bidi/ZWJ/confusable FIREWALL, and it is a membership test
+ * rather than a sanitiser on purpose. A pet icon can arrive from three
+ * places the visor does not control: a component's own NOMINATION (see
+ * `SurfaceIdentity.nomination` — an app asking to wear a particular
+ * glyph), a mark SYNCED from the user-system partition (written by
+ * another device, possibly a different visor build), and a trust record
+ * HAND-EDITED in devtools. Each of those is an attacker-influenceable
+ * string in the visor's own pixels, at the position that is supposed to
+ * be unspoofable, so the interesting inputs are not typos:
+ *
+ *   - RTL overrides and other bidi controls (U+202E and friends), which
+ *     reorder the text AROUND the mark and can make a foreign-quoted
+ *     nickname read as though it were in the visor's voice;
+ *   - ZWJ sequences and variation selectors, which turn several
+ *     codepoints into one rendered picture — including a colour emoji
+ *     the curation rules exclude, arrived at by composition;
+ *   - combining marks, which stack arbitrary ink onto a neighbour;
+ *   - homoglyphs of the VISOR's own icons (VISOR_ICONS), which is the
+ *     component impersonating the visor's button;
+ *   - anything long enough to stretch the strip.
+ *
+ * Trying to enumerate those is a losing game. Membership in a fixed,
+ * hand-vetted list of single BMP scalars refuses all of them at once,
+ * including the ones nobody has thought of yet — and it degrades safely:
+ * a mark that fails renders as NO ICON ANYWHERE (never as a placeholder,
+ * never as the raw string), so the worst outcome is a surface the user
+ * has not marked yet, which is a state the visor already handles
+ * honestly.
+ *
+ * CALL IT AT THE SEAM, not at the render site. A consumer reading a
+ * component's nomination validates it the moment it crosses (see
+ * spikes/demo/host/demo.ts's `mark-nomination` read, and invariant (g)
+ * in spikes/demo/scripts/check-invariants.sh, which greps for exactly
+ * that adjacency): an invalid string must never reach a render path at
+ * all, not even the picker's. */
+export function isAppMarkIcon(s: string): boolean {
+  return APP_MARK_ICONS.includes(s);
+}
+
+/** One pet icon, rendered. Returns null for the unmarked case — an
+ * empty string, an absent value, or anything `isAppMarkIcon` refuses —
+ * so a caller appends nothing rather than a blank slot.
+ *
+ * NO FABRICATION, the same rule the identity record follows: an
+ * unmarked surface gets NO glyph. The visor does not invent a mark for a
+ * component the user has never named; the strip simply says nothing
+ * before the user has said anything. */
+export function markIcon(icon: string | undefined): HTMLElement | null {
+  if (icon === undefined || !isAppMarkIcon(icon)) return null;
+  const el = document.createElement("span");
+  el.className = "mark-icon";
+  el.textContent = icon;
+  return el;
+}
+
 /** Cap for the user's own words on the strip. CSS ellipsis handles the
  * visual overflow; this stops a hand-edited record from being long
  * enough to matter in the first place. */
@@ -191,9 +349,27 @@ export function identityIcon(rec: VisorIdentity): string {
 export interface SurfaceIdentity {
   name: string;
   nickname: string;
-  hue: number;
+  /** THE PET ICON: the user's own recognition mark for this component,
+   * chosen in the naming ceremony from `APP_MARK_ICONS`. "" = UNMARKED,
+   * and unmarked renders as nothing at all (see `markIcon`) — the visor
+   * says nothing in its own voice about a component the user has not
+   * spoken about yet. Replaces the mark hue and its colour chip (#22
+   * discussion): the anchor colour keeps its job, per-app colour memory
+   * was never doing one. */
+  icon: string;
   isNew: boolean;
   petname?: string;
+  /** WHAT THIS COMPONENT ASKED TO WEAR — a glyph the component itself
+   * nominated (`mark-nomination` in the demo's WIT). PRE-VALIDATED
+   * VISOR-SIDE: a consumer puts a value here only after `isAppMarkIcon`
+   * has accepted it at the seam, so nothing downstream re-checks and
+   * nothing downstream may assume it is unclaimed — the ceremony still
+   * drops it if another record already wears it.
+   *
+   * It is NEVER a key, never rendered in the visor's own voice, and
+   * appears in exactly one place: the naming ceremony's picker, first,
+   * foreign-attributed. The component is never told the outcome. */
+  nomination?: string;
   /** When the visor first assigned this record its mark, from the stored
    * trust record. Shown on the App settings sheet as a locale date — a
    * "you have seen this before, since <date>" the user can check. */
@@ -567,10 +743,15 @@ export function initVisor(config: VisorConfig): Visor {
     // itself, quoted/monospaced/clamped as ever. Nothing the visor does to
     // its own sheets rewrites this line.
     if (surface) {
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.style.background = `oklch(62% .16 ${surface.hue})`;
-      ctxTop.append(chip);
+      // THE PET ICON, or nothing. A marked surface wears the glyph the
+      // USER picked for it, in plain text inheriting --visor-fg — not a
+      // coloured chip, and not a swatch the visor chose on its own. An
+      // UNMARKED surface renders NO glyph: before the user has said
+      // anything about this component, the visor has nothing of its own
+      // to say about it either, and a placeholder in the visor's pixels
+      // would be the visor speaking first.
+      const icon = markIcon(surface.icon);
+      if (icon) ctxTop.append(icon);
       // A component that declares nothing gets nothing quoted: an empty
       // foreign quote would render as bare quote marks — punctuation in
       // the visor's pixels standing for a claim nobody made.
@@ -617,7 +798,7 @@ export function initVisor(config: VisorConfig): Visor {
           named.setAttribute("role", "button");
           named.setAttribute("tabindex", "0");
           named.classList.add("clickable");
-          named.title = "app settings: rename, recolour, forget";
+          named.title = "app settings: rename, re-mark, forget";
           named.onclick = (ev: MouseEvent) => {
             ev.stopPropagation();
             requestNaming(surface);

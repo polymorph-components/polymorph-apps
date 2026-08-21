@@ -105,7 +105,9 @@ function toMockMark(m: UsMark): MockUsMark {
   return {
     provenance: m.provenance,
     petname: m.petname,
-    hue: m.hue,
+    // us-mark.hue -> us-mark.icon (#22 discussion): the wire type is a
+    // string now, and the engine treats it as opaque.
+    icon: m.icon,
     nickname: m.nickname,
     createdAt: Number(m.createdAt),
     needsReconfirm: m.needsReconfirm,
@@ -115,7 +117,7 @@ function fromMockMark(m: MockUsMark): UsMark {
   return {
     provenance: m.provenance,
     petname: m.petname,
-    hue: m.hue,
+    icon: m.icon,
     nickname: m.nickname,
     createdAt: BigInt(m.createdAt),
     needsReconfirm: m.needsReconfirm,
@@ -183,7 +185,7 @@ function toMockEvent(e: UsEvent): MockUsEvent {
         provenance: e.val[0],
         // CONTRACT: spike.wit ~254 types the field name as a bare
         // `string` (tuple<string,string>), not an enum restricted to
-        // "petname"|"hue" — the contract's stricter TS union
+        // "petname"|"icon" — the contract's stricter TS union
         // (visor/ui/pairing-driver.ts's `UsEvent`) is a visor-side
         // refinement of the same wire shape. Cast here rather than
         // widen the contract type (out of territory) or the
@@ -191,7 +193,7 @@ function toMockEvent(e: UsEvent): MockUsEvent {
         // only ever send these two literal strings (usdoc.rs's own
         // repair logic), so this is a narrowing assertion, not a lossy
         // conversion.
-        field: e.val[1] as "petname" | "hue",
+        field: e.val[1] as "petname" | "icon",
       };
     case "device-added":
       return { tag: "device-added", name: e.val };

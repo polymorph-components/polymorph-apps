@@ -70,27 +70,30 @@ export function initTodoVisor(artifactName: string): void {
     // No exclusive tenant on this page and no modal dialog to take the
     // page back from, so neither precondition hook is needed: the drawer
     // host's own tenancy is the whole story here.
-    onNamed: (provenance, petname, hue) => {
-      if (appSurface?.name === provenance) appSurface = { ...appSurface, petname, hue };
+    onNamed: (provenance, petname, icon) => {
+      if (appSurface?.name === provenance) appSurface = { ...appSurface, petname, icon };
     },
     onForgotten: (provenance) => {
+      // The mark goes with the name: a record that is forgotten must
+      // stop being worn, or the strip keeps a glyph with nothing behind
+      // it (see the demo's `onForgotten` for the full argument).
       if (appSurface?.name === provenance) {
-        appSurface = { ...appSurface, petname: undefined };
+        appSurface = { ...appSurface, petname: undefined, icon: "" };
       }
     },
   });
 
-  // The row itself, resolved exactly as a demo surface is: the mark hue
-  // is ASSIGNED from the unused palette at first sight
-  // and stored, never derived.
+  // The row itself, resolved exactly as a demo surface is: created at
+  // first sight and UNMARKED, because the pet icon is the user's to pick
+  // in the ceremony (visor/ui/sheets.ts) and never the visor's to roll.
   //
   // The tint-from-artifact-bytes hash this file used to carry is gone,
   // and the reason is not the old grind argument (which genuinely did not
-  // bite with one artifact per boot) — it is that the naming ceremony now
-  // offers a RECOGNITION COLOUR PICKER writing `mark.hue`. A chip painted
-  // from a hash of the artifact name would ignore what the user picked,
-  // so the visor would be showing one colour and remembering another.
-  // Single implementation is the point: this row behaves like any other.
+  // bite with one artifact per boot) — it is that the naming ceremony
+  // owns the recognition mark. A mark painted from a hash of the artifact
+  // name would ignore what the user picked, so the visor would be showing
+  // one thing and remembering another. Single implementation is the
+  // point: this row behaves like any other.
   const { mark } = sheets.marks.mark(artifactName);
 
   // SEED THE HISTORICAL NAME. A record with no petname yet gets
@@ -108,8 +111,16 @@ export function initTodoVisor(artifactName: string): void {
   // a visible choice: forgetting is honest for the rest of the session —
   // the strip drops the name and offers "name it" — and the default
   // returns on reload.
+  //
+  // NO SEEDED MARK, only a seeded NAME. The petname is this page's own
+  // factory default and the visor has always spoken it; a pet icon is
+  // not, and inventing one would be the visor putting a recognition mark
+  // on the anchor that the user never chose — the same honesty rule that
+  // makes a migrated record arrive unmarked. So the strip shows the name
+  // and no glyph until the user opens the ceremony, which then offers
+  // six free marks.
   if (mark.petname === undefined) {
-    sheets.marks.setPetname(artifactName, DEFAULT_PETNAME, mark.hue);
+    sheets.marks.setPetname(artifactName, DEFAULT_PETNAME, mark.icon);
     mark.petname = DEFAULT_PETNAME;
   }
 
@@ -119,7 +130,7 @@ export function initTodoVisor(artifactName: string): void {
     // separate self-description surface in this spike, unlike the
     // demo's panel `nickname()` export.
     nickname: "",
-    hue: mark.hue,
+    icon: mark.icon,
     // Never NEW: this row always arrives with the seeded petname, and
     // "first time this component draws here" beside a name the visor is
     // already speaking would be two contradictory claims on one line

@@ -57,7 +57,19 @@ export interface UsProfile {
 export interface UsMark {
   provenance: string;
   petname: string;
-  hue: number;
+  /** THE PET ICON: one glyph from the visor's curated vocabulary
+   * (visor.ts's `APP_MARK_ICONS`), or "" for unmarked. Replaces the old
+   * `hue: number` palette index (#22 discussion).
+   *
+   * THE PARTITION TREATS IT AS AN OPAQUE STRING. Uniqueness repair in
+   * the engine is exact equality only — the engine has no business
+   * knowing which glyphs look alike, and does not need to: visual
+   * confusability is handled VISOR-SIDE, by construction, because the
+   * curated set holds one glyph per confusability class. Anything
+   * arriving here from the partition still passes `isAppMarkIcon` before
+   * it is rendered: another device may be running a different visor
+   * build with a different vocabulary. */
+  icon: string;
   nickname?: string;
   createdAt: number;
   needsReconfirm: boolean;
@@ -74,7 +86,7 @@ export type UsEvent =
   | { tag: "profile-changed" }
   | { tag: "mark-added"; provenance: string }
   | { tag: "mark-changed"; provenance: string }
-  | { tag: "mark-conflict-repaired"; provenance: string; field: "petname" | "hue" }
+  | { tag: "mark-conflict-repaired"; provenance: string; field: "petname" | "icon" }
   | { tag: "device-added"; name: string }
   | { tag: "device-revoked"; name: string };
 

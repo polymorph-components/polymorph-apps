@@ -307,6 +307,16 @@ impl Guest for Component {
     fn nickname() -> String {
         "Dropbox".to_string()
     }
+
+    /// This panel asks for NO pet icon (#22). The nomination export is
+    /// optional in exactly this sense: `none` is a first-class answer,
+    /// and the honest one for a component with no opinion. The visor
+    /// then offers six glyphs of its own and the ceremony looks no
+    /// different for the user — which is the property worth having, and
+    /// worth exercising in at least one shipped component.
+    fn mark_nomination() -> Option<String> {
+        None
+    }
 }
 
 export!(Component);

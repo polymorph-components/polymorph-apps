@@ -194,7 +194,7 @@ The user-system doc backs `profile`/`marks`/`contacts`/`devices` behind a
 WIT surface that hides the partitioning — including which document holds
 them, so the storage shape is free to change without the visor knowing (the
 retired generation design leaned on this; see §4b). Petname (case-insensitive) and
-hue uniqueness are repaired deterministically after every remote apply —
+pet-icon uniqueness are repaired deterministically after every remote apply —
 older `created-at` wins, ties broken by lexicographic provenance — and
 every device computes the same outcome, so only the device whose OWN
 write lost persists it. `needs-reconfirm` is derived rather than stored,

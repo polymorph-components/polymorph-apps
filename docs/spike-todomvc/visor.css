@@ -72,8 +72,18 @@
 #visor-context[role="button"] { cursor: pointer; }
 #visor-context[role="button"]:focus-visible { outline: 2px solid rgba(255,255,255,.7);
                                                outline-offset: 2px; border-radius: 3px; }
-#visor-context .chip { width: .8em; height: .8em; border-radius: 2px;
-                        border: 1px solid rgba(255,255,255,.5); flex: none; }
+/* THE PET ICON: the user's own recognition mark for a component, in the
+   visor's own foreground colour — plain text, not a painted chip. The
+   colour chip that used to sit here is GONE with the mark hue (#22
+   discussion): the ANCHOR colour still does its job, but per-app colour
+   was never a recognition device a user could name or rehearse. The
+   slot is fixed-width so a mark never shifts the nickname beside it,
+   and an UNMARKED surface renders no element at all — not an empty
+   slot, because the visor says nothing before the user has. */
+#visor-context .mark-icon { flex: none; font-size: 15px; line-height: 1;
+                            width: 1.1em; text-align: center;
+                            font-family: ui-monospace, "Segoe UI Symbol",
+                                         "Apple Symbols", monospace; }
 /* App-supplied text is quoted, clamped and styled as foreign — never
    part of the visor's own sentence (#22's untrusted-string rule). */
 #visor-context q.foreign { font-family: ui-monospace, monospace;
@@ -324,8 +334,12 @@
 .cred-sheet .cred-line { display: flex; align-items: baseline; gap: .4em;
                          flex-wrap: wrap; font-size: 12px;
                          opacity: .92; margin-bottom: .35em; }
-.cred-sheet .chip { width: .8em; height: .8em; border-radius: 2px; flex: none;
-                    border: 1px solid rgba(255,255,255,.5); }
+/* Same pet icon, same rule, on the sheets: text in the visor's colour,
+   fixed slot, absent entirely when the surface is unmarked. */
+.cred-sheet .mark-icon { flex: none; font-size: 14px; line-height: 1;
+                         width: 1.1em; text-align: center;
+                         font-family: ui-monospace, "Segoe UI Symbol",
+                                      "Apple Symbols", monospace; }
 /* Panel-influenced strings (component name, destination origin) are
    quoted, monospaced and clamped — never part of the visor's sentence. */
 .cred-sheet q.foreign { font-family: ui-monospace, monospace;
@@ -367,13 +381,30 @@
    The user's own word is shown in the visor's voice; what the component
    calls itself stays in q.foreign, quoted and monospaced. */
 .name-sheet .petname { font-weight: 600; }
-.name-sheet .name-swatches { display: flex; gap: .35em; flex-wrap: wrap;
-                             margin: .1em 0 .6em; }
-.name-sheet .name-swatches button { width: 1.4em; height: 1.4em; padding: 0;
-                                    border-radius: 3px; cursor: pointer;
-                                    border: 1px solid rgba(255,255,255,.45); }
-.name-sheet .name-swatches button.picked { outline: 2px solid #fff;
-                                           outline-offset: 1px; }
+/* THE ICON PICKER (was the recognition-colour swatch row). Six offers,
+   each a glyph no other trust record wears. The NOMINATED one — a glyph
+   the component itself asked to wear — is drawn differently on purpose:
+   a dashed border says "this offer is not the visor's", the same way a
+   dotted underline or a q.foreign says it in text. */
+.name-sheet .name-icons { display: flex; gap: .4em; flex-wrap: wrap;
+                          margin: .1em 0 .6em; }
+.name-sheet .name-icons button { font: inherit; font-size: 16px;
+                                 width: 2em; height: 2em; padding: 0;
+                                 cursor: pointer; border-radius: 3px;
+                                 color: inherit; line-height: 1;
+                                 background: rgba(255,255,255,.1);
+                                 border: 1px solid rgba(255,255,255,.35);
+                                 font-family: ui-monospace, "Segoe UI Symbol",
+                                              "Apple Symbols", monospace; }
+.name-sheet .name-icons button.nominated { border-style: dashed;
+                                           background: rgba(255,255,255,.04); }
+.name-sheet .name-icons button.picked { outline: 2px solid #fff;
+                                        outline-offset: 1px; }
+/* The foreign attribution line above the row: the visor's sentence, the
+   component's glyph, quoted like every other thing a component said. */
+.name-sheet .name-nomination q.foreign { font-family: ui-monospace,
+                                         "Segoe UI Symbol", "Apple Symbols",
+                                         monospace; font-size: 14px; }
 .name-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
 .name-sheet .name-forget { display: flex; align-items: center; gap: .6em;
                            flex-wrap: wrap; margin-top: .8em;

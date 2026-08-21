@@ -495,8 +495,48 @@ export interface Surface {
   nickname: string;
   petname?: string;
   isNew: boolean;
-  hue: number;
+  /** THE PET ICON (#22 discussion): one glyph out of the visor's curated
+   * vocabulary, or "" for UNMARKED. Replaces `hue`, and with it the
+   * colour chip the strip used to draw. */
+  icon: string;
+  /** What the component asked to wear, once the visor has validated it
+   * at the seam. Undefined when the component nominated nothing, or
+   * nominated something the visor refused. */
+  nomination?: string;
   firstSeen?: number;
+}
+
+/** One offer in the naming ceremony's pet-icon picker, exactly as the
+ * sheet renders it (`__demo.naming.offers`). */
+export interface IconOffer {
+  glyph: string;
+  /** The visor flagged this one as the COMPONENT's request, not its
+   * own — the button is drawn differently and the sheet carries a
+   * foreign-attributed line above the row. */
+  nominated: boolean;
+  picked: boolean;
+}
+
+export function iconOffers(page: Page): Promise<IconOffer[]> {
+  // deno-lint-ignore no-explicit-any
+  return page.evaluate(() => (globalThis as any).__demo.naming.offers());
+}
+
+/** The foreign attribution line above the picker ("" when the surface
+ * has no nomination on offer). */
+export function nominationLine(page: Page): Promise<string> {
+  // deno-lint-ignore no-explicit-any
+  return page.evaluate(() => (globalThis as any).__demo.naming.nominationLine());
+}
+
+/** The pet icon the STRIP is currently showing for the surface its top
+ * line names — "" when the surface is unmarked, which is the honest
+ * rendering of "the user has not said anything about this yet". */
+export function stripMarkIcon(page: Page): Promise<string> {
+  return page.evaluate(() =>
+    (document.querySelector("#visor-context .ctx-top .mark-icon") as HTMLElement | null)
+      ?.textContent ?? ""
+  );
 }
 
 export function appSurface(page: Page): Promise<Surface | null> {

@@ -10,7 +10,7 @@
 //!
 //! Two pieces of semantics live here rather than in the visor:
 //!
-//! - **Invariant repair.** Petname uniqueness (case-insensitive) and hue
+//! - **Invariant repair.** Petname uniqueness (case-insensitive) and icon
 //!   uniqueness are cross-record invariants, so a merge can break them
 //!   even though every individual write was valid. Repair is
 //!   deterministic — the older record wins (`created-at`, ties broken by
@@ -67,14 +67,12 @@ fn doc_id() -> Result<Vec<u8>, String> {
 
 // --- automerge shape ---
 
-/// The #22 framework palette is a fixed, constrained set of OKLCH hues at
-/// one lightness and chroma, and `us-mark.hue` is an INDEX into it, not an
-/// angle (PAIRING.md §4). Ten entries at this rev — see the demo's
-/// `VISOR_HUES` (spikes/demo/host/demo.ts). Uniqueness is only
-/// promisable while unused indices exist, which is why an exhausted
-/// palette leaves a collision standing rather than inventing a colour
-/// outside the set the framework can render legibly.
-const HUE_PALETTE_LEN: u16 = 10;
+/// #22: pet icons are a single Unicode scalar from a visor-curated set.
+/// The ENGINE never invents vocabulary — the curated glyph set lives
+/// visor-side (spikes/visor). A curated single scalar encodes to at most
+/// 4 bytes in UTF-8; 8 gives headroom for a trailing variation selector
+/// without opening the door to arbitrary strings.
+const MAX_ICON_BYTES: usize = 8;
 
 const PROFILE: &str = "profile";
 const MARKS: &str = "marks";
@@ -140,7 +138,7 @@ fn get_bytes(am: &AutoCommit, obj: &ObjId, key: &str) -> Option<Vec<u8>> {
 struct MarkRaw {
     provenance: String,
     petname: String,
-    hue: u16,
+    icon: String,
     nickname: Option<String>,
     created_at: u64,
     /// The petname the user last re-confirmed under. A confirmation is
@@ -161,7 +159,7 @@ fn read_marks(am: &AutoCommit) -> Vec<MarkRaw> {
         out.push(MarkRaw {
             provenance: key.to_string(),
             petname: get_str(am, &m, "petname").unwrap_or_default(),
-            hue: get_u64(am, &m, "hue").unwrap_or(0) as u16,
+            icon: get_str(am, &m, "icon").unwrap_or_default(),
             nickname: get_str(am, &m, "nickname"),
             created_at: get_u64(am, &m, "created-at").unwrap_or(0),
             confirmed_for: get_str(am, &m, "confirmed-for"),
@@ -249,11 +247,11 @@ fn ensure_subscriptions() -> Result<(), String> {
 /// makes every device agree without coordinating.
 struct Repaired {
     marks: Vec<UsMark>,
-    /// `(provenance, "petname" | "hue")`.
+    /// `(provenance, "petname" | "icon")`.
     repairs: BTreeSet<(String, String)>,
-    /// The hue each mark should carry after repair, for the write-back
+    /// The icon each mark should carry after repair, for the write-back
     /// rule (only the owner of a losing write persists it).
-    hues: HashMap<String, u16>,
+    icons: HashMap<String, String>,
 }
 
 fn repair(raw: &[MarkRaw]) -> Repaired {
@@ -267,19 +265,15 @@ fn repair(raw: &[MarkRaw]) -> Repaired {
             .then_with(|| a.provenance.cmp(&b.provenance))
     });
 
-    // Reassigned hues must dodge every hue anyone authored, not just the
-    // ones assigned so far — otherwise repairing one collision could
-    // manufacture the next.
-    let reserved: HashSet<u16> = raw.iter().map(|m| m.hue).collect();
     let mut claimed_petnames: HashSet<String> = HashSet::new();
-    let mut claimed_hues: HashSet<u16> = HashSet::new();
+    let mut claimed_icons: HashSet<String> = HashSet::new();
     let mut repairs = BTreeSet::new();
-    let mut hues = HashMap::new();
+    let mut icons = HashMap::new();
     let mut marks = Vec::new();
 
     for m in order {
         let petname_loser = !claimed_petnames.insert(m.petname.to_lowercase());
-        let needs_reconfirm = if petname_loser {
+        let petname_needs_reconfirm = if petname_loser {
             repairs.insert((m.provenance.clone(), "petname".to_string()));
             // The loser keeps its petname bytes; what it loses is the
             // user's assumption that the name is unambiguous. The visor
@@ -288,30 +282,36 @@ fn repair(raw: &[MarkRaw]) -> Repaired {
         } else {
             false
         };
-        let hue = if claimed_hues.contains(&m.hue) {
-            // Smallest unused palette index. If the palette is exhausted
-            // the collision stands: that is what assignment already does
-            // when it runs out, and manufacturing an index outside the
-            // palette would render as something the framework never
-            // promised to keep legible or distinguishable.
-            match (0..HUE_PALETTE_LEN)
-                .find(|h| !reserved.contains(h) && !claimed_hues.contains(h))
-            {
-                Some(free) => {
-                    repairs.insert((m.provenance.clone(), "hue".to_string()));
-                    free
-                }
-                None => m.hue,
-            }
+        // Icon collisions: unlike hues (a fixed engine-known palette),
+        // icons are a visor-curated vocabulary the engine has no access
+        // to. The engine cannot invent a replacement glyph, so the loser
+        // is cleared to "" (unmarked) and flagged for reconfirm — the
+        // visor re-offers its picker on reconfirm. This is a deliberate
+        // asymmetry with the old hue-reassignment behavior, not an
+        // oversight: see dispatch notes on #22 pet icons.
+        let was_icon_collision = !m.icon.is_empty() && claimed_icons.contains(&m.icon);
+        let icon = if was_icon_collision {
+            repairs.insert((m.provenance.clone(), "icon".to_string()));
+            String::new()
         } else {
-            m.hue
+            m.icon.clone()
         };
-        claimed_hues.insert(hue);
-        hues.insert(m.provenance.clone(), hue);
+        if !icon.is_empty() {
+            claimed_icons.insert(icon.clone());
+        }
+        // needs-reconfirm for an icon cannot be recomputed from the
+        // collision itself once the write-back clears the icon to ""
+        // (the collision disappears from the raw data on the very next
+        // read). Deriving it from "icon is empty" instead is equivalent
+        // AND self-stable: "" means unmarked/needs-reassignment either
+        // way (freshly created with no icon, or cleared by a repair),
+        // and both cases want the visor to re-offer its picker.
+        let needs_reconfirm = petname_needs_reconfirm || icon.is_empty();
+        icons.insert(m.provenance.clone(), icon.clone());
         marks.push(UsMark {
             provenance: m.provenance.clone(),
             petname: m.petname.clone(),
-            hue,
+            icon,
             nickname: m.nickname.clone(),
             created_at: m.created_at,
             needs_reconfirm,
@@ -320,7 +320,7 @@ fn repair(raw: &[MarkRaw]) -> Repaired {
     Repaired {
         marks,
         repairs,
-        hues,
+        icons,
     }
 }
 
@@ -331,7 +331,7 @@ struct Snap {
     profile: (String, u16, Option<Vec<u8>>),
     /// The REPAIRED view, keyed by provenance: diffing repaired views is
     /// what keeps a repair write from announcing itself twice.
-    marks: BTreeMap<String, (String, u16, Option<String>, u64, bool)>,
+    marks: BTreeMap<String, (String, String, Option<String>, u64, bool)>,
     repairs: BTreeSet<(String, String)>,
     devices: BTreeMap<String, (String, u64, bool)>,
 }
@@ -347,9 +347,9 @@ fn snapshot(am: &AutoCommit) -> Snap {
                 (
                     m.provenance,
                     (
-                        m.petname,
-                        m.hue,
-                        m.nickname,
+                    m.petname,
+                    m.icon,
+                    m.nickname,
                         m.created_at,
                         m.needs_reconfirm,
                     ),
@@ -476,17 +476,21 @@ async fn repair_writes() -> Result<(), String> {
         (raw, mine)
     };
     let repaired = repair(&raw);
-    let mut pending: Vec<(String, u16)> = Vec::new();
+    let mut pending: Vec<(String, String)> = Vec::new();
     for m in &raw {
         if !mine.contains(&m.provenance) {
             continue;
         }
         if repaired
             .repairs
-            .contains(&(m.provenance.clone(), "hue".to_string()))
+            .contains(&(m.provenance.clone(), "icon".to_string()))
         {
-            let want = repaired.hues.get(&m.provenance).copied().unwrap_or(m.hue);
-            if want != m.hue {
+            let want = repaired
+                .icons
+                .get(&m.provenance)
+                .cloned()
+                .unwrap_or_else(|| m.icon.clone());
+            if want != m.icon {
                 pending.push((m.provenance.clone(), want));
             }
         }
@@ -495,12 +499,12 @@ async fn repair_writes() -> Result<(), String> {
         return Ok(());
     }
     let id = doc_id()?;
-    for (provenance, hue) in pending {
+    for (provenance, icon) in pending {
         crate::author(&id, |am| {
             let marks = map_at(am, MARKS).ok_or("no marks map")?;
             let m = child_map(am, &marks, &provenance).ok_or("mark vanished")?;
-            am.put(&m, "hue", hue as i64)
-                .map_err(|e| format!("repair hue: {e}"))?;
+            am.put(&m, "icon", icon.as_str())
+                .map_err(|e| format!("repair icon: {e}"))?;
             Ok(())
         })
         .await?;
@@ -739,6 +743,21 @@ pub(crate) async fn mark_put(mark: UsMark) -> Result<(), String> {
     if provenance.is_empty() {
         return Err("a mark needs a provenance".into());
     }
+    // CONTRACT: dispatch says "reject empty petname as before" — no such
+    // validation existed in the pre-#22 code (checked via rg); enforcing
+    // it now is the conservative reading, not a regression.
+    if mark.petname.is_empty() {
+        return Err("a mark needs a petname".into());
+    }
+    // Icon MAY be empty (unmarked/needs-reassignment). A curated single
+    // Unicode scalar is at most 4 bytes in UTF-8; 8 gives headroom for a
+    // trailing variation selector without accepting arbitrary strings.
+    if mark.icon.len() > MAX_ICON_BYTES {
+        return Err(format!(
+            "icon must be at most {MAX_ICON_BYTES} bytes, got {}",
+            mark.icon.len()
+        ));
+    }
     with_state(|s| s.us.my_marks.insert(provenance.clone()))?;
     write(move |am| {
         let marks = match map_at(am, MARKS) {
@@ -756,8 +775,8 @@ pub(crate) async fn mark_put(mark: UsMark) -> Result<(), String> {
         };
         am.put(&m, "petname", mark.petname.as_str())
             .map_err(|e| format!("petname: {e}"))?;
-        am.put(&m, "hue", mark.hue as i64)
-            .map_err(|e| format!("hue: {e}"))?;
+        am.put(&m, "icon", mark.icon.as_str())
+            .map_err(|e| format!("icon: {e}"))?;
         match mark.nickname {
             Some(n) => am
                 .put(&m, "nickname", n.as_str())
@@ -884,11 +903,11 @@ pub(crate) async fn events() -> Result<Vec<UsEvent>, String> {
 mod tests {
     use super::*;
 
-    fn mark(provenance: &str, petname: &str, hue: u16, created_at: u64) -> MarkRaw {
+    fn mark(provenance: &str, petname: &str, icon: &str, created_at: u64) -> MarkRaw {
         MarkRaw {
             provenance: provenance.into(),
             petname: petname.into(),
-            hue,
+            icon: icon.into(),
             nickname: None,
             created_at,
             confirmed_for: None,
@@ -897,7 +916,7 @@ mod tests {
 
     #[test]
     fn older_petname_wins_and_the_loser_is_flagged() {
-        let raw = vec![mark("b", "Ada", 10, 200), mark("a", "ada", 20, 100)];
+        let raw = vec![mark("b", "Ada", "🐝", 200), mark("a", "ada", "🐝", 100)];
         let r = repair(&raw);
         let flagged: Vec<&UsMark> = r.marks.iter().filter(|m| m.needs_reconfirm).collect();
         assert_eq!(flagged.len(), 1);
@@ -907,53 +926,52 @@ mod tests {
 
     #[test]
     fn equal_timestamps_break_ties_lexicographically() {
-        let raw = vec![mark("z", "Ada", 10, 100), mark("a", "ada", 20, 100)];
+        let raw = vec![mark("z", "Ada", "🐝", 100), mark("a", "ada", "🐝", 100)];
         let r = repair(&raw);
         assert!(r.repairs.contains(&("z".into(), "petname".into())));
     }
 
     #[test]
-    fn hue_loser_is_reassigned_to_a_hue_nobody_holds() {
+    fn icon_loser_is_cleared_and_flagged_for_reconfirm() {
         let raw = vec![
-            mark("a", "one", 0, 100),
-            mark("b", "two", 0, 200),
-            mark("c", "three", 1, 300),
+            mark("a", "one", "🐝", 100),
+            mark("b", "two", "🐝", 200),
+            mark("c", "three", "🐝🐝", 300),
         ];
         let r = repair(&raw);
-        let hues: Vec<u16> = r.marks.iter().map(|m| m.hue).collect();
-        let unique: HashSet<u16> = hues.iter().copied().collect();
-        assert_eq!(hues.len(), unique.len(), "hues must be unique after repair");
-        assert_eq!(r.hues["b"], 2);
-        assert!(r.repairs.contains(&("b".into(), "hue".into())));
+        // The engine cannot invent a replacement glyph (the vocabulary is
+        // the visor's), so the loser's icon is cleared to "" rather than
+        // reassigned — this is the deliberate #22 shape, unlike the old
+        // hue-reassignment behavior.
+        assert_eq!(r.icons["a"], "🐝");
+        assert_eq!(r.icons["b"], "");
+        assert!(r.repairs.contains(&("b".into(), "icon".into())));
+        let b = r.marks.iter().find(|m| m.provenance == "b").unwrap();
+        assert!(b.needs_reconfirm);
     }
 
     #[test]
-    fn an_exhausted_palette_leaves_the_collision_standing() {
-        // Every index taken, then one more record colliding on hue 0:
-        // there is nothing free to move it to, so it keeps its index and
-        // no hue repair is claimed.
-        let mut raw: Vec<MarkRaw> = (0..HUE_PALETTE_LEN)
-            .map(|h| mark(&format!("p{h}"), &format!("name{h}"), h, 100 + h as u64))
-            .collect();
-        raw.push(mark("zz", "extra", 0, 9_000));
+    fn empty_icons_never_collide_with_each_other() {
+        // "" means unmarked/needs-reassignment, not a shared glyph: two
+        // unmarked marks must not repair each other.
+        let raw = vec![mark("a", "one", "", 100), mark("b", "two", "", 200)];
         let r = repair(&raw);
-        assert!(!r.repairs.contains(&("zz".into(), "hue".into())));
-        assert_eq!(r.hues["zz"], 0);
+        assert!(!r.repairs.contains(&("b".into(), "icon".into())));
     }
 
     #[test]
     fn repair_is_order_independent() {
-        let a = vec![mark("a", "same", 5, 100), mark("b", "same", 5, 200)];
-        let b = vec![mark("b", "same", 5, 200), mark("a", "same", 5, 100)];
+        let a = vec![mark("a", "same", "🐝", 100), mark("b", "same", "🐝", 200)];
+        let b = vec![mark("b", "same", "🐝", 200), mark("a", "same", "🐝", 100)];
         let ra = repair(&a);
         let rb = repair(&b);
         assert_eq!(ra.repairs, rb.repairs);
-        assert_eq!(ra.hues, rb.hues);
+        assert_eq!(ra.icons, rb.icons);
     }
 
     #[test]
     fn confirming_the_exact_name_clears_the_flag() {
-        let mut raw = vec![mark("a", "same", 1, 100), mark("b", "same", 2, 200)];
+        let mut raw = vec![mark("a", "same", "🐝", 100), mark("b", "same", "🐦", 200)];
         raw[1].confirmed_for = Some("same".into());
         let r = repair(&raw);
         assert!(r.marks.iter().all(|m| !m.needs_reconfirm));

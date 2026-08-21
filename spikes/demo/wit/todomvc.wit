@@ -151,6 +151,34 @@ world demo-app {
   /// fetched — unforgeable provenance) and never the visor's own voice
   /// (that is the petname the user types in the visor's own pixels).
   export nickname: func() -> string;
+
+  /// WHAT THIS COMPONENT ASKS TO WEAR — a pet-icon nomination (#22).
+  ///
+  /// The visor's trust table gives each component a MARK: one glyph the
+  /// USER picks, in the visor's own pixels, from a vocabulary the visor
+  /// curates. This export lets a component ASK for a particular glyph,
+  /// and it is deliberately the weakest possible form of asking:
+  ///
+  ///   - read ONCE at mount, alongside `nickname`, and never again;
+  ///   - rendered in exactly ONE place, inside the naming ceremony's
+  ///     picker, FOREIGN-ATTRIBUTED — the visor says the sentence, the
+  ///     glyph is quoted as the component's, the way a nickname is;
+  ///   - offered only if it is a member of the visor's curated
+  ///     vocabulary AND no other trust record already wears it;
+  ///     otherwise it is dropped in silence;
+  ///   - never a lookup key (the key is provenance, as always);
+  ///   - never spoken in the visor's own voice unless the USER adopts
+  ///     it, at which point it is the user's mark, not the component's;
+  ///   - and the component NEVER LEARNS THE OUTCOME. There is no
+  ///     companion import, no return path, no observable difference
+  ///     between "adopted", "refused" and "never opened the ceremony".
+  ///     The nomination is write-only, for the same reason the petname
+  ///     is unreadable: a component that could tell what the user
+  ///     decided about it could act on the user's trust in itself.
+  ///
+  /// `none` = no preference, which is the honest default; the visor then
+  /// offers six glyphs of its own.
+  export mark-nomination: func() -> option<string>;
 }
 
 /// The fixed credential vocabulary (#22): a panel may REQUEST credential
@@ -264,6 +292,34 @@ world s3-panel {
   /// address a trust record would be impersonation through the table.
   export nickname: func() -> string;
 
+
+  /// WHAT THIS COMPONENT ASKS TO WEAR — a pet-icon nomination (#22).
+  ///
+  /// The visor's trust table gives each component a MARK: one glyph the
+  /// USER picks, in the visor's own pixels, from a vocabulary the visor
+  /// curates. This export lets a component ASK for a particular glyph,
+  /// and it is deliberately the weakest possible form of asking:
+  ///
+  ///   - read ONCE at mount, alongside `nickname`, and never again;
+  ///   - rendered in exactly ONE place, inside the naming ceremony's
+  ///     picker, FOREIGN-ATTRIBUTED — the visor says the sentence, the
+  ///     glyph is quoted as the component's, the way a nickname is;
+  ///   - offered only if it is a member of the visor's curated
+  ///     vocabulary AND no other trust record already wears it;
+  ///     otherwise it is dropped in silence;
+  ///   - never a lookup key (the key is provenance, as always);
+  ///   - never spoken in the visor's own voice unless the USER adopts
+  ///     it, at which point it is the user's mark, not the component's;
+  ///   - and the component NEVER LEARNS THE OUTCOME. There is no
+  ///     companion import, no return path, no observable difference
+  ///     between "adopted", "refused" and "never opened the ceremony".
+  ///     The nomination is write-only, for the same reason the petname
+  ///     is unreadable: a component that could tell what the user
+  ///     decided about it could act on the user's trust in itself.
+  ///
+  /// `none` = no preference, which is the honest default; the visor then
+  /// offers six glyphs of its own.
+  export mark-nomination: func() -> option<string>;
   /// Visor-driven commit: the visor owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its
   /// configuration when the user commits. `none` = not valid yet; the
@@ -311,6 +367,34 @@ world dropbox-panel {
   /// once at mount, rendered only as foreign-quoted text, never a key.
   export nickname: func() -> string;
 
+
+  /// WHAT THIS COMPONENT ASKS TO WEAR — a pet-icon nomination (#22).
+  ///
+  /// The visor's trust table gives each component a MARK: one glyph the
+  /// USER picks, in the visor's own pixels, from a vocabulary the visor
+  /// curates. This export lets a component ASK for a particular glyph,
+  /// and it is deliberately the weakest possible form of asking:
+  ///
+  ///   - read ONCE at mount, alongside `nickname`, and never again;
+  ///   - rendered in exactly ONE place, inside the naming ceremony's
+  ///     picker, FOREIGN-ATTRIBUTED — the visor says the sentence, the
+  ///     glyph is quoted as the component's, the way a nickname is;
+  ///   - offered only if it is a member of the visor's curated
+  ///     vocabulary AND no other trust record already wears it;
+  ///     otherwise it is dropped in silence;
+  ///   - never a lookup key (the key is provenance, as always);
+  ///   - never spoken in the visor's own voice unless the USER adopts
+  ///     it, at which point it is the user's mark, not the component's;
+  ///   - and the component NEVER LEARNS THE OUTCOME. There is no
+  ///     companion import, no return path, no observable difference
+  ///     between "adopted", "refused" and "never opened the ceremony".
+  ///     The nomination is write-only, for the same reason the petname
+  ///     is unreadable: a component that could tell what the user
+  ///     decided about it could act on the user's trust in itself.
+  ///
+  /// `none` = no preference, which is the honest default; the visor then
+  /// offers six glyphs of its own.
+  export mark-nomination: func() -> option<string>;
   /// Visor-driven commit: the visor owns the Save/Cancel affordances (they
   /// live outside the granted region), and asks the panel to produce its
   /// configuration when the user commits. `none` = not valid yet; the

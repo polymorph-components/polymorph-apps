@@ -30,7 +30,7 @@
 //     same object, which is sufficient to develop the visor's reconcile/
 //     announce paths without also faking automerge.
 //   - Marks conflict repair (§4) is implemented for the two cases the
-//     contract states (petname collision, hue collision) so
+//     contract states (petname collision, pet-icon collision) so
 //     mark-conflict-repaired has something real to fire on.
 //
 // Nothing here is visor. This module knows nothing about DOM, strips,
@@ -106,13 +106,17 @@ function ensureQueue(doc: UserGroupDoc, instanceId: string) {
 
 // --- marks invariants + deterministic repair (§4) --------------------------
 
-// Hues are PALETTE INDICES (PAIRING.md §4: "u16 index into the #22
-// framework palette, ~10 entries"), not raw OKLCH angles — the mock
-// carries the same u16 index space the WIT type promises; the
-// index-to-angle mapping is the visor's own table (../../visor/ui/pairing.ts
-// mirrors host/demo.ts's existing VISOR_HUES), never the mock's
-// concern.
-const PALETTE_SIZE = 10;
+// PET ICONS are OPAQUE STRINGS here, exactly as they are to the engine
+// (spikes/tasks-engine/guest/wit/spike.wit's `us-mark.icon`): the mock
+// compares them for EXACT EQUALITY and nothing else. It does not know
+// the curated vocabulary, cannot judge visual confusability, and must
+// not try — that is the visor's job, discharged by construction (one
+// glyph per confusability class in `APP_MARK_ICONS`). "" means UNMARKED
+// and never collides with anything, itself included.
+//
+// (`us-profile.hue` is still a palette index; the ANCHOR colour is
+// untouched by the mark change. Only the per-app mark moved from a hue
+// to a glyph.)
 
 /** Runs after every write that could have introduced a collision. Older
  * record wins (`createdAt`, tie-break lexicographic provenance); the
@@ -125,13 +129,16 @@ const PALETTE_SIZE = 10;
  * every instance would compute independently over the real CRDT. */
 function repairMarks(doc: UserGroupDoc, instanceId: string) {
   const byPetname = new Map<string, UsMark[]>();
-  const byHue = new Map<number, UsMark[]>();
+  const byIcon = new Map<string, UsMark[]>();
   for (const m of doc.marks.values()) {
     const pk = m.petname.toLowerCase();
     if (!byPetname.has(pk)) byPetname.set(pk, []);
     byPetname.get(pk)!.push(m);
-    if (!byHue.has(m.hue)) byHue.set(m.hue, []);
-    byHue.get(m.hue)!.push(m);
+    // UNMARKED IS NOT A CLAIM. Every record with icon "" would otherwise
+    // form one enormous colliding group and repair each other forever.
+    if (m.icon === "") continue;
+    if (!byIcon.has(m.icon)) byIcon.set(m.icon, []);
+    byIcon.get(m.icon)!.push(m);
   }
   const older = (a: UsMark, b: UsMark) =>
     a.createdAt !== b.createdAt ? a.createdAt - b.createdAt : a.provenance.localeCompare(b.provenance);
@@ -150,39 +157,30 @@ function repairMarks(doc: UserGroupDoc, instanceId: string) {
       }
     }
   }
-  for (const [, group] of byHue) {
+  for (const [, group] of byIcon) {
     if (group.length < 2) continue;
     const sorted = [...group].sort(older);
-    // Free/used indices are GLOBAL across the whole doc (every mark's
-    // current hue), not just this colliding group — a reassignment must
-    // not land on an index some other, non-colliding mark already
-    // holds. Recomputed per loser so an earlier reassignment in this
-    // same pass is accounted for before picking the next one.
+    // THE LOSER'S ICON IS CLEARED, NOT REASSIGNED — the engine contract
+    // (spikes/tasks-engine, us-mark repair), mirrored here because the
+    // mock is the e2e default and a mock that repaired differently would
+    // gate the visor against a behaviour that does not exist.
+    //
+    // Why clearing rather than picking another glyph: the vocabulary is
+    // the VISOR's. The partition holds opaque strings and has no
+    // curation rules, no confusability classes and no idea which build
+    // of the visor each device runs, so any glyph it invented would be a
+    // mark the user never chose — possibly one this device cannot even
+    // render. Clearing plus `needsReconfirm` hands the decision back to
+    // the surface that owns it: the naming ceremony re-offers six free
+    // marks at the next opening (see visor/ui/sheets.ts's picker).
     for (const loser of sorted.slice(1)) {
-      const used = new Set(
-        [...doc.marks.values()].filter((m) => m !== loser).map((m) => m.hue),
-      );
-      // Smallest UNUSED INDEX, not pool/iteration order (§4: "the
-      // smallest unused palette index").
-      let next: number | undefined;
-      for (let i = 0; i < PALETTE_SIZE; i++) {
-        if (!used.has(i)) {
-          next = i;
-          break;
-        }
-      }
-      if (next === undefined) {
-        // Palette exhausted: §4 — "the collision stands (matches
-        // assignment-time behaviour — uniqueness is only promisable
-        // while unused hues exist)". No reassignment, no event, no
-        // write: the loser keeps its colliding hue exactly as-is.
-        continue;
-      }
-      loser.hue = next;
+      if (loser.icon === "") continue;
+      loser.icon = "";
+      loser.needsReconfirm = true;
       broadcast(doc, instanceId, {
         tag: "mark-conflict-repaired",
         provenance: loser.provenance,
-        field: "hue",
+        field: "icon",
       });
     }
   }

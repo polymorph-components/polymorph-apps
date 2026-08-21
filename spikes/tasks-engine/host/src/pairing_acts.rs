@@ -225,7 +225,7 @@ async fn wait_marks(
                     ok(what, t);
                     return Ok(marks);
                 }
-                last = Some(format!("{} marks", marks.len()));
+                last = Some(format!("{} marks {marks:?}", marks.len()));
             }
             Err(e) => last = Some(e),
         }
@@ -239,7 +239,7 @@ fn same_marks(a: &[UsMark], b: &[UsMark]) -> bool {
         && a.iter().zip(b).all(|(x, y)| {
             x.provenance == y.provenance
                 && x.petname == y.petname
-                && x.hue == y.hue
+                && x.icon == y.icon
                 && x.nickname == y.nickname
                 && x.created_at == y.created_at
                 && x.needs_reconfirm == y.needs_reconfirm
@@ -379,12 +379,12 @@ pub(crate) async fn positive_acts(
 
     if adopted {
         results.push((
-            "concurrent same-petname repairs identically on both devices",
+            "concurrent same-petname and same-icon repairs identically on both devices",
             act_repair(acc, l, p).await.map_err(|e| e.to_string()),
         ));
     } else {
         results.push((
-            "concurrent same-petname repairs identically on both devices",
+            "concurrent same-petname and same-icon repairs identically on both devices",
             Err("not reached: the joiner never became a reader of the partition".into()),
         ));
     }
@@ -428,7 +428,7 @@ async fn act_adoption(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()>
         UsMark {
             provenance: "https://recipes.example/".into(),
             petname: "Recipes".into(),
-            hue: 5,
+            icon: "🥕".into(),
             nickname: None,
             created_at: 1_000,
             needs_reconfirm: false,
@@ -535,19 +535,30 @@ async fn act_adoption(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()>
     Ok(())
 }
 
-/// Two devices name different sites the same thing, with the same hue,
-/// neither having seen the other. The merge breaks two cross-record
-/// invariants at once, and both devices must land on identical repaired
-/// state — announced, never silent, never blocking.
+/// Two races against the same pair of devices, neither having seen the
+/// other's write before the merge:
+///
+///  1. Two devices name different sites the same thing (petname
+///     collision, case-insensitive). Both must land on identical
+///     repaired state — announced, never silent, never blocking. The
+///     loser keeps its petname bytes and is flagged for reconfirm.
+///  2. Two devices mark different provenances with the SAME pet icon
+///     (icon collision, #22). The engine cannot invent a replacement
+///     glyph (the curated vocabulary is the visor's), so the loser's
+///     icon is cleared to "" and flagged for reconfirm — the visor
+///     re-offers its picker on reconfirm.
 async fn act_repair(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()> {
     let _ = l.call_us_events(acc).await?;
     let _ = p.call_us_events(acc).await?;
+
+    // --- race 1: same petname, DIFFERENT icons (isolates the petname
+    // repair from the icon repair below) ---
     l.call_us_mark_put(
         acc,
         UsMark {
             provenance: "https://notes-a.example/".into(),
             petname: "Notes".into(),
-            hue: 7,
+            icon: "🍇".into(),
             nickname: None,
             created_at: 2_000,
             needs_reconfirm: false,
@@ -562,7 +573,7 @@ async fn act_repair(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()> {
             // Case-insensitive collision, deliberately: "notes" and
             // "Notes" are the same name to a person.
             petname: "notes".into(),
-            hue: 7,
+            icon: "🍎".into(),
             nickname: None,
             created_at: 3_000,
             needs_reconfirm: false,
@@ -576,26 +587,104 @@ async fn act_repair(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()> {
             && m.iter()
                 .any(|x| x.provenance == "https://notes-b.example/" && x.needs_reconfirm)
             && m.iter()
-                .any(|x| x.provenance == "https://notes-a.example/" && x.hue == 7)
+                .any(|x| x.provenance == "https://notes-a.example/" && x.petname == "Notes")
     };
-    let l_marks = wait_marks(acc, l, "laptop repaired the collision", want).await?;
-    let p_marks = wait_marks(acc, p, "phone repaired the collision", want).await?;
+    let l_marks = wait_marks(acc, l, "laptop repaired the petname collision", want).await?;
+    let p_marks = wait_marks(acc, p, "phone repaired the petname collision", want).await?;
     if !same_marks(&l_marks, &p_marks) {
-        bail!("REPAIR DIVERGED:\n  laptop {l_marks:?}\n  phone  {p_marks:?}");
+        bail!("PETNAME REPAIR DIVERGED:\n  laptop {l_marks:?}\n  phone  {p_marks:?}");
     }
     let loser = p_marks
         .iter()
         .find(|m| m.provenance == "https://notes-b.example/")
-        .ok_or_else(|| format_err!("loser mark vanished"))?;
-    if loser.hue == 7 {
-        bail!("the hue loser was not reassigned: still {}", loser.hue);
-    }
+        .ok_or_else(|| format_err!("petname loser mark vanished"))?;
     if loser.petname != "notes" {
         bail!("the petname loser lost its name bytes: {}", loser.petname);
     }
+    println!("            older mark keeps petname; younger loser flagged for reconfirm");
+
+    for (d, name) in [(l, "laptop"), (p, "phone")] {
+        let mut announced = Vec::new();
+        let t = Instant::now();
+        for _ in 0..POLLS {
+            announced.extend(d.call_us_events(acc).await?.map_err(|e| format_err!("{e}"))?);
+            if announced.iter().any(
+                |e| matches!(e, UsEvent::MarkConflictRepaired((_, k)) if k == "petname"),
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+        }
+        if !announced
+            .iter()
+            .any(|e| matches!(e, UsEvent::MarkConflictRepaired((_, k)) if k == "petname"))
+        {
+            bail!(
+                "{name} repaired the petname collision silently — no announcement: {:?}",
+                describe_events(&announced)
+            );
+        }
+        ok(&format!("{name} announced the petname repair"), t);
+        println!("            {name}: {:?}", describe_events(&announced));
+    }
+
+    // --- race 2: DIFFERENT petnames, same icon (#22 icon collision) ---
+    l.call_us_mark_put(
+        acc,
+        UsMark {
+            provenance: "https://icon-a.example/".into(),
+            petname: "Alpha".into(),
+            icon: "🐝".into(),
+            nickname: None,
+            created_at: 4_000,
+            needs_reconfirm: false,
+        },
+    )
+    .await?
+    .map_err(|e| format_err!("us-mark-put(icon-a): {e}"))?;
+    p.call_us_mark_put(
+        acc,
+        UsMark {
+            provenance: "https://icon-b.example/".into(),
+            petname: "Bravo".into(),
+            icon: "🐝".into(),
+            nickname: None,
+            created_at: 5_000,
+            needs_reconfirm: false,
+        },
+    )
+    .await?
+    .map_err(|e| format_err!("us-mark-put(icon-b): {e}"))?;
+
+    let icon_want = |m: &[UsMark]| {
+        m.len() == 5
+            && m.iter()
+                .any(|x| x.provenance == "https://icon-b.example/" && x.needs_reconfirm)
+            && m.iter()
+                .any(|x| x.provenance == "https://icon-a.example/" && x.icon == "🐝")
+    };
+    let l_marks = wait_marks(acc, l, "laptop repaired the icon collision", icon_want).await?;
+    let p_marks = wait_marks(acc, p, "phone repaired the icon collision", icon_want).await?;
+    if !same_marks(&l_marks, &p_marks) {
+        bail!("ICON REPAIR DIVERGED:\n  laptop {l_marks:?}\n  phone  {p_marks:?}");
+    }
+    let icon_loser = p_marks
+        .iter()
+        .find(|m| m.provenance == "https://icon-b.example/")
+        .ok_or_else(|| format_err!("icon loser mark vanished"))?;
+    // The engine cannot invent a replacement glyph — the loser is
+    // cleared to "" (unmarked), not reassigned to some other glyph.
+    if !icon_loser.icon.is_empty() {
+        bail!(
+            "the icon loser was not cleared: still {:?}",
+            icon_loser.icon
+        );
+    }
+    if icon_loser.petname != "Bravo" {
+        bail!("the icon loser lost its petname bytes: {}", icon_loser.petname);
+    }
     println!(
-        "            older mark keeps petname+hue; loser flagged and moved to hue {}",
-        loser.hue
+        "            older mark keeps icon 🐝; younger loser cleared to \"\" and flagged for reconfirm"
     );
 
     for (d, name) in [(l, "laptop"), (p, "phone")] {
@@ -605,7 +694,7 @@ async fn act_repair(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()> {
             announced.extend(d.call_us_events(acc).await?.map_err(|e| format_err!("{e}"))?);
             if announced
                 .iter()
-                .any(|e| matches!(e, UsEvent::MarkConflictRepaired(_)))
+                .any(|e| matches!(e, UsEvent::MarkConflictRepaired((_, k)) if k == "icon"))
             {
                 break;
             }
@@ -613,14 +702,14 @@ async fn act_repair(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()> {
         }
         if !announced
             .iter()
-            .any(|e| matches!(e, UsEvent::MarkConflictRepaired(_)))
+            .any(|e| matches!(e, UsEvent::MarkConflictRepaired((_, k)) if k == "icon"))
         {
             bail!(
-                "{name} repaired silently — no announcement: {:?}",
+                "{name} repaired the icon collision silently — no announcement: {:?}",
                 describe_events(&announced)
             );
         }
-        ok(&format!("{name} announced the repair"), t);
+        ok(&format!("{name} announced the icon repair"), t);
         println!("            {name}: {:?}", describe_events(&announced));
     }
     Ok(())
@@ -857,7 +946,7 @@ pub(crate) async fn post_seal_add_act(
         UsMark {
             provenance: "https://before.example/".into(),
             petname: "Before".into(),
-            hue: 5,
+            icon: "🐦".into(),
             nickname: None,
             created_at: 1_000,
             needs_reconfirm: false,
@@ -895,7 +984,7 @@ pub(crate) async fn post_seal_add_act(
         UsMark {
             provenance: "https://after.example/".into(),
             petname: "After".into(),
-            hue: 7,
+            icon: "🦋".into(),
             nickname: None,
             created_at: 2_000,
             needs_reconfirm: false,
@@ -1055,7 +1144,7 @@ pub(crate) async fn full_history_act(
             UsMark {
                 provenance: format!("https://pre-{i}.example/"),
                 petname: format!("Pre{i}"),
-                hue: (i % 10) as u16,
+                icon: format!("{i}"),
                 nickname: None,
                 created_at: 1_000 + i as u64,
                 needs_reconfirm: false,
@@ -1082,7 +1171,7 @@ pub(crate) async fn full_history_act(
             UsMark {
                 provenance: "https://post.example/".into(),
                 petname: "Post".into(),
-                hue: 8,
+                icon: "📮".into(),
                 nickname: None,
                 created_at: 5_000,
                 needs_reconfirm: false,
@@ -1107,7 +1196,7 @@ pub(crate) async fn full_history_act(
             UsMark {
                 provenance: "https://post.example/".into(),
                 petname: "Post".into(),
-                hue: 8,
+                icon: "📮".into(),
                 nickname: None,
                 created_at: 5_000,
                 needs_reconfirm: false,
@@ -1192,17 +1281,17 @@ pub(crate) async fn partitioned_writer_act(
     )
     .await?
     .map_err(|e| format_err!("user-create: {e}"))?;
-    for (prov, name, hue, at) in [
-        ("https://keep.example/", "Keep", 1u16, 1_000u64),
-        ("https://rename.example/", "OldName", 2, 1_100),
-        ("https://forget.example/", "Doomed", 6, 1_200),
+    for (prov, name, icon, at) in [
+        ("https://keep.example/", "Keep", "1", 1_000u64),
+        ("https://rename.example/", "OldName", "2", 1_100),
+        ("https://forget.example/", "Doomed", "6", 1_200),
     ] {
         l.call_us_mark_put(
             acc,
             UsMark {
                 provenance: prov.into(),
                 petname: name.into(),
-                hue,
+                icon: icon.into(),
                 nickname: None,
                 created_at: at,
                 needs_reconfirm: false,
@@ -1231,7 +1320,7 @@ pub(crate) async fn partitioned_writer_act(
         UsMark {
             provenance: "https://added.example/".into(),
             petname: "AddedOffline".into(),
-            hue: 9,
+            icon: "9".into(),
             nickname: None,
             created_at: 2_000,
             needs_reconfirm: false,
@@ -1244,7 +1333,7 @@ pub(crate) async fn partitioned_writer_act(
         UsMark {
             provenance: "https://rename.example/".into(),
             petname: "NewName".into(),
-            hue: 2,
+            icon: "2".into(),
             nickname: None,
             created_at: 1_100,
             needs_reconfirm: false,

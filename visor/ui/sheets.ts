@@ -34,8 +34,11 @@
 // visor-voiced strings.
 
 import {
+  APP_MARK_ICONS,
   identityIcon,
   IDENTITY_MAX,
+  isAppMarkIcon,
+  markIcon,
   nicknameQuote,
   type SurfaceIdentity,
   type Visor,
@@ -44,27 +47,43 @@ import {
   type VisorIdentity,
 } from "./visor.ts";
 
-// --- the trust table: assigned marks, first sight, and the user's word ---------
+// --- the trust table: pet icons, first sight, and the user's word -------------
 //
-// Surface marks: the recognition colour the visor shows for a component is
-// ASSIGNED at first sight and stored in a trust record — never derived.
+// Surface marks: the recognition mark the visor shows for a component is
+// a PET ICON the USER picks in the naming ceremony, from the visor's
+// curated vocabulary (visor.ts's APP_MARK_ICONS) — never derived, and
+// never chosen by the visor on the user's behalf.
 //
-// Two derivations died here, both to the same attack: making THE VISOR'S
-// OWN STRIP vouch the wrong colour. Deriving from component bytes let an
+// WHAT THIS REPLACED. The mark used to be a hue out of the anchor
+// palette, rendered as a colour chip. The chip is gone (#22 discussion):
+// the ANCHOR colour keeps every job it had — visor-vs-app contrast and
+// the spoof lottery — but per-app colour MEMORY was the weak half of the
+// scheme. "The blue one" is not something a user can name, rehearse or
+// check, and ten hues run out after ten components. A glyph is nameable
+// and discriminable, and the vocabulary is big enough that local
+// uniqueness stays real.
+//
+// Two derivations died here BEFORE that change, both to the same attack,
+// and the reasoning transfers to glyphs unchanged: making THE VISOR'S
+// OWN STRIP vouch the wrong mark. Deriving from component bytes let an
 // impersonator grind its artifact until the strip assigned it the
-// target's colour (and reshuffled every legitimate update). Deriving
-// from HMAC(user-secret, name) fixed the grind only to reopen it
-// through the other input: names are self-declared, so declaring the
-// target's name yields the target's colour. Any copyable-pixel colour is
-// trivially fakeable INSIDE an attacker's rectangle; the strip is the
-// only place it means anything, so what renders there must not be a
-// function of anything an attacker chooses.
+// target's mark (and reshuffled every legitimate update). Deriving from
+// HMAC(user-secret, name) fixed the grind only to reopen it through the
+// other input: names are self-declared, so declaring the target's name
+// yields the target's mark. Anything copyable is trivially fakeable
+// INSIDE an attacker's rectangle; the strip is the only place it means
+// anything, so what renders there must not be a function of anything an
+// attacker chooses. USER CHOICE is the strongest version of that: the
+// mark is a function of a gesture made in visor pixels.
+//
+// A component may NOMINATE a glyph (see `SurfaceIdentity.nomination`),
+// which is not a derivation and not an assignment: the nomination is one
+// offer among six inside the ceremony, foreign-attributed, and the
+// component is never told whether it was taken.
 //
 // Assignment also buys the property no derivation can: LOCAL
-// UNIQUENESS. Hues are handed out from the unused set, so two trust
-// records on this device never share a mark while the palette lasts
-// (past that, colours stop distinguishing and the framework needs
-// shapes/patterns — recorded, not solved).
+// UNIQUENESS. Icons are offered from the unused set, so two trust
+// records on this device never share a mark while the vocabulary lasts.
 //
 // The record key must be unforgeable PROVENANCE, never self-declared
 // identity — a name that can look up someone else's record is the same
@@ -89,7 +108,16 @@ import {
 // with authority is the one the user chose.
 
 export interface SurfaceMark {
-  hue: number;
+  /** THE PET ICON, a member of `APP_MARK_ICONS` — or "" for UNMARKED.
+   *
+   * "" IS A REAL, HONEST STATE, not a missing value: a record can have a
+   * first-sight timestamp, and even a petname, with no icon. That is
+   * what a component looks like before the user has picked a mark for
+   * it, what a record MIGRATED from the old `hue` schema looks like
+   * (see `load` — a hue is not silently reinterpreted as a glyph), and
+   * what a mark looks like after the partition's conflict repair cleared
+   * the losing side's icon. All three render the same way: no glyph. */
+  icon: string;
   firstSeen: number;
   /** THE PETNAME: the user's own word for this component, typed in
    * the visor's own pixels and stored beside the mark. Optional — records
@@ -115,21 +143,57 @@ export interface SurfaceMarks {
   /** The whole table, for a consumer that renders from it (the demo
    * looks petnames up per pane) and for driving/inspection. */
   load(): Record<string, SurfaceMark>;
-  /** The record for this provenance key, ASSIGNING one — mark hue and
-   * first-sight timestamp — if there is none yet. `isNew` is the TOFU
-   * moment: true exactly on the boot that created the record. */
+  /** The record for this provenance key, CREATING one — first-sight
+   * timestamp, and NO icon — if there is none yet. `isNew` is the TOFU
+   * moment: true exactly on the boot that created the record.
+   *
+   * A fresh record is deliberately UNMARKED: the visor does not roll a
+   * pet icon on the user's behalf. A mark the user did not choose is a
+   * mark they cannot recognise, and inventing one would put a glyph on
+   * the anchor in the visor's own voice about a component the user has
+   * never said a word about. The ceremony is where marks come from. */
   mark(provenance: string): { mark: SurfaceMark; isNew: boolean };
-  /** Commit a petname + mark hue for one record. */
-  setPetname(provenance: string, petname: string, hue: number): void;
+  /** Commit a petname + pet icon for one record. `icon` must be a member
+   * of `APP_MARK_ICONS`, or "" for unmarked; anything else is stored as
+   * "" rather than trusted. */
+  setPetname(provenance: string, petname: string, icon: string): void;
   /** Delete the WHOLE record — mark, first-sight timestamp and petname
    * together. Forgetting must be honest: a component whose petname was
    * dropped but whose mark survived would still be greeted as familiar.
    * After this the next mount is genuinely NEW again. */
   forget(provenance: string): void;
-  /** The hues no OTHER record is using, plus the one this record already
-   * has. Local uniqueness is the property assignment buys, so the naming
-   * ceremony offers only colours that keep it. */
-  freeHues(provenance: string): number[];
+  /** The pet icons no OTHER record is using. Local uniqueness is the
+   * property assignment buys, so the ceremony only ever offers marks
+   * that keep it. This record's OWN icon is included (re-picking what
+   * you already wear is not a collision). */
+  freeIcons(provenance: string): string[];
+  /** THE CEREMONY'S SIX OFFERS, in render order.
+   *
+   * `nomination` is the glyph the component asked to wear, ALREADY
+   * VALIDATED by the consumer at the seam (`isAppMarkIcon` — see
+   * `SurfaceIdentity.nomination`). It is offered FIRST, and flagged so
+   * the sheet can attribute it to the component rather than to the
+   * visor — but only if it is genuinely free; a nomination for a glyph
+   * another record already wears is DROPPED SILENTLY, exactly like an
+   * invalid one. The component learns nothing either way: nothing about
+   * the picker or its outcome ever crosses the seam (the same discipline
+   * as invariant (e)).
+   *
+   * When this record already HAS a mark, that glyph is always among the
+   * offers (the sheet preselects it), so opening the ceremony to change
+   * a petname cannot silently cost a component its mark.
+   *
+   * The rest are drawn AT RANDOM from the free set, freshly per
+   * ceremony. That randomness is deliberate and ecosystem-scale: a
+   * stable global ordering would mean every user on every device sees
+   * the same first few glyphs, so an app's nomination would win by
+   * default-bias alone and a de-facto brand would form out of nothing
+   * but list order. Marks are the USER's vocabulary, not a namespace to
+   * be squatted. */
+  iconOffers(
+    provenance: string,
+    nomination?: string,
+  ): Array<{ glyph: string; nominated: boolean }>;
   /** Is this word already the user's name for a DIFFERENT component?
    * Two records answering to one word would defeat the whole point of a
    * petname — the user would have no way to tell which one is speaking.
@@ -139,16 +203,67 @@ export interface SurfaceMarks {
   collision(provenance: string, petname: string): { key: string; petname: string } | null;
 }
 
+/** How many marks the naming ceremony offers. Six: enough that the
+ * choice feels like a choice and a nomination cannot be the only thing
+ * on screen, few enough to scan in one glance on a phone. */
+export const ICON_OFFERS = 6;
+
 /** Build a facade over one consumer's trust table. Stateless — see
  * `SurfaceMarks`. */
 export function createSurfaceMarks(marksKey: string): SurfaceMarks {
+  /** Read the table, NORMALISING every record on the way out.
+   *
+   * This is also the `hue` -> `icon` MIGRATION (#22 discussion), and it
+   * is deliberately a lossy one: a record written under the old schema
+   * carries a palette index, and there is no honest way to turn a number
+   * into a glyph the user would recognise. So it becomes UNMARKED. The
+   * visor does not invent a mark and pretend the user picked it — that
+   * would be the announced-never-silent rule broken by a schema change,
+   * which is the quietest possible way to break it. The strip simply
+   * shows no glyph until the user next opens the ceremony, and the
+   * petname and first-sight date (the parts that ARE the user's) survive
+   * untouched.
+   *
+   * Storage is hand-editable, so this is ALSO the read-side gate: an
+   * icon that is not a member of the curated vocabulary is read as ""
+   * rather than rendered (see `isAppMarkIcon` for what that refuses and
+   * why). Normalisation is not written back — a read is a read — so it
+   * is idempotent and cannot corrupt a record it merely displayed. */
   const load = (): Record<string, SurfaceMark> => {
     try {
-      const table = JSON.parse(localStorage.getItem(marksKey) ?? "{}");
-      return (table && typeof table === "object") ? table as Record<string, SurfaceMark> : {};
+      const raw = JSON.parse(localStorage.getItem(marksKey) ?? "{}");
+      if (!raw || typeof raw !== "object") return {};
+      const out: Record<string, SurfaceMark> = {};
+      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        if (!value || typeof value !== "object") continue;
+        const rec = value as Record<string, unknown>;
+        const icon = typeof rec.icon === "string" && isAppMarkIcon(rec.icon) ? rec.icon : "";
+        const mark: SurfaceMark = {
+          icon,
+          firstSeen: typeof rec.firstSeen === "number" ? rec.firstSeen : Date.now(),
+        };
+        if (typeof rec.petname === "string" && rec.petname.trim() !== "") {
+          mark.petname = rec.petname;
+        }
+        out[key] = mark;
+      }
+      return out;
     } catch {
       return {};
     }
+  };
+
+  /** The icons no OTHER record wears — see `SurfaceMarks.freeIcons`. A
+   * plain function rather than a method so that neither the facade's own
+   * `iconOffers` nor a destructuring consumer depends on `this`. */
+  const freeIcons = (provenance: string): string[] => {
+    const used = new Set(
+      Object.entries(load())
+        .filter(([k]) => k !== provenance)
+        .map(([, m]) => m.icon)
+        .filter((i) => i !== ""),
+    );
+    return APP_MARK_ICONS.filter((g) => !used.has(g));
   };
 
   const save = (table: Record<string, SurfaceMark>): void => {
@@ -163,19 +278,20 @@ export function createSurfaceMarks(marksKey: string): SurfaceMarks {
       const table = load();
       const existing = table[provenance];
       if (existing) return { mark: existing, isNew: false };
-      const used = new Set(Object.values(table).map((m) => m.hue));
-      const free = VISOR_HUES.filter((h) => !used.has(h));
-      const pool = free.length > 0 ? free : VISOR_HUES;
-      const hue = pool[Math.floor(Math.random() * pool.length)];
-      const mark = { hue, firstSeen: Date.now() };
+      // NO ICON IS ROLLED HERE. First sight creates the record and the
+      // timestamp; the MARK is the user's to choose, in the ceremony.
+      const mark: SurfaceMark = { icon: "", firstSeen: Date.now() };
       table[provenance] = mark;
       save(table);
       return { mark, isNew: true };
     },
-    setPetname(provenance, petname, hue) {
+    setPetname(provenance, petname, icon) {
       const table = load();
-      const mark = table[provenance] ?? { hue, firstSeen: Date.now() };
-      mark.hue = hue;
+      const mark = table[provenance] ?? { icon: "", firstSeen: Date.now() };
+      // The write-side gate, mirroring `load`'s read-side one: a glyph
+      // that is not in the curated vocabulary is stored as UNMARKED
+      // rather than persisted and rendered later.
+      mark.icon = isAppMarkIcon(icon) ? icon : "";
       mark.petname = petname;
       table[provenance] = mark;
       save(table);
@@ -185,13 +301,42 @@ export function createSurfaceMarks(marksKey: string): SurfaceMarks {
       delete table[provenance];
       save(table);
     },
-    freeHues(provenance) {
-      const table = load();
-      const used = new Set(
-        Object.entries(table).filter(([k]) => k !== provenance).map(([, m]) => m.hue),
-      );
-      const mine = table[provenance]?.hue;
-      return VISOR_HUES.filter((h) => !used.has(h) || h === mine);
+    freeIcons,
+    iconOffers(provenance, nomination) {
+      const free = freeIcons(provenance);
+      const mine = load()[provenance]?.icon ?? "";
+      const offers: Array<{ glyph: string; nominated: boolean }> = [];
+      const taken = new Set<string>();
+      const push = (glyph: string, nominated: boolean) => {
+        if (glyph === "" || taken.has(glyph)) return;
+        taken.add(glyph);
+        offers.push({ glyph, nominated });
+      };
+      // FIRST, and only if it survives BOTH tests: valid (the consumer
+      // checked that at the seam) and unclaimed. A claimed nomination is
+      // dropped in silence — telling the user "the app wanted a glyph
+      // somebody else has" would be the visor relaying a component's
+      // request in the visor's own voice, for no decision the user has
+      // to make.
+      if (nomination !== undefined && isAppMarkIcon(nomination) && free.includes(nomination)) {
+        push(nomination, true);
+      }
+      // The mark this record already wears, so a rename cannot lose it.
+      push(mine, false);
+      // The rest: a fresh shuffle of the free set, per ceremony (see
+      // `iconOffers` on the interface for why the order must not be
+      // stable). Fisher-Yates over a copy — the pool is the caller's
+      // array, and shuffling it in place would be a surprise.
+      const pool = free.filter((g) => !taken.has(g));
+      for (let i = pool.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      for (const g of pool) {
+        if (offers.length >= ICON_OFFERS) break;
+        push(g, false);
+      }
+      return offers.slice(0, ICON_OFFERS);
     },
     collision(provenance, petname) {
       const want = petname.trim().toLowerCase();
@@ -208,9 +353,9 @@ export function createSurfaceMarks(marksKey: string): SurfaceMarks {
 // --- the two sheets -----------------------------------------------------------
 
 export interface VisorSheetsConfig {
-  /** Where THIS consumer's trust table lives. The palette and the
-   * assignment rule are the framework's; the key is the consumer's, so
-   * two spikes on one origin do not share a table. */
+  /** Where THIS consumer's trust table lives. The pet-icon vocabulary
+   * and the assignment rule are the framework's; the key is the
+   * consumer's, so two spikes on one origin do not share a table. */
   marksKey: string;
   /** Asked before either ceremony opens; false refuses the open outright.
    * This is where a consumer states a precedence its own tenants impose —
@@ -226,7 +371,7 @@ export interface VisorSheetsConfig {
    * the strip is about to reveal — so its panel is retired and the dialog
    * closed first. */
   beforeOpen?: () => void;
-  /** A petname + mark hue were just committed for `provenance`. The
+  /** A petname + pet icon were just committed for `provenance`. The
    * table is already written; this is for the consumer's IN-MEMORY
    * CACHES of the record (the strip renders from those, so a commit that
    * only touched storage would leave the anchor showing yesterday's
@@ -237,7 +382,7 @@ export interface VisorSheetsConfig {
    * identity should clear its NEW badge. "First time this component draws
    * here" and the user's own name for it are contradictory claims to make
    * side by side. */
-  onNamed?: (provenance: string, petname: string, hue: number) => void;
+  onNamed?: (provenance: string, petname: string, icon: string) => void;
   /** The whole record for `provenance` was just deleted. The consumer's
    * caches must stop speaking a name the visor no longer holds. */
   onForgotten?: (provenance: string) => void;
@@ -325,7 +470,7 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
   /** THE NAMING SESSION. The session's `surface` is REASSIGNED after a
    * Save (the sheet may outlive the click, and a re-open is built from
    * this object), so the host holds the object rather than a copy. */
-  const namingTenant = visor.drawer.tenant<{ surface: SurfaceIdentity; hue: number }>({
+  const namingTenant = visor.drawer.tenant<{ surface: SurfaceIdentity; icon: string }>({
     name: "naming",
     context: (s) => ({ ...s.surface, kind: "naming" }),
   });
@@ -360,7 +505,7 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
    * have meant a fourth entry in every occupancy test (see
    * the host's occupancy test), for a sheet that is about exactly what naming was
    * about — this component, and what the user wants to call it. */
-  const buildNameSheet = (surface: SurfaceIdentity, hue: number) => {
+  const buildNameSheet = (surface: SurfaceIdentity, icon: string) => {
     const root = document.createElement("div");
     root.className = "cred-sheet name-sheet armed";
     root.style.maxWidth = "72rem";
@@ -374,13 +519,14 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     // the component says about itself, and what the visor fetched it as.
     const says = document.createElement("div");
     says.className = "cred-line";
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.style.background = `oklch(62% .16 ${hue})`;
     const saysLead = document.createElement("span");
     saysLead.className = "said";
     saysLead.textContent = "calls itself";
-    says.append(chip, saysLead, nicknameQuote(surface.nickname));
+    // The record's pet icon, when it has one — same rule as the strip:
+    // no mark, no glyph, no placeholder.
+    const currentIcon = markIcon(icon);
+    if (currentIcon) says.append(currentIcon);
+    says.append(saysLead, nicknameQuote(surface.nickname));
 
     const from = document.createElement("div");
     from.className = "cred-line";
@@ -453,27 +599,73 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
       "the visor will use this name in its own voice; what the component calls itself stays quoted";
     field.append(label, input, hint);
 
-    // Mark hue: the current one preselected, plus every hue no other
-    // record is using (local uniqueness — see freeHues).
-    const swatchLabel = document.createElement("div");
-    swatchLabel.className = "cred-line said";
-    swatchLabel.textContent = "recognition colour";
-    const swatchRow = document.createElement("div");
-    swatchRow.className = "name-swatches";
-    let picked = hue;
+    // THE PET ICON PICKER (was the recognition-colour swatch row).
+    //
+    // Six offers, every one of them a glyph no other trust record wears
+    // (local uniqueness — see `iconOffers`), in a fresh random order per
+    // ceremony. The record's CURRENT mark is always among them and comes
+    // preselected, so opening this sheet to fix a typo in a petname can
+    // never cost a component its mark by accident.
+    //
+    // A record with NO mark starts with nothing selected, and Save is
+    // perfectly happy with that: "" is a real state, and a user who does
+    // not want to think about glyphs today gets a petname and no mark
+    // rather than a mark the visor picked for them. THIS IS ALSO THE
+    // RE-OFFER PATH for a mark the account's conflict repair cleared:
+    // the engine resolves an icon collision by clearing the LOSER's icon
+    // and setting needs-reconfirm, and it does not choose a replacement
+    // — it cannot, because the vocabulary and the curation rules are the
+    // VISOR's, not the partition's. So the repaired record arrives here
+    // unmarked and the ceremony simply offers six free glyphs again.
+    const iconLabel = document.createElement("div");
+    iconLabel.className = "cred-line said";
+    iconLabel.textContent = "a mark you will recognise";
+    const offers = marks.iconOffers(surface.name, surface.nomination);
+
+    // THE FOREIGN ATTRIBUTION. A component may ask to wear a particular
+    // glyph, and when the ask survives validation and is unclaimed it is
+    // offered FIRST — but it is never offered in the visor's own voice.
+    // The visor says the sentence; the component's glyph is quoted, the
+    // same way its nickname is, and the button carries `.nominated` so
+    // it is visually not one of the visor's own offers. Adoption is the
+    // USER's act, and the component is never told the outcome.
+    const nominationLine = document.createElement("div");
+    nominationLine.className = "cred-line name-nomination";
+    const nominated = offers.find((o) => o.nominated);
+    if (nominated) {
+      const asksLead = document.createElement("span");
+      asksLead.className = "said";
+      asksLead.textContent = "it asks to wear";
+      const asksTail = document.createElement("span");
+      asksTail.className = "said";
+      asksTail.textContent = "— offered first below; the rest are the visor's own";
+      const q = document.createElement("q");
+      q.className = "foreign";
+      q.textContent = nominated.glyph;
+      nominationLine.append(asksLead, q, asksTail);
+    }
+
+    const iconRow = document.createElement("div");
+    iconRow.className = "name-icons";
+    let picked = isAppMarkIcon(icon) ? icon : "";
     const buttons: HTMLButtonElement[] = [];
-    for (const h of marks.freeHues(surface.name)) {
+    for (const offer of offers) {
       const b = document.createElement("button");
       b.type = "button";
-      b.style.background = `oklch(62% .16 ${h})`;
-      b.title = `hue ${h}`;
-      b.classList.toggle("picked", h === hue);
+      b.textContent = offer.glyph;
+      b.dataset.glyph = offer.glyph;
+      if (offer.nominated) b.dataset.nominated = "true";
+      // THE VISOR'S OWN WORDS on both, and no component string in
+      // either: the nominated one is described, never quoted, here.
+      b.title = offer.nominated ? "the component asked for this one" : "use this mark";
+      b.classList.toggle("nominated", offer.nominated);
+      b.classList.toggle("picked", offer.glyph === picked);
       b.onclick = () => {
-        picked = h;
+        picked = offer.glyph;
         for (const other of buttons) other.classList.toggle("picked", other === b);
       };
       buttons.push(b);
-      swatchRow.append(b);
+      iconRow.append(b);
     }
 
     const reason = document.createElement("div");
@@ -505,17 +697,19 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
       forgetBtn.textContent = "forget this component";
       const forgetNote = document.createElement("span");
       forgetNote.className = "hint";
-      forgetNote.textContent = "drops the name AND the colour — next time it is NEW again";
+      forgetNote.textContent = "drops the name AND the mark — next time it is NEW again";
       forgetRow.append(forgetBtn, forgetNote);
     }
 
     root.append(h, says, from);
     if (surface.firstSeen !== undefined) root.append(seen);
     if (surface.meta) root.append(meta);
-    root.append(field, swatchLabel, swatchRow, note, reason, row);
+    root.append(field, iconLabel);
+    if (nominated) root.append(nominationLine);
+    root.append(iconRow, note, reason, row);
 
     if (forgetBtn) root.append(forgetRow);
-    return { root, input, saveBtn, cancelBtn, forgetBtn, reason, hue: () => picked };
+    return { root, input, saveBtn, cancelBtn, forgetBtn, reason, icon: () => picked };
   };
 
   const openNamingDrawer = (surface: SurfaceIdentity) => {
@@ -527,9 +721,9 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     // this sheet is about to claim. The two LIGHTWEIGHT tenants evict
     // each other freely — neither holds anything a user would lose by a
     // click on the strip.
-    const session = { surface, hue: surface.hue };
+    const session = { surface, icon: surface.icon };
     namingTenant.open(session, () => {
-      const built = buildNameSheet(surface, surface.hue);
+      const built = buildNameSheet(surface, surface.icon);
 
       const finish = (status: string) => {
         closeNaming();
@@ -562,7 +756,7 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
             `you already call another component "${clash.petname}" (fetched as ${clash.key}) — pick a different name`;
           return;
         }
-        marks.setPetname(surface.name, petname, built.hue());
+        marks.setPetname(surface.name, petname, built.icon());
         // The consumer's in-memory surfaces are a CACHE of the record; the
         // strip renders from them, so a commit that only touched storage
         // would leave the anchor showing yesterday's answer.
@@ -575,11 +769,11 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
         // decided what to call it, they have done the recognising the
         // badge was asking for. (Forgetting is untouched: it deletes the
         // record, so the next mount is honestly NEW again.)
-        config.onNamed?.(surface.name, petname, built.hue());
+        config.onNamed?.(surface.name, petname, built.icon());
         // The session's own surface object: the sheet may outlive this
         // click (Save leaves it up only briefly, but the object is also
         // what a re-open would be built from).
-        session.surface = { ...session.surface, petname, hue: built.hue(), isNew: false };
+        session.surface = { ...session.surface, petname, icon: built.icon(), isNew: false };
         finish(`saved — the visor will call this component ${petname} from now on`);
       };
       built.cancelBtn.onclick = () => {

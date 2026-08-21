@@ -242,6 +242,22 @@ impl Guest for Component {
     fn nickname() -> String {
         "S3 object storage".to_string()
     }
+
+    /// What this component ASKS TO WEAR in the user's trust table (#22).
+    ///
+    /// A NOMINATION, not an assignment, and the guest is built to feel
+    /// the difference: there is no companion import, no return value, no
+    /// way to find out what happened. The visor shows this glyph in one
+    /// place only — inside the naming ceremony's picker, quoted as the
+    /// component's own, beside five the visor chose — and only if it is
+    /// in the visor's curated vocabulary AND unclaimed. If the user
+    /// takes it, the mark becomes THEIRS; if they pick another, or
+    /// never open the ceremony, this component is never told.
+    ///
+    /// U+2697 ALEMBIC — a vessel things are kept in.
+    fn mark_nomination() -> Option<String> {
+        Some("⚗".to_string())
+    }
 }
 
 export!(Component);

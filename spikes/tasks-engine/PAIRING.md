@@ -101,8 +101,8 @@ reject-on-unknown, per NOTES).
   causal-key read-back.
 - After ENROLL the joiner pulls the user-system doc, decrypts the
   anchor chunk, causal-walks the ancestry, materializes, and adopts
-  profile state; the visor announces the adoption (hue + name arriving is
-  a remotely-caused change, #22: announced).
+  profile state; the visor announces the adoption (profile hue + name
+  arriving is a remotely-caused change, #22: announced).
 
 Threat notes (carry into #1 later): shoulder-surfed/photographed code ⇒
 attacker can race the claim; SAS mismatch + single-claim + dual-confirm
@@ -167,7 +167,13 @@ Added to `interface driver`:
     record us-mark {
         provenance: string,
         petname: string,
-        hue: u16,
+        /// The canonical pet-icon glyph: a single Unicode scalar from
+        /// the visor's curated set (#22). The ENGINE treats this as an
+        /// opaque string and repairs uniqueness on exact equality only
+        /// — confusability across glyphs is handled visor-side, by
+        /// construction of the curated set (one glyph per visual
+        /// class).
+        icon: string,
         nickname: option<string>,
         created-at: u64,
         needs-reconfirm: bool,    // set by conflict repair; cleared by us-mark-confirm
@@ -184,7 +190,7 @@ Added to `interface driver`:
         profile-changed,
         mark-added(string),                       // provenance
         mark-changed(string),
-        mark-conflict-repaired(tuple<string, string>), // (provenance, "petname"|"hue")
+        mark-conflict-repaired(tuple<string, string>), // (provenance, "petname"|"icon")
         device-added(string),                     // name
         device-revoked(string),
     }
@@ -223,19 +229,24 @@ Added to `interface driver`:
   (single founding member — no add-before-seal window needed; the
   pairing path adds devices to the GROUP, which CGKA-propagates).
 - **Marks invariants + repair** (runs after every remote apply):
-  petname uniqueness (case-insensitive) and hue uniqueness are
-  cross-record invariants. **Hues are palette indices** (u16 index into
-  the #22 framework palette, ~10 entries), not raw angles. On
+  petname uniqueness (case-insensitive) and pet-icon uniqueness are
+  cross-record invariants. **Icons are a single Unicode scalar** from a
+  visor-curated set (#22); the engine treats an icon as an opaque
+  string and repairs on exact equality only — confusability across
+  glyphs is handled by the visor's curation, not the engine. On
   violation, the **older record wins** (`created-at`, tie-break
   lexicographic provenance):
   - petname collision: loser keeps its petname bytes but reports
     `needs-reconfirm = true` (derived, not stored, is acceptable —
     the visor renders NEW-with-explanation at next mount; `us-mark-confirm`
     records the exact petname confirmed and clears until it changes);
-  - hue collision: loser is auto-reassigned the smallest unused palette
-    index; if the palette is exhausted, the collision stands (matches
-    assignment-time behaviour — uniqueness is only promisable while
-    unused hues exist).
+  - icon collision: the engine cannot invent a replacement glyph (the
+    curated vocabulary is the visor's), so the loser's icon is cleared
+    to `""` (empty = unmarked/needs-reassignment) and `needs-reconfirm`
+    is set — the visor re-offers its picker on reconfirm. `""` is
+    derived as always needing reconfirm (whether freshly-created with
+    no icon, or cleared by a repair): the flag is self-stable across
+    repeated repair computation, unlike a hue reassignment would be.
   Both emit `mark-conflict-repaired`. Repair must be deterministic:
   every device computes the same outcome from the same doc state, no
   repair-write ping-pong (repair writes only from the device that
