@@ -1592,6 +1592,36 @@ exists (#5-adjacent), and revoke-on-leave (the departed device stays
 in the grant table until another device revokes it); account-wide
 erase, if ever, is its own ceremony with its own statement.
 
+**The erase entry moves to the corner; settings suspends beneath the
+ceremony** (2026-08-21, addendum to the entry above, after the picker
+entry's suspension machinery landed). Two revisions. PLACEMENT: the
+danger button moves from danger-last (below Save/Cancel) to the
+sheet's UPPER-RIGHT, beside the heading in a `.settings-head` row.
+The corner buys the old placement's distance a better way — the
+button's only neighbour is inert text, so a mis-aim costs nothing,
+where the old position sat one row from a fat-fingered Cancel — and
+an exit deserves to be visible on arrival rather than discovered by
+travel; the ceremony (arming + typed word) is the actual guard, so
+discoverability no longer trades against safety. MOTION: entering
+the ceremony now SUSPENDS the settings sheet (the picker entry's
+second motion, adopted): settings slides out left, the erase sheet
+slides in from the right, and Cancel brings settings back rebuilt —
+"one step further in, and now you are back", which is exactly what
+the erase entry is and what a naming ceremony opened from the strip
+is not, so the suspension is flag-scoped to this one step and every
+other displacer keeps plain eviction. Consequences handled by hand:
+the live hue preview is reverted at entry (suspension bypasses the
+tenant's cancel-revert, and an uncommitted colour must neither paint
+the statement of consequence nor disagree with the rebuilt sheet's
+swatches); the strip cluster is NOT tappable while the erase sheet
+is up (kind "reset" joins credentials/naming/storage — a stray tap
+on the anchor must not displace a destructive ceremony mid-decision,
+and naming's eviction would resume settings mid-open and clobber
+it). One general host fix fell out: `restoreContext` now SKIPS
+suspended tenants — a suspended session is alive but its claim to
+the strip is dormant, and the picker's own suspension was only ever
+saved from the same false statement by registration order.
+
 **The storage picker moves above the bar; commitment never leaves it**
 (2026-08-21, #22, ruling set — implementation follows). The provider
 CHOICE was the last consequential act living in forgeable territory
