@@ -36,7 +36,7 @@
 // SCOPING DISCIPLINE, inherited unchanged from visor.ts: nothing here is
 // written to the document root, handed to a guest, or put on the frame
 // seam. Petnames in particular never cross it — see
-// spikes/demo/scripts/check-invariants.sh check (a), and check (b), whose
+// demo/scripts/check-invariants.sh check (a), and check (b), whose
 // VISOR_RENDERERS list includes this file precisely because it renders
 // visor-voiced strings.
 

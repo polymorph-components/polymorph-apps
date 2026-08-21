@@ -58,10 +58,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            spikes/tasks-engine
-            spikes/demo/guest-app
-            spikes/demo/guest-panel-s3
-            spikes/demo/guest-panel-dropbox
+            engine
+            examples/todomvc/guest
+            providers/s3/panel
+            providers/dropbox/panel
           cache-all-crates: true
           cache-bin: false
           # The SAME entry the Pages build job saves — the expression must
@@ -80,12 +80,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Read the pinned Playwright version
-        # The pin lives in ONE place (spikes/demo/justfile) so the
+        # The pin lives in ONE place (demo/justfile) so the
         # installed browser revision and the library that launches it
         # cannot drift. The cache key follows it: a version bump is a
         # different browser build and must not restore the old one.
         id: pw
-        working-directory: spikes/demo
+        working-directory: demo
         run: |
           version=$(sed -n 's/^PLAYWRIGHT := "npm:playwright@\(.*\)"$/\1/p' justfile)
           test -n "$version" || { echo "could not read the Playwright pin from the justfile" >&2; exit 1; }
@@ -103,18 +103,18 @@ jobs:
         # real S3 to talk to (and one of them needs it to stop answering).
         uses: actions/cache@v4
         with:
-          path: spikes/tasks-engine/.deps/minio
+          path: engine/.deps/minio
           key: minio-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: Install the browser and the store
         # Probe-then-install: a restored cache makes this a no-op beyond
         # the launch probe. `install-deps` (system libraries for Chromium)
         # runs inside the recipe when CI is set.
-        working-directory: spikes/demo
+        working-directory: demo
         run: just e2e-deps
 
       - name: Run the scenarios
-        working-directory: spikes/demo
+        working-directory: demo
         run: just e2e
         env:
           # Browser-process lifecycle into the job log (launch args, child
@@ -129,5 +129,5 @@ jobs:
         # Cheap, and it fails for reasons the scenarios cannot see: these
         # are properties of the SOURCE TEXT (the petname never crossing
         # the frame seam, no key export path) rather than of a run.
-        working-directory: spikes/demo
+        working-directory: demo
         run: just check
