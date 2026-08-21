@@ -168,7 +168,11 @@ export interface UsProfile {
 export interface UsMark {
   provenance: string;
   petname: string;
-  hue: number;
+  /** The pet-icon glyph (spike.wit's `us-mark.icon`), or "" for
+   * unmarked. Opaque to the engine — repair is exact-equality only; the
+   * curated vocabulary and its confusability rules are the visor's
+   * (visor/ui/visor.ts's APP_MARK_ICONS). Was `hue: u16` (#22). */
+  icon: string;
   nickname?: string;
   createdAt: bigint;
   needsReconfirm: boolean; // set by conflict repair; cleared by usMarkConfirm
@@ -185,7 +189,7 @@ export type UsEvent =
   | { tag: "profile-changed" }
   | { tag: "mark-added"; val: string } // provenance
   | { tag: "mark-changed"; val: string }
-  | { tag: "mark-conflict-repaired"; val: [string, string] } // (provenance, "petname"|"hue")
+  | { tag: "mark-conflict-repaired"; val: [string, string] } // (provenance, "petname"|"icon")
   | { tag: "device-added"; val: string } // name
   | { tag: "device-revoked"; val: string };
 

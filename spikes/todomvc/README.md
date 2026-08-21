@@ -219,9 +219,13 @@ What stays in this spike's own `host/visor.ts` is this page's OWN storage
 keys (`pm-todomvc-visor-hue`, `pm-todomvc-identity`,
 `pm-todomvc-surface-marks` — no legacy migration key, unlike the demo's
 #22 rename) and its one row in the trust table: one artifact, one record,
-its recognition hue ASSIGNED from the unused palette at first sight like
-any other, and its petname SEEDED with this page's historical word
-`"TodoMVC"` on first run. From there it is an ordinary petname — clicking
+created UNMARKED at first sight like any other (the recognition mark is a
+PET ICON the user picks in the ceremony — the colour chip is gone, see
+the demo spike's README), and its petname SEEDED with this page's
+historical word `"TodoMVC"` on first run. The NAME is seeded; the MARK is
+not — inventing a glyph the user never chose would be the visor putting a
+recognition mark on its own anchor, so the strip shows the word and no
+glyph until the ceremony is opened. From there it is an ordinary petname — clicking
 it on the strip opens the real naming ceremony, a rename persists in this
 page's own marks table, and the identity button opens the real settings
 sheet (name, device, glyph, anchor hue with live preview and revert).

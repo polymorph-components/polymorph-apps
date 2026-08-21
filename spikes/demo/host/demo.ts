@@ -24,6 +24,8 @@ import { createSurface } from "../../../visor/surface/surface.ts";
 // the three sheets it registers as drawer tenants.
 import {
   initVisor,
+  isAppMarkIcon,
+  markIcon,
   nicknameQuote,
   petnameSpan,
   type SurfaceIdentity,
@@ -821,6 +823,8 @@ interface AppExports {
    * like the panels' — read once, clamped, rendered only as
    * foreign-quoted text, never a table key. */
   nickname(): Promise<string>;
+  /** What the app ASKS TO WEAR — see `readNomination`. */
+  markNomination(): Promise<string | undefined>;
 }
 
 /** The `s3-panel` / `dropbox-panel` worlds: seed → run → on-event pump,
@@ -847,6 +851,8 @@ interface PanelExports {
    * once at mount, clamped, and rendered only as foreign-quoted text.
    * It is never a table key and never the visor's own voice. */
   nickname(): Promise<string>;
+  /** What the panel ASKS TO WEAR — see `readNomination`. */
+  markNomination(): Promise<string | undefined>;
 }
 
 /** The visor's own normalization of a panel-reported destination: parse
@@ -856,6 +862,49 @@ interface PanelExports {
  * defence we want, since the comparison and the display then agree).
  * `null` for anything empty or unparseable, and for opaque origins
  * ("null") which cannot be compared meaningfully. */
+/** READ A COMPONENT'S PET-ICON NOMINATION, AND VALIDATE IT AT THE SEAM.
+ *
+ * `mark-nomination` is a component saying which glyph it would like to
+ * wear in the user's trust table. It is the only component-influenced
+ * value in the whole mark story, so it gets the strictest handling of
+ * any string this file reads:
+ *
+ *   - VALIDATED HERE, at the crossing, not at the render site. The
+ *     visor's curated vocabulary is a fixed list of single BMP scalars
+ *     (`isAppMarkIcon`), and anything else — a bidi override, a ZWJ
+ *     sequence that composes into a colour emoji, a homoglyph of the
+ *     visor's OWN button glyph, a paragraph — is dropped RIGHT HERE, so
+ *     an invalid string never reaches a render path at all. Not the
+ *     strip, not a sheet, not even the ceremony's picker. That
+ *     adjacency (the call beside the read) is invariant (g) in
+ *     scripts/check-invariants.sh.
+ *   - NEVER A KEY. The trust record is addressed by provenance; a
+ *     nomination addresses nothing.
+ *   - NEVER SPOKEN IN THE VISOR'S VOICE unless the user adopts it. It
+ *     surfaces in exactly one place, the naming ceremony's picker,
+ *     first and foreign-attributed (visor/ui/sheets.ts).
+ *   - WRITE-ONLY, from the component's side: it is read once at mount
+ *     and the component is never told whether it was offered, whether
+ *     it was taken, or what the user picked instead. Nothing about the
+ *     picker or its outcome crosses the seam — the same discipline
+ *     invariant (e) keeps for the user's identity.
+ *
+ * Failure discipline matches `nickname`: a trap, a hang or a refusal is
+ * a warning on the console and no nomination, never a broken boot. */
+async function readMarkNomination(
+  label: string,
+  read: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+  try {
+    const asked = await read();
+    if (typeof asked !== "string") return undefined;
+    return isAppMarkIcon(asked) ? asked : undefined;
+  } catch (e) {
+    console.warn(`[${label}] mark-nomination: ${err(e)}`);
+    return undefined;
+  }
+}
+
 function normalizeOrigin(raw: string): string | null {
   const s = (raw ?? "").trim();
   if (s === "") return null;
@@ -1198,10 +1247,22 @@ async function boot() {
   } catch (e) {
     console.warn(`[app] nickname: ${err(e)}`);
   }
+  // WHAT THE APP ASKS TO WEAR: read ONCE, right beside the nickname, and
+  // validated at the crossing (see `readMarkNomination`). It reaches
+  // exactly one render path — the naming ceremony's picker — and only if
+  // it is also unclaimed.
+  const appNomination = await readMarkNomination(
+    "app",
+    async () =>
+      alice.app && alice.runner
+        ? await alice.runner.call(() => alice.app!.markNomination())
+        : undefined,
+  );
   appSurface = {
     name: APP_ARTIFACT,
     nickname: appNickname,
-    hue: appMark.hue,
+    icon: appMark.icon,
+    nomination: appNomination,
     isNew: appIsNew,
     petname: appMark.petname,
     firstSeen: appMark.firstSeen,
@@ -1901,7 +1962,7 @@ async function boot() {
    * block; a no-op until the driver exists, since localStorage — the
    * boot cache — has already been written by the visor itself either
    * way. */
-  let writeThroughMark: (provenance: string, petname: string, hue: number) => void = () => {};
+  let writeThroughMark: (provenance: string, petname: string, icon: string) => void = () => {};
   let forgetThroughMark: (provenance: string) => void = () => {};
   let writeThroughProfile: (displayName: string, hue: number) => void = () => {};
 
@@ -1918,15 +1979,15 @@ async function boot() {
     // strip renders from them, so a commit that only touched storage
     // would leave the anchor showing yesterday's answer. FIRST SIGHT IS
     // OVER on a name: `isNew` is cleared with it.
-    onNamed: (provenance, petname, hue) => {
+    onNamed: (provenance, petname, icon) => {
       // §5: the marks live in the partition now; localStorage (which
       // `SurfaceMarks` has already written) is the boot cache.
-      writeThroughMark(provenance, petname, hue);
+      writeThroughMark(provenance, petname, icon);
       if (appSurface && appSurface.name === provenance) {
-        appSurface = { ...appSurface, petname, hue, isNew: false };
+        appSurface = { ...appSurface, petname, icon, isNew: false };
       }
       if (activePanel && activePanel.surface.name === provenance) {
-        activePanel.surface = { ...activePanel.surface, petname, hue, isNew: false };
+        activePanel.surface = { ...activePanel.surface, petname, icon, isNew: false };
       }
     },
     // Forgetting must be honest on the strip too: the cached petname goes
@@ -1935,8 +1996,17 @@ async function boot() {
     // component; the NEXT mount is the one that is genuinely new again.)
     onForgotten: (provenance) => {
       forgetThroughMark(provenance);
+      // BOTH HALVES GO. The record held a name AND a mark; forgetting
+      // deletes the record, so a cached surface that kept its glyph
+      // would leave the strip wearing a mark the visor no longer holds
+      // — the colour-chip version of exactly the dishonesty the forget
+      // path exists to prevent ("dropped the name but still greeted as
+      // familiar").
       if (appSurface && appSurface.name === provenance) {
-        appSurface = { ...appSurface, petname: undefined };
+        appSurface = { ...appSurface, petname: undefined, icon: "" };
+      }
+      if (activePanel && activePanel.surface.name === provenance) {
+        activePanel.surface = { ...activePanel.surface, petname: undefined, icon: "" };
       }
     },
     // The profile half of the same demotion: the user's name and their
@@ -2005,19 +2075,19 @@ async function boot() {
     const h = document.createElement("h2");
     h.textContent = "Storage credentials";
 
-    // The requesting provider, by its surface mark: same chip colour the
-    // strip showed while its panel was up. WHO is named the same way the
-    // strip names it — the user's petname in the visor's voice when there is
+    // The requesting provider, by its surface mark: the same PET ICON the
+    // strip showed while its panel was up — or nothing at all, if the
+    // user has not marked it yet. WHO is named the same way the strip
+    // names it — the user's petname in the visor's voice when there is
     // one, with the component's self-description demoted to a foreign
     // footnote; otherwise only what the component calls itself, quoted.
     const who = document.createElement("div");
     who.className = "cred-line";
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.style.background = `oklch(62% .16 ${session.surface.hue})`;
     const lead = document.createElement("span");
     lead.textContent = "requested by";
-    who.append(lead, chip);
+    who.append(lead);
+    const mark = markIcon(session.surface.icon);
+    if (mark) who.append(mark);
     const petname = (session.surface.petname ?? "").trim();
     if (petname !== "") {
       const said = document.createElement("span");
@@ -2303,25 +2373,33 @@ async function boot() {
       panelArtifacts.set(name, art);
     }
     if (generation !== panelGeneration) return;
-    // Bind the surface's identity into the strip BEFORE it can draw: the
-    // hue is derived from the component's own bytes (assigned, not
-    // chosen), and the same value tints the region's edge so the
-    // untrusted rectangle and its visor label visibly agree.
-    // The mark is looked up by PROVENANCE (the visor fetched this artifact
-    // itself, by this name, from its own origin) and assigned on first
-    // sight — see visor/ui/sheets.ts's SurfaceMarks.mark.
+    // Bind the surface's identity into the strip BEFORE it can draw. The
+    // mark is looked up by PROVENANCE (the visor fetched this artifact
+    // itself, by this name, from its own origin) and CREATED on first
+    // sight, unmarked — the pet icon is the user's to choose in the
+    // ceremony, never the visor's to roll (visor/ui/sheets.ts).
     const { mark, isNew } = marks.mark(name);
-    const hue = mark.hue;
-    // The component's colour is public (derived from its own bytes), but
-    // scope it to the region anyway: the visor's document root stays clean.
-    region.style.setProperty("--component-color", `oklch(62% .16 ${hue})`);
+    // THE REGION'S EDGE TINT, and it is NOT a recognition device — it
+    // never was one, whatever the code here used to imply by sharing a
+    // value with the strip's chip. It is decoration on the UNTRUSTED
+    // rectangle, so it is derived from the artifact name (public, the
+    // component's own, and stable) rather than from anything of the
+    // user's. Deriving it is now honest rather than dangerous precisely
+    // BECAUSE the visor no longer shows a matching colour: with the chip
+    // gone, an impersonator grinding its artifact for a target's tint
+    // wins a border colour inside its own rectangle, which it could
+    // paint anyway. Scoped to the region regardless — the visor's
+    // document root stays clean (invariant (c)).
+    let tint = 0;
+    for (const ch of name) tint = (tint * 31 + ch.codePointAt(0)!) % 360;
+    region.style.setProperty("--component-color", `oklch(62% .16 ${tint})`);
     // Before instantiation the visor has nothing but provenance to show, so
     // that is what it shows — the nickname is a claim only the running
     // component can make, and it lands a moment later.
     let identity: SurfaceIdentity = {
       name,
       nickname: name,
-      hue,
+      icon: mark.icon,
       isNew,
       petname: mark.petname,
       firstSeen: mark.firstSeen,
@@ -2403,7 +2481,14 @@ async function boot() {
       console.warn(`[panel] nickname: ${err(e)}`);
     }
     if (generation !== panelGeneration) return;
-    identity = { ...identity, nickname };
+    // The nomination, read once beside the nickname and validated at the
+    // crossing (`readMarkNomination`) — same trip, same discipline.
+    const nomination = await readMarkNomination(
+      "panel",
+      () => runner.call(() => panel.markNomination()),
+    );
+    if (generation !== panelGeneration) return;
+    identity = { ...identity, nickname, nomination };
     setVisorContext(identity);
     panelMounted = provider;
     // The visor keeps the handles it needs to COMMIT; the panel only ever
@@ -2682,8 +2767,9 @@ async function boot() {
   // a property of the framework layer rather than of this file's good
   // behaviour.
   //
-  // WHAT IS DEMOTED (the §5 half that is not a ceremony): the marks, the
-  // display name and the anchor hue are ACCOUNT state now. localStorage
+  // WHAT IS DEMOTED (the §5 half that is not a ceremony): the marks
+  // (petname + pet icon), the display name and the anchor hue are
+  // ACCOUNT state now. localStorage
   // keeps exactly the keys and formats it had — that IS the demotion:
   // the same bytes, no longer the source of truth. Boot renders from
   // them, `reconcileFromDriver` compares them against the partition and
@@ -2807,14 +2893,18 @@ async function boot() {
     // authoritative copy catching up, so a failed write leaves the two
     // out of step and the next reconcile announces it rather than
     // silently papering over it.
-    writeThroughMark = (provenance, petname, hue) => {
+    writeThroughMark = (provenance, petname, icon) => {
       void (async () => {
         const res = await aliceUs.usMarkPut({
           provenance,
           petname,
-          // A mark's hue is a palette INDEX in the partition, an angle
-          // on the strip — the same split as the profile's.
-          hue: hueIndexOf(hue),
+          // The pet icon crosses as the GLYPH ITSELF — the partition
+          // holds it opaquely and repairs collisions on exact equality
+          // (spike.wit's `us-mark.icon`). No index, no palette: the
+          // vocabulary is the visor's, and a device running a different
+          // visor build simply refuses to render a glyph it does not
+          // know (`isAppMarkIcon`) rather than mis-rendering an index.
+          icon,
           createdAt: Date.now(),
           needsReconfirm: false,
         });
@@ -3077,6 +3167,45 @@ async function boot() {
         const input = drawerInner.querySelector(".name-sheet input") as HTMLInputElement | null;
         if (input) input.value = value;
       },
+      /** THE PET-ICON PICKER, as it is actually rendered: the six offers
+       * in order, each with the glyph, whether the visor flagged it as
+       * the component's own nomination, and whether it is currently
+       * picked. A DOM read, deliberately — the claim these scenarios
+       * make is about what a user sees on the sheet, not about what the
+       * facade computed. */
+      offers: () =>
+        Array.from(
+          drawerInner.querySelectorAll(".name-sheet .name-icons button"),
+        ).map((el) => {
+          const b = el as HTMLButtonElement;
+          return {
+            glyph: b.dataset.glyph ?? "",
+            nominated: b.dataset.nominated === "true",
+            picked: b.classList.contains("picked"),
+          };
+        }),
+      /** The foreign attribution line above the picker, or "" when the
+       * surface nominated nothing (or its nomination was refused). */
+      nominationLine: () =>
+        (drawerInner.querySelector(".name-sheet .name-nomination") as HTMLElement | null)
+          ?.textContent ?? "",
+      /** Pick a mark by CLICKING its button, exactly as a user does. */
+      pickIcon: (glyph: string) =>
+        (drawerInner.querySelector(
+          `.name-sheet .name-icons button[data-glyph="${glyph}"]`,
+        ) as HTMLButtonElement | null)?.click(),
+      /** Pick whichever offer the visor flagged as the component's — the
+       * adoption gesture, without the scenario having to know which
+       * glyph the component asked for. Returns the glyph adopted, or ""
+       * when there was no nomination on offer. */
+      adoptNomination: () => {
+        const b = drawerInner.querySelector(
+          '.name-sheet .name-icons button[data-nominated="true"]',
+        ) as HTMLButtonElement | null;
+        if (!b) return "";
+        b.click();
+        return b.dataset.glyph ?? "";
+      },
       save: () =>
         (drawerInner.querySelector(".name-sheet .cred-row button:first-child") as
           | HTMLButtonElement
@@ -3226,11 +3355,11 @@ async function boot() {
         const res = await tabletUs.usMarksList();
         return res.ok ? res.value : { error: true };
       },
-      putMark: async (provenance: string, petname: string, hue: number) => {
+      putMark: async (provenance: string, petname: string, icon: string) => {
         const res = await aliceUs.usMarkPut({
           provenance,
           petname,
-          hue,
+          icon,
           createdAt: Date.now(),
           needsReconfirm: false,
         });

@@ -88,6 +88,12 @@ async function until<T>(
   throw new Error(`timed out waiting for ${what} (last: ${JSON.stringify(last)})`);
 }
 
+/** The glyph the app guest nominates (spikes/demo/wit/todomvc.wit's
+ * `mark-nomination`, answered in guest-app/src/lib.rs): ♜ U+265C BLACK
+ * CHESS ROOK. Pinned so the write-through assertions below are about a
+ * specific mark rather than "whatever came out". */
+const MARK_ICON = "\u265C";
+
 /** The add sheet's controls, by the words on them — the same way a user
  * finds them. */
 const addBtn = (text: string) => `#pair-add-sheet button:has-text(${JSON.stringify(text)})`;
@@ -290,6 +296,19 @@ const scenario: Scenario = {
         { timeout: UI_TIMEOUT },
       );
       await page.fill("#visor-drawer-inner .name-sheet input", "Tasks");
+      // A MARK GOES WITH THE NAME. The app nominates ♜ (its own WIT
+      // `mark-nomination`), the ceremony offers it first, and adopting it
+      // is a real click on the picker — so what crosses to the other
+      // device below is a petname AND a pet icon, which is the whole
+      // schema change (#22 discussion: `us-mark.hue` -> `us-mark.icon`).
+      const adopted = await page.evaluate(() => {
+        const b = document.querySelector(
+          '#visor-drawer-inner .name-sheet .name-icons button[data-nominated="true"]',
+        ) as HTMLButtonElement | null;
+        b?.click();
+        return b?.dataset.glyph ?? "";
+      });
+      assertEquals(adopted, MARK_ICON, "the mark adopted on the laptop");
       await page.click("#visor-drawer-inner .name-sheet .cred-row button:first-child");
       const marks = await until(page, "the mark on the tablet", async () => {
         const ms = (await hook(page, "pairing.marks")) as { provenance: string }[] | {
@@ -298,16 +317,21 @@ const scenario: Scenario = {
         if (!Array.isArray(ms)) return false;
         return ms.some((m) => m.provenance === "app") ? ms : false;
       });
-      const mark = (marks as { provenance: string; petname: string }[]).find((m) =>
+      const mark = (marks as { provenance: string; petname: string; icon: string }[]).find((m) =>
         m.provenance === "app"
       )!;
       assertEquals(mark.petname, "Tasks", "the petname the tablet sees");
+      // The GLYPH ITSELF crosses, not an index into a palette: the
+      // partition holds it opaquely and repairs collisions on exact
+      // equality, and the vocabulary stays the visor's.
+      assertEquals(mark.icon, MARK_ICON, "the pet icon the tablet sees");
       // And the boot cache still holds it too — the demotion changed
       // which copy is authoritative, not which copies exist.
       const cached = await page.evaluate(() =>
         JSON.parse(localStorage.getItem("pm-demo-surface-marks") ?? "{}")
-      ) as Record<string, { petname?: string }>;
+      ) as Record<string, { petname?: string; icon?: string }>;
       assertEquals(cached["app"]?.petname, "Tasks", "the petname in the boot cache");
+      assertEquals(cached["app"]?.icon, MARK_ICON, "the pet icon in the boot cache");
     });
   },
 };

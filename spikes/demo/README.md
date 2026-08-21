@@ -102,24 +102,59 @@ randomised on first run, changeable from a constrained palette (fixed
 lightness/chroma in OKLCH, so contrast cannot be customised away), and
 never disclosed to components. It stays CONSTANT while secondary
 surfaces come and go: an anchor that changed per component would stop
-being an anchor. While a provider panel is open, the strip names it — a
-recognition chip whose colour is **assigned at first sight** (a TOFU
-trust table, locally unique), its name QUOTED and clamped, then
-the visor's own words ("drawn by the component, not by the visor") — plus a
-loud **"NEW — first time this component draws here"** marker on first
-sight, which is the moment impersonation would land. The same assigned
-colour edges the panel region, so the rectangle and its label visibly
-agree.
+being an anchor. While a provider panel is open, the strip names it — its
+**pet icon** if the user has given it one, its name QUOTED and clamped,
+then the visor's own words — plus a loud **"NEW — first time this
+component draws here"** marker on first sight, which is the moment
+impersonation would land.
 
-Recognition colours are **never derived**. Two derivations died here to
-one attack — making the visor's own strip vouch the wrong colour: deriving
+**Marks are pet icons, not colours** (the #22 discussion change). A
+component's recognition mark is one Unicode glyph the USER picks in the
+naming ceremony, from a vocabulary the visor curates
+(`APP_MARK_ICONS`, `visor/ui/visor.ts`). The anchor COLOUR is untouched
+— it is doing a different job (visor-vs-app contrast, plus a spoof
+lottery an impersonator has to win) — but the per-app colour chip is
+gone, because colour memory was the weak half: "the blue one" is not
+something a user can name, rehearse or check, and ten hues run out after
+ten components. A glyph is nameable and discriminable. The curation
+rules are invariants, not taste: one BMP scalar, **text presentation by
+default** (so no glyph the platform redraws as colour emoji — ☕ ⌛ ⚡ ⚓
+are disqualified), long font coverage, ONE glyph per visual-
+confusability class with no overlap at all with the user's own set
+(hence no stars, shields, diamonds, triangles, clovers, flags, flowers,
+moons or gears), no security or UI semantics (no locks, warnings, ticks,
+arrows — the visor must never look like it is VOUCHING), and filled
+silhouettes for small-size legibility. `isAppMarkIcon` is the gate every
+glyph from outside the visor passes before it renders anywhere; a
+failure renders as no icon at all. Invariant (g) in
+`scripts/check-invariants.sh` pins both halves.
+
+A component may **nominate** a glyph (`mark-nomination` in the WIT): the
+app asks for ♜, the S3 panel for ⚗, the Dropbox panel for nothing. A
+nomination is offered FIRST in the ceremony's six-icon picker and
+foreign-attributed ("it asks to wear …", the glyph quoted like a
+nickname) — and only if it is valid AND unclaimed; otherwise it is
+dropped in silence. The other five are random per ceremony, so no app's
+nomination becomes a de-facto brand by default-bias. The component is
+never told the outcome.
+
+An unmarked surface renders **no glyph at all** — never a placeholder,
+never a mark the visor picked. That is also how a record migrated from
+the old `hue` schema arrives (a number is not honestly reinterpretable
+as a glyph), and how a mark comes back from the account's conflict
+repair, which CLEARS the loser's icon rather than reassigning one: the
+vocabulary is the visor's, so the ceremony re-offers.
+
+Marks are **never derived**. Two derivations died here to one attack —
+making the visor's own strip vouch the wrong mark: deriving
 from component bytes let an impersonator grind its artifact until the
-strip assigned it the target's colour (and reshuffled on every
+strip assigned it the target's mark (and reshuffled on every
 legitimate update); deriving from HMAC(user-secret, name) closed the
 grind but reopened it through the other input, since names are
-self-declared. Assignment also buys what no derivation can: local
-uniqueness — hues are handed out from the unused set, so two trust
-records on one device never share a mark while the palette lasts. The
+self-declared. User choice is the strongest form of that: the mark is a
+function of a gesture made in visor pixels. Assignment also buys local
+uniqueness — icons are offered from the unused set, so two trust
+records on one device never share a mark while the vocabulary lasts. The
 trust-record key must be unforgeable provenance (here: the artifact
 name as fetched by the visor from its own origin; with #3/#10, the
 publisher's verifying key) — a self-declared name must never be able to

@@ -19,10 +19,13 @@ import {
   assertEquals,
   assertIncludes,
   hook,
+  iconOffers,
   marks,
   namingReason,
+  nominationLine,
   sheetText,
   sleep,
+  stripMarkIcon,
   stripText,
   UI_TIMEOUT,
   waitForBoot,
@@ -31,6 +34,16 @@ import {
 } from "../util.ts";
 
 const PETNAME = "tasks board";
+
+/** WHAT THE GUESTS ASK TO WEAR (spikes/demo/wit/todomvc.wit's
+ * `mark-nomination`, implemented in each guest's lib.rs). Pinned here
+ * because the whole nomination path is only testable against a component
+ * that actually nominates something: the app asks for the chess rook,
+ * the S3 panel for the alembic, and the Dropbox panel asks for NOTHING —
+ * which is the case that proves `none` is a first-class answer rather
+ * than a code path nobody runs. */
+const APP_NOMINATION = "\u265C"; // ♜ U+265C BLACK CHESS ROOK
+const S3_NOMINATION = "\u2697"; // ⚗ U+2697 ALEMBIC
 
 const scenario: Scenario = {
   name: "petname-ceremony",
@@ -65,6 +78,61 @@ const scenario: Scenario = {
       assertIncludes(text, "a component cannot draw here", "the sheet's note");
     });
 
+    await act("the ceremony offers SIX pet icons, none of them a colour", async () => {
+      // THE DESIGN CHANGE (#22 discussion): the recognition-COLOUR picker
+      // is gone, and with it the chip the strip used to draw. What
+      // replaced it is a mark the user can NAME — "the little rook" —
+      // out of a curated vocabulary. Six offers: enough to be a choice,
+      // few enough to scan.
+      const offers = await iconOffers(page);
+      assertEquals(offers.length, 6, "the number of pet-icon offers");
+      const glyphs = offers.map((o) => o.glyph);
+      assertEquals(new Set(glyphs).size, 6, "the offers are distinct");
+      for (const g of glyphs) {
+        assertEquals([...g].length, 1, `the offer ${JSON.stringify(g)} is one scalar`);
+      }
+      // No swatch row survives anywhere on the sheet, and no chip.
+      const dead = await page.evaluate(() => ({
+        swatches: document.querySelectorAll(".name-sheet .name-swatches").length,
+        chips: document.querySelectorAll("#visor-drawer-inner .chip").length,
+      }));
+      assertEquals(dead.swatches, 0, "leftover colour swatches on the naming sheet");
+      assertEquals(dead.chips, 0, "leftover mark chips on the naming sheet");
+    });
+
+    await act("the app's own NOMINATION is offered first, in the component's voice", async () => {
+      // A component may ASK to wear a glyph. The visor offers it — FIRST,
+      // so the user sees it — but never in the visor's own voice: the
+      // sentence is the visor's, the glyph is quoted as the component's,
+      // exactly like a nickname. Adoption is the user's act.
+      const offers = await iconOffers(page);
+      assertEquals(offers[0].glyph, APP_NOMINATION, "the first offer");
+      assertEquals(offers[0].nominated, true, "the first offer is flagged as the component's");
+      assertEquals(
+        offers.filter((o) => o.nominated).length,
+        1,
+        "exactly one offer is the component's",
+      );
+      const line = await nominationLine(page);
+      assertIncludes(line, "it asks to wear", "the foreign attribution line");
+      assertIncludes(line, APP_NOMINATION, "the attribution line shows the nominated glyph");
+      assertIncludes(line, "the rest are the visor's own", "the attribution line");
+      // The strip is still bare: nominating is not wearing. Nothing the
+      // component said has reached the anchor.
+      assertEquals(await stripMarkIcon(page), "", "the strip's mark before the user picks one");
+    });
+
+    await act("an unmarked surface shows NO glyph, and none is picked for the user", async () => {
+      const offers = await iconOffers(page);
+      assertEquals(
+        offers.filter((o) => o.picked).length,
+        0,
+        "a preselected mark on a surface the user has never marked",
+      );
+      const s = await appSurface(page);
+      assertEquals(s?.icon, "", "the app surface's icon before the ceremony");
+    });
+
     await act("the strip names the open sheet while it is up", async () => {
       const { bottom } = await stripText(page);
       assertIncludes(bottom, "naming", "the bottom line while the naming sheet is open");
@@ -87,8 +155,13 @@ const scenario: Scenario = {
       assertEquals(s?.petname ?? "", "", "the petname after a refused save");
     });
 
-    await act(`saving "${PETNAME}" announces it in the visor's voice`, async () => {
+    await act(`saving "${PETNAME}" with the ADOPTED nomination announces it`, async () => {
       await hook(page, "naming.type", PETNAME);
+      // ADOPTION: the user takes the glyph the component asked for. From
+      // this point it is the USER's mark — the visor speaks it on the
+      // anchor — and the component is never told that it happened.
+      const adopted = await hook(page, "naming.adoptNomination");
+      assertEquals(adopted, APP_NOMINATION, "the glyph the adoption gesture picked");
       await hook(page, "naming.save");
       await waitForSheet(page, "naming", false);
       // The announcement is the visor speaking about its own trust table —
@@ -104,11 +177,23 @@ const scenario: Scenario = {
     await act("the petname is in the trust table and on the live surface", async () => {
       const s = await appSurface(page);
       assertEquals(s?.petname, PETNAME, "the live app surface's petname");
+      assertEquals(s?.icon, APP_NOMINATION, "the adopted pet icon on the live surface");
       // THE #22 FIX: first sight is over. The ceremony IS the TOFU
       // moment completing (host/demo.ts:2695).
       assertEquals(s?.isNew, false, "isNew after the naming ceremony");
-      const table = await marks(page) as Record<string, { petname?: string }>;
+      const table = await marks(page) as Record<string, { petname?: string; icon?: string }>;
       assertEquals(table["app"]?.petname, PETNAME, "the persisted petname for the app record");
+      assertEquals(table["app"]?.icon, APP_NOMINATION, "the persisted pet icon");
+    });
+
+    await act("the adopted mark is now on the STRIP, beside the foreign nickname", async () => {
+      assertEquals(await stripMarkIcon(page), APP_NOMINATION, "the strip's pet icon");
+      // And it is TEXT in the visor's own foreground, not a painted
+      // swatch: the chip element is gone from the strip entirely.
+      const chips = await page.evaluate(() =>
+        document.querySelectorAll("#visor-context .chip").length
+      );
+      assertEquals(chips, 0, "leftover mark chips on the strip");
     });
 
     await act("after the announcement reverts, the strip speaks the petname and NOT 'NEW'", async () => {
@@ -144,7 +229,9 @@ const scenario: Scenario = {
       await waitForBoot(page);
       const s = await appSurface(page);
       assertEquals(s?.petname, PETNAME, "the petname after a reload");
+      assertEquals(s?.icon, APP_NOMINATION, "the pet icon after a reload");
       assertEquals(s?.isNew, false, "a component with a stored mark is not NEW again");
+      assertEquals(await stripMarkIcon(page), APP_NOMINATION, "the strip's pet icon after a reload");
       const { bottom } = await stripText(page);
       assertIncludes(bottom, PETNAME, "the bottom line after a reload");
       assertEquals(
@@ -176,9 +263,28 @@ const scenario: Scenario = {
         { timeout: UI_TIMEOUT },
       );
       await waitForSheet(page, "naming", true);
+
+      // THE PANEL'S OWN NOMINATION, offered first and attributed to it —
+      // and the app's adopted mark is NOT among the offers, because
+      // local uniqueness is the whole point of assigning marks from the
+      // unused set. A component asking for a glyph another record wears
+      // is refused in SILENCE: no error, no mention, nothing the app can
+      // detect.
+      const panelOffers = await iconOffers(page);
+      assertEquals(panelOffers.length, 6, "the panel's pet-icon offers");
+      assertEquals(panelOffers[0].glyph, S3_NOMINATION, "the panel's first offer");
+      assertEquals(panelOffers[0].nominated, true, "the panel's first offer is its own request");
+      assert(
+        !panelOffers.some((o) => o.glyph === APP_NOMINATION),
+        `a glyph another record already wears was offered: ${JSON.stringify(panelOffers)}`,
+      );
+      assertIncludes(await nominationLine(page), "it asks to wear", "the panel's attribution line");
+      await hook(page, "naming.pickIcon", S3_NOMINATION);
       await hook(page, "naming.type", "s3 config");
       await hook(page, "naming.save");
       await waitForSheet(page, "naming", false);
+      const afterPanel = await marks(page) as Record<string, { icon?: string }>;
+      assertEquals(afterPanel["panel-s3"]?.icon, S3_NOMINATION, "the panel's adopted mark");
 
       // Now try to give the APP the panel's word.
       await hook(page, "naming.openCluster");
@@ -200,8 +306,53 @@ const scenario: Scenario = {
       assertEquals(s?.petname, PETNAME, "a refused collision leaves the old petname alone");
     });
 
-    await act("forgetting drops the name and promises NEW next time", async () => {
-      // The sheet is still open on the app, showing the refusal.
+    await act("a component that nominates NOTHING gets six visor offers and no attribution", async () => {
+      // The Dropbox panel returns `none` (guest-panel-dropbox/src/lib.rs).
+      // The ceremony must look exactly the same minus the foreign line —
+      // "no preference" is a first-class answer, not a degraded one.
+      //
+      // The naming sheet the previous act left open is closed first: this
+      // act is about the panel's ceremony, not about evicting one.
+      await hook(page, "naming.cancel");
+      await waitForSheet(page, "naming", false);
+      await hook(page, "openStorage");
+      await page.waitForFunction(
+        () => (document.getElementById("storage-dialog") as HTMLDialogElement)?.open === true,
+        undefined,
+        { timeout: UI_TIMEOUT },
+      );
+      await page.click("#prov-dropbox");
+      await page.waitForFunction(
+        // deno-lint-ignore no-explicit-any
+        () => (globalThis as any).__demo.naming.openFor("panel-dropbox") === true,
+        undefined,
+        { timeout: UI_TIMEOUT },
+      );
+      await waitForSheet(page, "naming", true);
+      const offers = await iconOffers(page);
+      assertEquals(offers.length, 6, "the offers for a component with no nomination");
+      assertEquals(
+        offers.filter((o) => o.nominated).length,
+        0,
+        "a nominated offer for a component that nominated nothing",
+      );
+      assertEquals(await nominationLine(page), "", "the attribution line with no nomination");
+      // Local uniqueness holds across all three records.
+      assert(
+        !offers.some((o) => o.glyph === APP_NOMINATION || o.glyph === S3_NOMINATION),
+        `a claimed glyph was offered: ${JSON.stringify(offers.map((o) => o.glyph))}`,
+      );
+      await hook(page, "naming.cancel");
+      await waitForSheet(page, "naming", false);
+    });
+
+    await act("forgetting drops the name AND the mark, and promises NEW next time", async () => {
+      // Re-opened on the APP: the previous act took the ceremony to the
+      // Dropbox panel and closed it, so the sheet this one forgets from
+      // is opened here rather than inherited. (`beforeOpen` takes the
+      // page back from the storage dialog on the way.)
+      await hook(page, "naming.openFor", "app");
+      await waitForSheet(page, "naming", true);
       await hook(page, "naming.forget");
       await waitForSheet(page, "naming", false);
       const said = await waitForBottom(
@@ -214,6 +365,10 @@ const scenario: Scenario = {
       assertEquals(table["app"], undefined, "the app's record after forgetting");
       const s = await appSurface(page);
       assertEquals(s?.petname ?? "", "", "the live surface's petname after forgetting");
+      // Forgetting is honest about BOTH halves: the mark goes with the
+      // name, so the strip stops wearing a glyph the visor no longer
+      // holds a record for.
+      assertEquals(await stripMarkIcon(page), "", "the strip's mark after forgetting");
     });
 
     await act("a fresh context sees the forgotten component as NEW again", async () => {

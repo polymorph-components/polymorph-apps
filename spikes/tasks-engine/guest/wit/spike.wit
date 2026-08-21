@@ -234,7 +234,12 @@ interface driver {
     record us-mark {
         provenance: string,
         petname: string,
-        hue: u16,
+        /// The canonical pet-icon glyph: a single Unicode scalar from the
+        /// visor's curated set (#22). The ENGINE treats this as an opaque
+        /// string and repairs uniqueness on exact equality only —
+        /// confusability across glyphs is handled visor-side, by
+        /// construction of the curated set (one glyph per visual class).
+        icon: string,
         nickname: option<string>,
         created-at: u64,
         needs-reconfirm: bool,    // set by conflict repair; cleared by us-mark-confirm
@@ -251,7 +256,7 @@ interface driver {
         profile-changed,
         mark-added(string),                       // provenance
         mark-changed(string),
-        mark-conflict-repaired(tuple<string, string>), // (provenance, "petname"|"hue")
+        mark-conflict-repaired(tuple<string, string>), // (provenance, "petname"|"icon")
         device-added(string),                     // name
         device-revoked(string),
     }

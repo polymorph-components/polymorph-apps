@@ -213,19 +213,26 @@ async function main() {
   // a cacheable directory keyed on the pinned version; see
   // .github/workflows/e2e.yml). `just e2e-deps` is what guarantees it is
   // there, by PROBING a launch and only downloading if that fails.
-  const browser: Browser = await chromium.launch({
-    headless: !headed,
-    // The demo runs entirely against 127.0.0.1 and instantiates a large
-    // wasm graph; the sandbox is off for the same reason cdp-heap.ts
-    // turns it off (containerised CI without user namespaces), and
-    // /dev/shm is small in the same containers.
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
+  const launchBrowser = () =>
+    chromium.launch({
+      headless: !headed,
+      // The demo runs entirely against 127.0.0.1 and instantiates a large
+      // wasm graph; the sandbox is off for the same reason cdp-heap.ts
+      // turns it off (containerised CI without user namespaces), and
+      // /dev/shm is small in the same containers.
+      args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    });
+  let browser: Browser = await launchBrowser();
 
   const openPages: Page[] = [];
   const ctx: Ctx = {
     baseUrl,
-    browser,
+    // A getter, not a copy: the runner replaces a wedged browser (see the
+    // deadline machinery below), and a scenario must always see the live
+    // one.
+    get browser() {
+      return browser;
+    },
     minioUrl: minio.url,
     minioAccess: MINIO_USER,
     minioSecret: MINIO_PASS,
@@ -259,18 +266,63 @@ async function main() {
   console.log(`\ne2e: ${runList.length} scenario(s) against ${baseUrl}\n`);
   const started = performance.now();
 
+  // --- the scenario deadline --------------------------------------------
+  //
+  // Every wait INSIDE the harness is bounded (BOOT_TIMEOUT, UI_TIMEOUT,
+  // minio's health loops) — but Playwright PROTOCOL calls are not:
+  // newContext/newPage against a wedged chrome-headless-shell simply
+  // never return. Observed twice in CI (2026-08-21): a run hung at a
+  // scenario banner — after the previous scenario, before the first
+  // act — for 56 minutes until the JOB timeout killed it, with the
+  // headless shell still alive among the orphans. The deadline turns
+  // that hour of silence into a labeled failure in minutes; a
+  // deadline-shaped failure also RELAUNCHES the browser, because a
+  // wedged one stays wedged and would eat every following scenario too.
+  const SCENARIO_DEADLINE_MS = 240_000; // > BOOT_TIMEOUT + slowest scenario
+  const DEADLINE_MARK = "scenario deadline";
+  const withDeadline = <T>(p: Promise<T>): Promise<T> => {
+    let timer: number | undefined;
+    const bomb = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `${DEADLINE_MARK}: no progress in ${SCENARIO_DEADLINE_MS / 1000}s ` +
+                `(a hang below the harness's own bounded waits — a wedged ` +
+                `browser protocol call is the known cause)`,
+            ),
+          ),
+        SCENARIO_DEADLINE_MS,
+      );
+    });
+    return Promise.race([p, bomb]).finally(() => clearTimeout(timer)) as Promise<T>;
+  };
+  /** Bounded close-and-relaunch for a browser presumed wedged: close()
+   * itself is a protocol call and can hang, so it races a short fuse
+   * and the old process is abandoned to the OS if it does. */
+  const recoverBrowser = async () => {
+    await Promise.race([
+      browser.close().catch(() => {}),
+      new Promise((r) => setTimeout(r, 5_000)),
+    ]);
+    browser = await launchBrowser();
+    console.log("         (browser relaunched after a deadline failure)");
+  };
+
   for (const scenario of runList) {
     console.log(`  ── ${scenario.name}: ${scenario.why}`);
     resetActs();
     const t0 = performance.now();
     let page: Page | null = null;
     try {
-      if (scenario.minio === "down") await minio.stop();
-      else await minio.start();
-      page = await ctx.fresh(
-        typeof scenario.page === "function" ? scenario.page(ctx) : scenario.page,
-      );
-      await scenario.run(page, ctx);
+      await withDeadline((async () => {
+        if (scenario.minio === "down") await minio.stop();
+        else await minio.start();
+        page = await ctx.fresh(
+          typeof scenario.page === "function" ? scenario.page(ctx) : scenario.page,
+        );
+        await scenario.run(page, ctx);
+      })());
       results.push({
         name: scenario.name,
         ok: true,
@@ -293,17 +345,27 @@ async function main() {
         acts: actCount().acts,
         error: e instanceof Error ? e.message : String(e),
       });
+      if (e instanceof Error && e.message.startsWith(DEADLINE_MARK)) {
+        await recoverBrowser();
+      }
     } finally {
       // Every scenario's contexts go away with it: isolation is the
-      // harness's job, not the scenario's.
+      // harness's job, not the scenario's. Bounded for the same reason
+      // as recoverBrowser: close() on a wedged browser never returns.
       for (const p of openPages.splice(0)) {
-        await p.context().close().catch(() => {});
+        await Promise.race([
+          p.context().close().catch(() => {}),
+          new Promise((r) => setTimeout(r, 5_000)),
+        ]);
       }
     }
     console.log("");
   }
 
-  await browser.close();
+  await Promise.race([
+    browser.close().catch(() => {}),
+    new Promise((r) => setTimeout(r, 5_000)),
+  ]);
   await minio.dispose();
   await server.shutdown();
 

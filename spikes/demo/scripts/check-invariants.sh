@@ -25,7 +25,7 @@ bad() {
 # that could read it could impersonate the user's trust in itself; a
 # component that could influence it could put attacker-chosen words into
 # the visor's own voice. So it must not appear anywhere on the seam.
-echo "[1/6] petname never crosses the frame seam"
+echo "[1/7] petname never crosses the frame seam"
 echo "      (the visor's word for a component is never readable or influenceable by it)"
 hits=$(grep -n "petname" ../../visor/frame/frame-backend.ts ../../visor/frame/frame.ts ../../visor/frame/frame.html 2>/dev/null)
 if [ -n "$hits" ]; then
@@ -42,7 +42,7 @@ fi
 # borrowed the visor's authority. The ONLY admissible occurrence is the
 # bare token "password" as an input-masking type — never inside a sentence.
 # Comments are exempt: they explain the rule rather than render it.
-echo "[2/6] the visor never renders the word \"password\""
+echo "[2/7] the visor never renders the word \"password\""
 echo "      (the visor's labels are the visor's own; a panel must never borrow them)"
 # BOTH halves of the visor render strings now: the system-UI core
 # (visor/ui/*.ts — visor.ts's strip/drawer host, sheets.ts's naming and
@@ -79,7 +79,7 @@ fi
 # that ever gained a style attribute (or a class resolving the variable)
 # could paint the visor's exact colour without reading it. Scope keeps the
 # secrecy structural instead of a property of the allowlist.
-echo "[3/6] the anchor colour is never made ambient"
+echo "[3/7] the anchor colour is never made ambient"
 echo "      (--visor-bg is scoped to the visor's own elements; inheriting it would disclose it)"
 # `applyVisorHue` lives in the framework core now, so the scan follows
 # it there; host/*.ts stays in the list because a consumer painting the
@@ -117,7 +117,7 @@ done
 # Banning the verb outright from host code keeps the property one grep
 # wide instead of a review argument. Comments are exempt: they explain
 # the rule rather than perform it.
-echo "[4/6] the visor never exports a key"
+echo "[4/7] the visor never exports a key"
 echo "      (escrowed signing keys are non-extractable; nothing reads them back)"
 exported=$(grep -n "exportKey" host/*.ts 2>/dev/null |
   grep -vE "^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)")
@@ -138,7 +138,7 @@ fi
 # that could INFLUENCE them would be putting attacker-chosen words into
 # the visor's own voice on the anchor. So neither the storage key nor the
 # cluster's id may appear anywhere on the seam.
-echo "[5/6] the user's identity never crosses the frame seam"
+echo "[5/7] the user's identity never crosses the frame seam"
 echo "      (name, device and icon are visor pixels; no component may read or steer them)"
 idhits=$(grep -n "pm-demo-identity\|visor-identity" \
   ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts ../../visor/frame/frame.html 2>/dev/null)
@@ -167,7 +167,7 @@ fi
 # framework layer rather than of one demo file, so the definer scan
 # covers BOTH the visor's own UI modules and every demo host file —
 # a rogue definition anywhere on either side fails here.
-echo "[6/6] pairing code and SAS render only in visor-owned surfaces"
+echo "[6/7] pairing code and SAS render only in visor-owned surfaces"
 echo "      (renderPairingCode()/renderSas() are defined and called only in ../../visor/ui/pairing.ts)"
 outside=$(grep -rln "renderPairingCode(\|renderSas(" \
   ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts ../../visor/frame/frame.html web/frame.js \
@@ -187,6 +187,98 @@ if [ -n "$definers" ]; then
   printf '%s\n' "$definers" | sed 's/^/       /'
 else
   ok "renderPairingCode()/renderSas() are defined only in ../../visor/ui/pairing.ts"
+fi
+
+# --- (g) the pet-icon vocabulary is curated, and validated at the seam -------
+# Two halves of one property (#22 discussion): the visor's per-app
+# recognition mark is a GLYPH the user picks, and the set it is picked
+# from is the visor's whole defence.
+#
+#   (g1) THE SET CARRIES NO SECURITY SEMANTICS. A padlock, a shield, a
+#        tick or a warning sign beside a component's name is the visor
+#        appearing to VOUCH for that component — a claim made in the
+#        anchor's pixels, on the user's own authority, that the visor is
+#        in no position to make. The denylist also covers the USER's own
+#        vocabulary (VISOR_ICONS): a component mark that could be
+#        mistaken for the visor's own button glyph is an impersonation
+#        aid, so the two sets must not overlap.
+#
+#   (g2) A NOMINATED GLYPH IS VALIDATED AT THE CROSSING. A component may
+#        ASK to wear a mark (`mark-nomination`), which makes it the one
+#        component-influenced string in the mark story — and the
+#        interesting inputs are bidi overrides, ZWJ sequences composing
+#        into colour emoji, and homoglyphs of the visor's own icons.
+#        `isAppMarkIcon` refuses all of them by membership, but only if
+#        it is called where the value ENTERS. So the check pins the
+#        ADJACENCY: the call must appear in the same file, within a few
+#        lines of the read.
+echo "[7/7] the pet-icon vocabulary is curated, and a nomination is validated at the seam"
+echo "      (no security-semantic glyph in APP_MARK_ICONS; isAppMarkIcon guards the mark-nomination read)"
+ICONS_FILE=../../visor/ui/visor.ts
+# The literal set, from the opening bracket to the closing one. Read as
+# TEXT: the point is that nothing in the source can smuggle a glyph past
+# this, including a computed one — which would itself be a finding.
+set_literal=$(awk '/^export const APP_MARK_ICONS/ { inset = 1 } inset { print } inset && /^\];/ { exit }' "$ICONS_FILE")
+if [ -z "$set_literal" ]; then
+  bad "APP_MARK_ICONS not found as an array literal in $ICONS_FILE"
+else
+  # Locks, shields, keys, warning signs, ticks and crosses — plus every
+  # glyph of the user's own set (visor.ts's VISOR_ICONS).
+  denied=""
+  for glyph in '⛨' '🛡' '⚠' '✓' '✔' '✗' '✘' '✖' '❌' '🔒' '🔐' '🔓' '🔑' '⚿' '⛊' '⛉' '☑' '☒' '⌘' \
+               '✶' '✦' '◆' '▲' '☘' '⚑' '✿' '☾' '⚙'; do
+    case "$set_literal" in
+      *"$glyph"*) denied="$denied $glyph" ;;
+    esac
+  done
+  if [ -n "$denied" ]; then
+    bad "APP_MARK_ICONS contains a denied glyph (security semantics, or the user's own set):$denied"
+  else
+    ok "APP_MARK_ICONS spells no lock/shield/key/warning/tick/cross, and no VISOR_ICONS glyph"
+  fi
+fi
+# The seam: every read of a component's nomination goes through ONE
+# validating funnel, `readMarkNomination`, and that funnel calls
+# `isAppMarkIcon`. Two cheap greps for one property — pinning the funnel
+# is stronger than pinning a line-distance, because a new call site that
+# forgot to validate would have to reintroduce the raw read to escape it.
+# CODE ONLY. Comments explaining the rule are not the rule — this check
+# exists precisely to catch a funnel whose prose still promises what its
+# body stopped doing.
+# (A single-file `grep -n` prints `LINE:` with no filename, hence the
+# leading-number form of the comment filter here.)
+funnel=$(grep -n "isAppMarkIcon" host/demo.ts |
+  grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' | grep -c .)
+if [ "$funnel" -lt 1 ]; then
+  bad "host/demo.ts never calls isAppMarkIcon — nothing validates a nominated glyph"
+else
+  ok "host/demo.ts calls isAppMarkIcon (the nomination funnel validates)"
+fi
+# Any `markNomination()` read that is NOT inside the funnel: strip the
+# interface DECLARATIONS (which end in `;`), then require a
+# `readMarkNomination(` within the six lines above each survivor.
+raw=$(grep -n "markNomination()" host/*.ts |
+  grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' |
+  grep -vE 'markNomination\(\): Promise')
+unguarded=""
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  f=${line%%:*}; rest=${line#*:}; n=${rest%%:*}
+  from=$(( n > 6 ? n - 6 : 1 ))
+  # Comment lines are stripped from the window for the same reason: a
+  # comment that MENTIONS readMarkNomination is not a call to it.
+  if ! sed -n "${from},${n}p" "$f" | sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' |
+       grep -q "readMarkNomination"; then
+    unguarded="$unguarded
+       $line"
+  fi
+done <<EOF
+$raw
+EOF
+if [ -n "$unguarded" ]; then
+  bad "a mark-nomination read bypasses readMarkNomination (and therefore isAppMarkIcon):$unguarded"
+else
+  ok "every mark-nomination read goes through readMarkNomination"
 fi
 
 echo

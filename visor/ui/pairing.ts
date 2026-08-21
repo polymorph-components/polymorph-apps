@@ -47,7 +47,7 @@ import type { PairingDriver, UsEvent, UsMark, UsProfile } from "./pairing-driver
 
 // --- the palette: index -> OKLCH angle (PAIRING.md §4) ---------------------
 //
-// `us-profile.hue` / `us-mark.hue` are PALETTE INDICES (u16, 0-9), not
+// `us-profile.hue` is a PALETTE INDEX (u16, 0-9), not
 // raw angles — the engine only ever compares/stores indices, and the
 // angle is purely a visor rendering choice. The table is the visor's
 // own `VISOR_HUES` (visor.ts:46): one palette in the framework, so a
@@ -214,9 +214,14 @@ function describeEvent(ev: UsEvent): string {
     case "mark-changed":
       return `trust record changed: ${ev.provenance}`;
     case "mark-conflict-repaired":
+      // Both wordings say what the user has to DO. An icon repair
+      // CLEARS the losing record's mark rather than reassigning it (the
+      // vocabulary is the visor's, not the partition's — see the naming
+      // sheet's picker), so the honest sentence is that the mark is gone
+      // and the ceremony will offer a new one.
       return ev.field === "petname"
         ? `NEW — a naming conflict was found and repaired for ${ev.provenance} (re-confirm its name)`
-        : `a colour conflict was found and repaired for ${ev.provenance}`;
+        : `NEW — two components claimed the same mark; ${ev.provenance} lost its mark and needs a new one`;
     case "device-added":
       return `device added: ${ev.name || "(unnamed)"}`;
     case "device-revoked":

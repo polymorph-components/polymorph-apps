@@ -1393,6 +1393,38 @@ wedges the kill button that would kill it. Apps run in workers
 data path), and `worker.terminate()` is what makes the #22 kill
 ceremony honest against a guest that never yields.
 
+**Marks are glyphs, not colours; the anchor colour's job restated**
+(2026-08-21, #22, executed same day). The per-app colour swatch is
+gone: ten hues were never a discrimination vocabulary, and the
+recognition-indicator literature (Schechter et al. 2007) says colour
+RECALL carries little weight. The anchor colour STAYS, with its
+rationale restated: its primary job is visor-vs-app contrast (mostly
+structural — the frame's opaque background rule), its secondary job a
+spoof lottery an app cannot read and can only guess. Per-app
+recognition moves to a **pet icon** — the user's glyph for a surface,
+sibling to the petname, chosen in the naming ceremony from a CURATED
+Unicode vocabulary (`APP_MARK_ICONS`, 28 glyphs): single BMP scalars,
+text-presentation-default (no default-emoji codepoints — ⚓ failed
+this test), one glyph per visual-confusability class, no class
+overlap with the user's own icon set, no security-semantic or
+UI-meaning glyphs. Raw Unicode rather than a shipped font,
+deliberately: glyphs travel where fonts cannot (notifications,
+titles, OS surfaces), and curation carries the reliability burden.
+`isAppMarkIcon` is the firewall — nothing from outside the visor
+(nomination, synced mark, hand-edited record) renders anywhere
+without passing it, which is what keeps bidi controls and ZWJ
+sequences out of trusted pixels. A component may NOMINATE one glyph
+(`mark-nomination`, read once at mount, write-only — it never learns
+the outcome): shown FIRST in the picker but foreign-attributed ("it
+asks to wear …"), only if curated and unclaimed, among genuinely
+random alternatives — the user knowingly adopting an app's claim is
+the petname philosophy applied to glyphs; the app's claim wearing the
+visor's voice by default-bias is not. Unmarked surfaces show NO glyph
+(nothing in the visor's voice before the user has spoken).
+Engine-side, `us-mark` carries the glyph and repair clears a
+collision loser to "" + needs-reconfirm — the engine never invents
+vocabulary; the visor re-offers its picker.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
