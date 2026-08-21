@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["guest", "host", "fetcher"]
 
-# Spike workspace: quarantined, delete-at-will, wired into no CI.
+# Engine workspace: permanent home (post-graduation), wired into no CI.
 # Pins (rust-toolchain.toml, git revs in the member manifests) are exact:
 # upstream protocol changes are migrations, not bumps.
 

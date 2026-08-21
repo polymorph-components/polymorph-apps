@@ -11,7 +11,7 @@ mod bindings {
     });
 }
 
-use bindings::exports::polymorph::fetchspike::fetch::{Guest, Response};
+use bindings::exports::polyvisor::fetch::fetch::{Guest, Response};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 

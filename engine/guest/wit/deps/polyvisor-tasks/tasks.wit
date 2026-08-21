@@ -1,4 +1,4 @@
-package polymorph-data:tasks@0.1.0;
+package polyvisor:tasks@0.1.0;
 
 /// The first data service: a shared task list.
 ///

@@ -1,4 +1,4 @@
-/// TodoMVC spike surface — polymorph-apps#16 (app execution model) and
+/// TodoMVC spike surface — polyvisor#16 (app execution model) and
 /// #15 (WIT shape rules) drive every choice here.
 ///
 /// Two kinds of interface, deliberately kept distinct (#15 "scope split"):
@@ -13,8 +13,8 @@
 ///     shell-owned hash route).
 ///
 /// In the full framework these split into separate packages
-/// (`polymorph:dom` vs app-world glue); one package keeps the spike small.
-package polymorph:todomvc-spike@0.0.1;
+/// (`polyvisor:dom` vs app-world glue); one package keeps the spike small.
+package polyvisor:todomvc@0.0.1;
 
 /// WebIDL-mirror subset. The host validates every call: tag allowlist,
 /// per-(tag, attribute) validation, URL-typed values never cross raw (the
@@ -121,7 +121,7 @@ world lab {
 }
 
 /// The DEMO app world (#20 G6/G7): the same surface contract, with the
-/// model swapped from in-guest memory to the `polymorph-data:tasks`
+/// model swapped from in-guest memory to the `polyvisor:tasks`
 /// data service (served by the engine composite; the host links the
 /// import to the engine instance's export). Exports are async because
 /// every model operation crosses to the engine.
@@ -129,7 +129,7 @@ world demo-app {
   import dom;
   import events;
   import shell;
-  import polymorph-data:tasks/tasks@0.1.0;
+  import polyvisor:tasks/tasks@0.1.0;
 
   use events.{event};
 
@@ -341,7 +341,7 @@ world dropbox-panel {
   import dom;
   import events;
   import shell;
-  import polymorph:fetchspike/fetch@0.1.0;
+  import polyvisor:fetch/fetch@0.1.0;
 
   use events.{event};
   use credentials.{credential-kind};

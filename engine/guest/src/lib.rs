@@ -1,6 +1,6 @@
 //! The engine spike (#20 G2): the walking skeleton's content spine
 //! generalized to the real automerge change DAG, serving the
-//! `polymorph-data:tasks@0.1.0` data service from inside the engine
+//! `polyvisor:tasks@0.1.0` data service from inside the engine
 //! composite.
 //!
 //! One DAG across three layers: chunk identity = automerge `ChangeHash`;
@@ -17,7 +17,7 @@
 
 wit_bindgen::generate!({
     path: "wit",
-    world: "spike",
+    world: "engine",
     generate_all,
 });
 
@@ -38,9 +38,22 @@ use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 
 use polymorph_webcrypto_guest::{
     aes_gcm::{self, AesVariant},
-    ed25519, hmac_sha2,
-    sha2::{self, Sha2Variant},
-    Aead, AeadKeyOptions, MacKeyOptions, SigningKey, SigningKeyOptions,
+    ed25519, Aead, AeadKeyOptions, SigningKey, SigningKeyOptions,
+};
+
+// The storage providers: protocol only. They handle opaque blobs at
+// derivable locations and reach the network through the ports defined
+// below (`EngineFetch`, `EngineSigner`) — the world's fetch/signer
+// imports are inline anonymous interfaces, so their bindings cannot
+// leave this crate. All sealing stays here.
+use provider_common::{hmac, FetchPort, Route, Sigv4SignPort};
+use provider_dropbox::{
+    dbx_child, dbx_create_folder, dbx_delete, dbx_doc_folder, dbx_fetch_child, dbx_link_fetch,
+    dbx_list_folder, dbx_mint_link, dbx_pickup_path, dbx_revoke_link, dbx_upload, DbxCfg,
+    DbxSource,
+};
+use provider_s3::{
+    delete_object, get_object_unsigned, kp_location, object_name, put_object, s3_signed, S3Cfg,
 };
 
 use beekem::encrypted::EncryptedContent;
@@ -88,17 +101,17 @@ use subduction_keyhive::protocol::KeyhiveProtocol;
 use subduction_keyhive::signed_message::SignedMessage;
 use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
-use exports::polymorph::engine_spike::driver::{
+use exports::polyvisor::engine::driver::{
     Guest as DriverGuest, PairAddState, PairJoinState, PairOffer, StoreConfig, UsDevice, UsEvent,
     UsMark, UsProfile,
 };
-use exports::polymorph_data::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
+use exports::polyvisor::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
 use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
 use polymorph::iroh::identity_generate;
 use polymorph::iroh::types::{EndpointAddr, TransportAddr};
 
 /// The iroh ALPN for the engine's subduction wire.
-const ALPN: &[u8] = b"engine-spike/0";
+const ALPN: &[u8] = b"polyvisor/0";
 
 // --- types ---
 
@@ -430,26 +443,6 @@ struct Partition {
     walked: u32,
 }
 
-/// S3-compatible store config: ADDRESSING ONLY. The signing credential
-/// lives behind the wired `store-signer` instance (#11) and the egress
-/// authority behind the wired `store-owner-fetch` instance (#7); the
-/// access key is a public identifier that travels in the Authorization
-/// header in clear. An empty access key means this instance only reads
-/// (unsigned GETs over the public tier).
-struct S3Cfg {
-    endpoint: String,
-    bucket: String,
-    access: String,
-}
-
-/// Consumer-Dropbox store config: ADDRESSING ONLY. App identifiers, the
-/// user's bearer token and its refresh all live in the wired
-/// `store-owner-fetch` instance; link-tier app auth lives in the wired
-/// `store-shared-fetch` instance (#7). Tier is chosen by which import a
-/// call site goes through, never by inspecting guest state for a token.
-struct DbxCfg {
-    root: String,
-}
 
 /// The two provider strategies behind one bucket surface: S3 (name
 /// secrecy + cooperative deletion) and Dropbox (link capabilities,
@@ -820,28 +813,6 @@ const ARGON_M_KIB: u32 = 19_456;
 const ARGON_T: u32 = 2;
 const ARGON_P: u32 = 1;
 
-async fn sha256(data: &[u8]) -> Result<Vec<u8>, String> {
-    let digest = sha2::make_digest(Sha2Variant::Sha256).map_err(|e| format!("digest mint: {e}"))?;
-    digest.compute(data).await.map_err(|e| format!("sha256: {e}"))
-}
-
-async fn hmac(raw_key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
-    hmac_sha2::import_key_raw(
-        Sha2Variant::Sha256,
-        raw_key.to_vec(),
-        MacKeyOptions {
-            sign: true,
-            verify: false,
-            extractable: false,
-        },
-    )
-    .await
-    .map_err(|e| format!("hmac import: {e}"))?
-    .sign(data)
-    .await
-    .map_err(|e| format!("hmac sign: {e}"))
-}
-
 async fn aead_from_raw(raw: &[u8]) -> Result<Aead, String> {
     aes_gcm::import_key_raw(
         AesVariant::Aes256,
@@ -880,49 +851,16 @@ async fn aead_open(aead: &Aead, aad: &[u8], blob: &[u8]) -> Result<Vec<u8>, Stri
     Ok(stream.collect().await)
 }
 
-// SigV4 request signing, split across the trust boundary (#11): the guest
-// builds the canonical request and the string-to-sign — all of it public
-// request metadata — and asks the wired `store-signer` instance for the
-// signature. The credential's key bytes never enter guest memory, so a
-// compromised guest can forge signatures only for requests the signer
-// agrees to sign, not for the account at large.
+// --- the S3 provider ---
+//
+// SigV4 signing, the object ops built on it, and the name-secrecy
+// derivations live in `provider-s3`; the ports they travel through
+// (`EngineFetch`, `EngineSigner`) are defined below. What stays here is
+// the config snapshot, which reads engine state.
 
-/// Civil date from days since the epoch (Howard Hinnant's algorithm).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn amz_dates() -> (String, String) {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock before epoch")
-        .as_secs() as i64;
-    let (y, mo, d) = civil_from_days(secs.div_euclid(86400));
-    let rem = secs.rem_euclid(86400);
-    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let date = format!("{y:04}{mo:02}{d:02}");
-    let amz = format!("{date}T{h:02}{mi:02}{s:02}Z");
-    (date, amz)
-}
-
-struct Store {
-    endpoint: String,
-    bucket: String,
-    access: String,
-}
-
-fn store() -> Result<Store, String> {
+fn store() -> Result<S3Cfg, String> {
     with_state(|s| match s.store.as_ref() {
-        Some(StoreCfg::S3(c)) => Ok(Store {
+        Some(StoreCfg::S3(c)) => Ok(S3Cfg {
             endpoint: c.endpoint.clone(),
             bucket: c.bucket.clone(),
             access: c.access.clone(),
@@ -932,230 +870,63 @@ fn store() -> Result<Store, String> {
     })?
 }
 
-fn host_of(endpoint: &str) -> String {
-    endpoint
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/')
-        .to_string()
-}
-
-/// A short, non-secret label for a request: method plus host and path.
-/// Query strings are dropped — on the S3 path they can carry signing
-/// material, and no diagnostic needs them.
-fn request_label(method: &str, url: &str) -> String {
-    let rest = url
-        .split_once("://")
-        .map(|(_, r)| r)
-        .unwrap_or(url)
-        .split('?')
-        .next()
-        .unwrap_or(url);
-    format!("{method} {rest}")
-}
-
-/// One HTTP request, with **transient-failure retry and named errors**.
+/// The engine's `FetchPort`: Route selects WHICH WORLD IMPORT the call
+/// travels through (#7). The imports are inline anonymous interfaces in
+/// the `engine` world, so their bindings exist only here — which is why
+/// the provider crates take a port rather than generating their own.
 ///
-/// Both properties were bought by a live browser failure: a storage
-/// setup makes ~23 sequential requests, and a single dropped connection
-/// aborted the whole thing, leaving a half-configured store behind an
-/// error message (`fetch: send: NetworkError…`) that named neither the
-/// operation nor the host. Every provider call in this file is idempotent
-/// by construction (overwrite uploads, tolerated-conflict folder
-/// creation, adopted-if-exists link minting, reads), so retrying a
-/// transport failure is safe; a response — any status — is never retried
-/// here, because status handling belongs to the caller.
-/// Which egress authority a call site is asking for (#7). This is not a
-/// runtime flag the seam consults: it selects WHICH WORLD IMPORT the call
-/// travels through, and the two imports are wired to different instances
-/// with different (or no) credentials. Picking the wrong one attaches the
-/// wrong authority at composition time, where it is visible, rather than
-/// silently at request time.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Route {
-    /// Acts as the user: the wired instance signs or injects a bearer.
-    Owner,
-    /// Acts as the APP, never as the user: the wired instance injects
-    /// app-auth (public identifiers embedded in every shipped client).
-    /// Distinct from Owner because the user is not identified, and
-    /// distinct from Public because the destination still demands an
-    /// authenticated caller.
-    Shared,
-    /// Carries no identity at all: the wired instance strips any
-    /// authorization and injects nothing.
-    Public,
-}
+/// The per-attempt fetch counter lives here, and `do_fetch` calls this
+/// exactly once per attempt, so the count the harness observes is
+/// unchanged by the extraction.
+struct EngineFetch;
 
-async fn do_fetch(
-    route: Route,
-    method: &str,
-    url: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-) -> Result<(u16, Vec<u8>), String> {
-    const ATTEMPTS: u32 = 3;
-    let label = request_label(method, &url);
-    let mut last = String::new();
-    for attempt in 1..=ATTEMPTS {
+impl FetchPort for EngineFetch {
+    async fn request(
+        &self,
+        route: Route,
+        method: &str,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    ) -> Result<(u16, Vec<u8>), String> {
         let _ = with_state(|s| s.fetches += 1);
-        let attempt_result = match route {
+        let result = match route {
             Route::Owner => {
-                store_owner_fetch::request(
-                    method.to_string(),
-                    url.clone(),
-                    headers.clone(),
-                    body.clone(),
-                )
-                .await
+                store_owner_fetch::request(method.to_string(), url.to_string(), headers, body).await
             }
             Route::Shared => {
-                store_shared_fetch::request(
-                    method.to_string(),
-                    url.clone(),
-                    headers.clone(),
-                    body.clone(),
-                )
-                .await
+                store_shared_fetch::request(method.to_string(), url.to_string(), headers, body)
+                    .await
             }
             Route::Public => {
-                store_public_fetch::request(
-                    method.to_string(),
-                    url.clone(),
-                    headers.clone(),
-                    body.clone(),
-                )
-                .await
+                store_public_fetch::request(method.to_string(), url.to_string(), headers, body)
+                    .await
             }
         };
-        match attempt_result {
-            Ok(resp) => return Ok((resp.status, resp.body)),
-            Err(e) => {
-                last = e.to_string();
-                // No backoff, deliberately: only TRANSPORT failures retry
-                // here (a status — including 429/5xx — returns to the
-                // caller untouched), so there is no rate limiter to
-                // hammer, and the attempt count is bounded at 3.
-                let _ = attempt;
-            }
+        match result {
+            Ok(resp) => Ok((resp.status, resp.body)),
+            Err(e) => Err(e.to_string()),
         }
     }
-    Err(format!(
-        "{label}: transport failed after {ATTEMPTS} attempts: {last}"
-    ))
 }
 
-async fn s3_signed(
-    st: &Store,
-    method: &str,
-    key: &str,
-    query: &str,
-    body: Vec<u8>,
-) -> Result<(u16, Vec<u8>), String> {
-    let host = host_of(&st.endpoint);
-    let path = if key.is_empty() {
-        format!("/{}", st.bucket)
-    } else {
-        format!("/{}/{}", st.bucket, key)
-    };
-    let (date, amz) = amz_dates();
-    let payload_hash = hex::encode(sha256(&body).await?);
+/// The engine's `Sigv4SignPort`: the escrowed-credential seam (#11). The
+/// credential's key bytes never enter guest memory; only the string-to-
+/// sign and its scope cross over, and both are public request metadata.
+struct EngineSigner;
 
-    let canonical_headers =
-        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz}\n");
-    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
-    let canonical_request =
-        format!("{method}\n{path}\n{query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
-    let scope = format!("{date}/us-east-1/s3/aws4_request");
-    let string_to_sign = format!(
-        "AWS4-HMAC-SHA256\n{amz}\n{scope}\n{}",
-        hex::encode(sha256(canonical_request.as_bytes()).await?)
-    );
-
-    // The escrowed-credential seam: the date/region/service scope goes
-    // over with the string-to-sign so the signer can REFUSE out-of-scope
-    // work. Everything handed over is already public request metadata.
-    let signature = store_signer::sign(
-        string_to_sign,
-        date.clone(),
-        "us-east-1".to_string(),
-        "s3".to_string(),
-    )
-    .await
-    .map_err(|e| format!("sigv4 signer: {e}"))?;
-    let authorization = format!(
-        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
-        st.access
-    );
-
-    let url = if query.is_empty() {
-        format!("{}{path}", st.endpoint)
-    } else {
-        format!("{}{path}?{}", st.endpoint, query.trim_end_matches('='))
-    };
-    // Owner tier: this request acts as the user's storage account.
-    do_fetch(
-        Route::Owner,
-        method,
-        url,
-        vec![
-            ("x-amz-date".into(), amz),
-            ("x-amz-content-sha256".into(), payload_hash),
-            ("authorization".into(), authorization),
-        ],
-        body,
-    )
-    .await
-}
-
-async fn put_object(st: &Store, key: &str, body: Vec<u8>) -> Result<(), String> {
-    let (status, resp) = s3_signed(st, "PUT", key, "", body).await?;
-    if status == 200 {
-        Ok(())
-    } else {
-        Err(format!("PUT {key}: {status} {}", String::from_utf8_lossy(&resp)))
+impl Sigv4SignPort for EngineSigner {
+    async fn sign(
+        &self,
+        string_to_sign: String,
+        date: String,
+        region: String,
+        service: String,
+    ) -> Result<String, String> {
+        store_signer::sign(string_to_sign, date, region, service)
+            .await
+            .map_err(|e| e.to_string())
     }
-}
-
-async fn delete_object(st: &Store, key: &str) -> Result<(), String> {
-    let (status, resp) = s3_signed(st, "DELETE", key, "", Vec::new()).await?;
-    if status == 204 || status == 200 {
-        Ok(())
-    } else {
-        Err(format!("DELETE {key}: {status} {}", String::from_utf8_lossy(&resp)))
-    }
-}
-
-/// Unsigned GET: the account-less pull path (availability by name
-/// secrecy). Routed Public, so the request is anonymous by construction —
-/// the wired instance holds no identity and strips any authorization.
-async fn get_object_unsigned(st: &Store, key: &str) -> Result<Option<Vec<u8>>, String> {
-    let url = format!("{}/{}/{}", st.endpoint, st.bucket, key);
-    let (status, body) = do_fetch(Route::Public, "GET", url, Vec::new(), Vec::new()).await?;
-    match status {
-        200 => Ok(Some(body)),
-        404 | 403 => Ok(None),
-        other => Err(format!("GET {key}: {other}")),
-    }
-}
-
-/// Name-keyed object names: hex(HMAC(name-key, kind || id)).
-async fn object_name(name_key: &[u8; 32], kind: &[u8], id: &[u8]) -> Result<String, String> {
-    let mut data = kind.to_vec();
-    data.extend_from_slice(id);
-    Ok(hex::encode(hmac(name_key, &data).await?))
-}
-
-/// K_p location. Spike simplification: derived from public ids (doc,
-/// owner, member), so members can compute it with no shared secret and
-/// no prekey-set agreement; the payload is still prekey-wrapped, and
-/// revocation deletes the object. Production wants a pairwise-secret
-/// location (existence privacy) — a #19/#10 design item.
-async fn kp_location(doc: &[u8], owner: &[u8], member: &[u8]) -> Result<String, String> {
-    let mut data = b"kp".to_vec();
-    data.extend_from_slice(doc);
-    data.extend_from_slice(owner);
-    data.extend_from_slice(member);
-    Ok(hex::encode(sha256(&data).await?))
 }
 
 /// My prekey pairs, out of keyhive's Active.
@@ -1299,7 +1070,7 @@ fn grantee_devices(doc: &[u8]) -> Result<Vec<[u8; 32]>, String> {
 
 /// Publish one member's K_p: the name-key keychain + device list, sealed
 /// to a prekey DH (see `seal_to_member`).
-async fn publish_kp(st: &Store, kh: &Kh, doc: &[u8], member: &[u8]) -> Result<(), String> {
+async fn publish_kp(st: &S3Cfg, kh: &Kh, doc: &[u8], member: &[u8]) -> Result<(), String> {
     let my_id_bytes = with_state(|s| s.my_peer.as_bytes().to_vec())?;
     let devices = grantee_devices(doc)?;
     let payload = with_state(|s| {
@@ -1323,31 +1094,26 @@ async fn publish_kp(st: &Store, kh: &Kh, doc: &[u8], member: &[u8]) -> Result<()
     )
     .await?;
     let name = kp_location(doc, &my_id_bytes, member).await?;
-    put_object(st, &name, bincode::serialize(&obj).map_err(|e| e.to_string())?).await
+    put_object(
+        st,
+        &EngineFetch,
+        &EngineSigner,
+        &name,
+        bincode::serialize(&obj).map_err(|e| e.to_string())?,
+    )
+    .await
 }
 
-// --- the Dropbox provider: the link-capability pull strategy ---
+// --- the Dropbox provider ---
 //
-// Ported from spikes/dropbox/guest/src/lib.rs (live-verified HTTP
-// shapes; the citations below point at that file). The delta vs S3 is
-// the pull tier only: names here are plain derivable paths and the pull
-// capability is a Dropbox shared link, which the provider revokes
-// server-side, hard and retroactively. Blob CONTENTS are identical to
-// the S3 path — same envelope bytes, same op-stream blob, same signed
-// manifest; only addressing and transport change.
+// The protocol itself (RPC shapes, uploads, downloads, link mint/revoke,
+// path derivation) lives in `provider-dropbox`; what stays here is the
+// part entangled with engine state and group crypto: the config
+// snapshot, the container-link cache, and the sealed pickup file.
 
-/// A snapshot of the Dropbox config — addressing only. There is no token
-/// here and no app secret: the owner-tier bearer (and its refresh) live
-/// in the wired `store-owner-fetch` instance, the link-tier app auth in
-/// the wired `store-shared-fetch` instance (#7). The guest cannot tell
-/// which credential, if any, it is speaking with.
-struct Dbx {
-    root: String,
-}
-
-fn dbx() -> Result<Dbx, String> {
+fn dbx() -> Result<DbxCfg, String> {
     with_state(|s| match s.store.as_ref() {
-        Some(StoreCfg::Dropbox(c)) => Ok(Dbx {
+        Some(StoreCfg::Dropbox(c)) => Ok(DbxCfg {
             root: c.root.clone(),
         }),
         Some(StoreCfg::S3(_)) => Err("dropbox path called on an s3 store".to_string()),
@@ -1355,335 +1121,23 @@ fn dbx() -> Result<Dbx, String> {
     })?
 }
 
-/// Owner-tier request: authority arrives from the WIRING, not from this
-/// function. The guest sets no authorization header — the wired
-/// `store-owner-fetch` instance injects the user's bearer at the seam and
-/// owns token refresh, so an expired token never becomes guest business
-/// (the old in-guest 401-refresh-retry moved behind the seam with the
-/// token itself). A tierless or revoked instance refuses; its error
-/// string surfaces through the normal error paths.
-async fn bearer_fetch(
-    _cfg: &Dbx,
-    url: &str,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-) -> Result<(u16, Vec<u8>), String> {
-    do_fetch(Route::Owner, "POST", url.to_string(), headers, body).await
-}
-
-/// A JSON-RPC call against api.dropboxapi.com over the owner route.
-/// (spikes/dropbox/guest/src/lib.rs:326)
-async fn dbx_rpc_raw(
-    cfg: &Dbx,
-    endpoint: &str,
-    body: serde_json::Value,
-) -> Result<(u16, Vec<u8>), String> {
-    bearer_fetch(
-        cfg,
-        &format!("https://api.dropboxapi.com/2/{endpoint}"),
-        vec![("content-type".into(), "application/json".into())],
-        body.to_string().into_bytes(),
-    )
-    .await
-}
-
-/// As `dbx_rpc_raw`, but 200 or bust. Dropbox's error bodies are JSON
-/// carrying an `error_summary`, so they go into the error verbatim.
-async fn dbx_rpc(
-    cfg: &Dbx,
-    endpoint: &str,
-    body: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let (status, resp) = dbx_rpc_raw(cfg, endpoint, body).await?;
-    if status != 200 {
-        return Err(format!(
-            "{endpoint}: {status} {}",
-            String::from_utf8_lossy(&resp)
-        ));
-    }
-    if resp.is_empty() {
-        return Ok(serde_json::Value::Null);
-    }
-    serde_json::from_slice(&resp).map_err(|e| format!("{endpoint}: decode response: {e}"))
-}
-
-/// Folder creation; an already-existing folder is a 409
-/// `path/conflict/folder`, tolerated when asked.
-async fn dbx_create_folder(cfg: &Dbx, path: &str, tolerate_conflict: bool) -> Result<(), String> {
-    let (status, resp) = dbx_rpc_raw(
-        cfg,
-        "files/create_folder_v2",
-        serde_json::json!({ "path": path, "autorename": false }),
-    )
-    .await?;
-    let text = String::from_utf8_lossy(&resp);
-    if status == 200 || (tolerate_conflict && status == 409 && text.contains("conflict")) {
-        Ok(())
-    } else {
-        Err(format!("create_folder_v2 {path}: {status} {text}"))
-    }
-}
-
-async fn dbx_delete(cfg: &Dbx, path: &str) -> Result<(), String> {
-    dbx_rpc(cfg, "files/delete_v2", serde_json::json!({ "path": path })).await?;
-    Ok(())
-}
-
-/// Mint a public shared link on `path` — the pull capability.
-async fn dbx_mint_link(cfg: &Dbx, path: &str) -> Result<String, String> {
-    let (status, resp) = dbx_rpc_raw(
-        cfg,
-        "sharing/create_shared_link_with_settings",
-        serde_json::json!({
-            "path": path,
-            "settings": { "requested_visibility": "public" },
-        }),
-    )
-    .await?;
-    if status == 200 {
-        let value: serde_json::Value = serde_json::from_slice(&resp)
-            .map_err(|e| format!("create_shared_link {path}: decode: {e}"))?;
-        return value
-            .get("url")
-            .and_then(|u| u.as_str())
-            .map(|u| u.to_string())
-            .ok_or_else(|| format!("create_shared_link {path}: no url in response"));
-    }
-    // CONTRACT: the dispatch specifies minting only. A link already
-    // minted on this path (409 shared_link_already_exists) can only
-    // happen when a previous process left one behind — the state that
-    // remembers it is per-instance. Adopting the existing link is the
-    // conservative reading: erroring out would strand the doc, and
-    // minting is not possible while one exists.
-    let text = String::from_utf8_lossy(&resp);
-    if status == 409 && text.contains("shared_link_already_exists") {
-        let value = dbx_rpc(
-            cfg,
-            "sharing/list_shared_links",
-            serde_json::json!({ "path": path, "direct_only": true }),
-        )
-        .await?;
-        if let Some(url) = value
-            .get("links")
-            .and_then(|l| l.as_array())
-            .and_then(|l| l.first())
-            .and_then(|l| l.get("url"))
-            .and_then(|u| u.as_str())
-        {
-            return Ok(url.to_string());
-        }
-    }
-    Err(format!("create_shared_link {path}: {status} {text}"))
-}
-
-/// Hard, retroactive, server-side revocation of a link.
-async fn dbx_revoke_link(cfg: &Dbx, url: &str) -> Result<(), String> {
-    dbx_rpc(
-        cfg,
-        "sharing/revoke_shared_link",
-        serde_json::json!({ "url": url }),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Owner write: path-addressed, overwrite-in-place, implicit parents.
-async fn dbx_upload(cfg: &Dbx, path: &str, body: Vec<u8>) -> Result<(), String> {
-    let (status, resp) = bearer_fetch(
-        cfg,
-        "https://content.dropboxapi.com/2/files/upload",
-        vec![
-            ("content-type".into(), "application/octet-stream".into()),
-            (
-                "dropbox-api-arg".into(),
-                serde_json::json!({ "path": path, "mode": "overwrite" }).to_string(),
-            ),
-        ],
-        body,
-    )
-    .await?;
-    if status == 200 {
-        Ok(())
-    } else {
-        Err(format!(
-            "upload {path}: {status} {}",
-            String::from_utf8_lossy(&resp)
-        ))
-    }
-}
-
-/// Owner read: Bearer download by path. 409 is Dropbox's "not found /
-/// refused" on content endpoints, and is reported as absence.
-async fn dbx_download(cfg: &Dbx, path: &str) -> Result<Option<Vec<u8>>, String> {
-    let (status, body) = bearer_fetch(
-        cfg,
-        "https://content.dropboxapi.com/2/files/download",
-        vec![(
-            "dropbox-api-arg".into(),
-            serde_json::json!({ "path": path }).to_string(),
-        )],
-        Vec::new(),
-    )
-    .await?;
-    match status {
-        200 => Ok(Some(body)),
-        409 => Ok(None),
-        other => Err(format!(
-            "download {path}: {other} {}",
-            String::from_utf8_lossy(&body)
-        )),
-    }
-}
-
-/// Owner list: the doc folder's entry names, following `has_more`.
-/// Doc folders are small, but the continue loop is the correct shape.
-async fn dbx_list_folder(cfg: &Dbx, folder: &str) -> Result<Vec<String>, String> {
-    let mut names = Vec::new();
-    let (status, resp) = dbx_rpc_raw(
-        cfg,
-        "files/list_folder",
-        serde_json::json!({ "path": folder }),
-    )
-    .await?;
-    let text = String::from_utf8_lossy(&resp);
-    // A doc nothing has been flushed for yet: no folder, no devices.
-    if status == 409 && text.contains("not_found") {
-        return Ok(names);
-    }
-    if status != 200 {
-        return Err(format!("files/list_folder: {status} {text}"));
-    }
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&resp).map_err(|e| format!("files/list_folder: decode: {e}"))?;
-    loop {
-        if let Some(entries) = value.get("entries").and_then(|e| e.as_array()) {
-            for entry in entries {
-                if let Some(name) = entry.get("name").and_then(|n| n.as_str()) {
-                    names.push(name.to_string());
-                }
-            }
-        }
-        let more = value
-            .get("has_more")
-            .and_then(|m| m.as_bool())
-            .unwrap_or(false);
-        let cursor = value
-            .get("cursor")
-            .and_then(|c| c.as_str())
-            .map(|c| c.to_string());
-        match (more, cursor) {
-            (true, Some(cursor)) => {
-                value = dbx_rpc(
-                    cfg,
-                    "files/list_folder/continue",
-                    serde_json::json!({ "cursor": cursor }),
-                )
-                .await?;
-            }
-            _ => break,
-        }
-    }
-    Ok(names)
-}
-
-/// The link-tier recipient's read: a shared-link fetch mediated by app
-/// auth alone. 409 means refused — which is what revocation produces,
-/// indistinguishable from "never existed" (no existence oracle).
-///
-/// Routed Shared — the APP tier, which is neither of the other two.
-/// Dropbox will not serve a shared link to an unauthenticated caller, so
-/// this cannot be Public; but the identity it demands is the app key and
-/// secret that every shipped client embeds, which are public identifiers
-/// and not the user, so it must not be Owner either. Sending it through
-/// its own import is what makes the anonymity property STRUCTURAL: a
-/// recipient-path read cannot identify the user because the user's
-/// credential is wired somewhere else entirely. (This is the memo's live
-/// near-miss — owner, link, and anonymous calls all address the same
-/// host, so attaching credentials by destination would deanonymize
-/// exactly this path.)
-///
-/// The guest sends no authorization header; the wired instance injects
-/// app-auth at the seam.
-async fn dbx_link_fetch(cfg: &Dbx, url: &str, rel: Option<&str>) -> Result<Option<Vec<u8>>, String> {
-    let _ = cfg;
-    let arg = match rel {
-        Some(path) => serde_json::json!({ "url": url, "path": path }),
-        None => serde_json::json!({ "url": url }),
-    };
-    let (status, body) = do_fetch(
-        Route::Shared,
-        "POST",
-        "https://content.dropboxapi.com/2/sharing/get_shared_link_file".into(),
-        vec![("dropbox-api-arg".into(), arg.to_string())],
-        Vec::new(),
-    )
-    .await?;
-    match status {
-        200 => Ok(Some(body)),
-        409 => Ok(None),
-        other => Err(format!(
-            "shared-link fetch: {other} {}",
-            String::from_utf8_lossy(&body)
-        )),
-    }
-}
-
-// Paths: plain and client-derivable — no name secrecy on this provider,
-// so no name-key epochs either.
-
-fn dbx_doc_folder(root: &str, doc: &[u8]) -> String {
-    format!("/{root}/docs/{}", hex::encode(doc))
-}
-
-/// `chunk-{cref}` / `oplog-{device}` / `manifest-{device}`.
-fn dbx_child(kind: &str, id: &[u8]) -> String {
-    format!("{kind}-{}", hex::encode(id))
-}
-
-fn dbx_pickup_path(root: &str, doc: &[u8], member: &[u8]) -> String {
-    format!(
-        "/{root}/pickup/{}/{}",
-        hex::encode(doc),
-        hex::encode(member)
-    )
-}
-
-/// The two ways to reach a doc's objects: as the owner (Bearer, by
-/// path) or as a link-tier recipient (app auth, by relative path under
-/// the container link).
-enum DbxSource {
-    Owner(String),
-    Link(String),
-}
-
-async fn dbx_fetch_child(
-    cfg: &Dbx,
-    src: &DbxSource,
-    name: &str,
-) -> Result<Option<Vec<u8>>, String> {
-    match src {
-        DbxSource::Owner(folder) => dbx_download(cfg, &format!("{folder}/{name}")).await,
-        DbxSource::Link(url) => dbx_link_fetch(cfg, url, Some(&format!("/{name}"))).await,
-    }
-}
-
 /// Ensure the doc folder exists and its container link is minted,
 /// caching the link in per-doc bucket state. Called on the first grant
 /// or flush for a doc.
-async fn dbx_ensure_doc_container(cfg: &Dbx, doc: &[u8]) -> Result<String, String> {
+async fn dbx_ensure_doc_container(cfg: &DbxCfg, doc: &[u8]) -> Result<String, String> {
     ensure_bucket_state(doc)?;
     if let Some(link) = with_state(|s| s.buckets.get(doc).and_then(|b| b.doc_link.clone()))? {
         return Ok(link);
     }
-    dbx_create_folder(cfg, &format!("/{}", cfg.root), true).await?;
-    dbx_create_folder(cfg, &format!("/{}/docs", cfg.root), true).await?;
+    dbx_create_folder(cfg, &EngineFetch, &format!("/{}", cfg.root), true).await?;
+    dbx_create_folder(cfg, &EngineFetch, &format!("/{}/docs", cfg.root), true).await?;
     let folder = dbx_doc_folder(&cfg.root, doc);
     // The container link must be minted on the FOLDER, so the folder has
     // to exist before any file lands in it (uploads create parents
     // implicitly, but silently). Tolerating the conflict keeps re-grant
     // and re-flush idempotent.
-    dbx_create_folder(cfg, &folder, true).await?;
-    let link = dbx_mint_link(cfg, &folder).await?;
+    dbx_create_folder(cfg, &EngineFetch, &folder, true).await?;
+    let link = dbx_mint_link(cfg, &EngineFetch, &folder).await?;
     with_state(|s| {
         if let Some(b) = s.buckets.get_mut(doc) {
             b.doc_link = Some(link.clone());
@@ -1696,7 +1150,7 @@ async fn dbx_ensure_doc_container(cfg: &Dbx, doc: &[u8]) -> Result<String, Strin
 /// device set, sealed to their prekey exactly as K_p is. Overwrite in
 /// place, so a re-grant (or a post-revocation rewrite) refreshes the
 /// contents without disturbing the member's standing pickup link.
-async fn dbx_publish_pickup(cfg: &Dbx, kh: &Kh, doc: &[u8], member: &[u8]) -> Result<(), String> {
+async fn dbx_publish_pickup(cfg: &DbxCfg, kh: &Kh, doc: &[u8], member: &[u8]) -> Result<(), String> {
     let doc_link = dbx_ensure_doc_container(cfg, doc).await?;
     let payload = DbxPickup {
         doc_link,
@@ -1712,6 +1166,7 @@ async fn dbx_publish_pickup(cfg: &Dbx, kh: &Kh, doc: &[u8], member: &[u8]) -> Re
     .await?;
     dbx_upload(
         cfg,
+        &EngineFetch,
         &dbx_pickup_path(&cfg.root, doc, member),
         bincode::serialize(&obj).map_err(|e| e.to_string())?,
     )
@@ -1752,9 +1207,9 @@ fn provider() -> Result<Provider, String> {
 /// signed manifest) are produced by the same pipeline either way.
 enum PutSink {
     /// S3: object names HMAC-derived from the current name-key.
-    S3 { st: Store, nk: [u8; 32] },
+    S3 { st: S3Cfg, nk: [u8; 32] },
     /// Dropbox: plain `{kind}-{hex}` children of the doc folder.
-    Dbx { cfg: Dbx, folder: String },
+    Dbx { cfg: DbxCfg, folder: String },
 }
 
 impl PutSink {
@@ -1762,10 +1217,16 @@ impl PutSink {
         match self {
             PutSink::S3 { st, nk } => {
                 let name = object_name(nk, kind.as_bytes(), id).await?;
-                put_object(st, &name, body).await
+                put_object(st, &EngineFetch, &EngineSigner, &name, body).await
             }
             PutSink::Dbx { cfg, folder } => {
-                dbx_upload(cfg, &format!("{folder}/{}", dbx_child(kind, id)), body).await
+                dbx_upload(
+                    cfg,
+                    &EngineFetch,
+                    &format!("{folder}/{}", dbx_child(kind, id)),
+                    body,
+                )
+                .await
             }
         }
     }
@@ -1898,7 +1359,7 @@ async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, Str
     ensure_bucket_state(&doc_id)?;
 
     let (src, devices, tier) = if let Some(pickup) = pickup {
-        let blob = dbx_link_fetch(&cfg, &pickup, None)
+        let blob = dbx_link_fetch(&cfg, &EngineFetch, &pickup, None)
             .await?
             .ok_or("pickup link refused (409): revoked or never granted")?;
         let obj: KpObject =
@@ -1917,7 +1378,7 @@ async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, Str
         // Owner tier: the doc folder's own listing is the device set.
         let folder = dbx_doc_folder(&cfg.root, &doc_id);
         let mut devices: Vec<[u8; 32]> = Vec::new();
-        for name in dbx_list_folder(&cfg, &folder).await? {
+        for name in dbx_list_folder(&cfg, &EngineFetch, &folder).await? {
             for prefix in ["manifest-", "oplog-"] {
                 let Some(id_hex) = name.strip_prefix(prefix) else {
                     continue;
@@ -1937,7 +1398,8 @@ async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, Str
     // 1. Op streams into keyhive.
     let mut ingested = 0usize;
     for device in &devices {
-        let Some(blob) = dbx_fetch_child(&cfg, &src, &dbx_child("oplog", device)).await? else {
+        let Some(blob) = dbx_fetch_child(&cfg, &EngineFetch, &src, &dbx_child("oplog", device)).await?
+        else {
             continue;
         };
         let events: Vec<StaticEvent<T>> =
@@ -1949,7 +1411,9 @@ async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, Str
     // 2. Manifests -> union of entries.
     let mut entries: Vec<Entry> = Vec::new();
     for device in &devices {
-        let Some(blob) = dbx_fetch_child(&cfg, &src, &dbx_child("manifest", device)).await? else {
+        let Some(blob) =
+            dbx_fetch_child(&cfg, &EngineFetch, &src, &dbx_child("manifest", device)).await?
+        else {
             continue;
         };
         let manifest = verify_manifest(&blob, device).await?;
@@ -1975,7 +1439,7 @@ async fn dbx_pull(doc_id: Vec<u8>, pickup: Option<String>) -> Result<String, Str
         if have.contains(cref) {
             continue;
         }
-        let blob = dbx_fetch_child(&cfg, &src, &dbx_child("chunk", cref))
+        let blob = dbx_fetch_child(&cfg, &EngineFetch, &src, &dbx_child("chunk", cref))
             .await?
             .ok_or("chunk object missing or refused (409)")?;
         let parent_set: BTreeSet<CommitId> = parents.iter().map(|p| CommitId::new(*p)).collect();
@@ -2004,7 +1468,7 @@ async fn s3_pull(doc_id: Vec<u8>, owner: Vec<u8>) -> Result<String, String> {
 
     // 1. K_p: locate by ids, unwrap by prekey DH.
     let loc = kp_location(&doc_id, &owner, &my_id).await?;
-    let blob = get_object_unsigned(&st, &loc)
+    let blob = get_object_unsigned(&st, &EngineFetch, &loc)
         .await?
         .ok_or("kp missing (404): revoked or never granted")?;
     let obj: KpObject = bincode::deserialize(&blob).map_err(|e| format!("kp decode: {e}"))?;
@@ -2036,7 +1500,7 @@ async fn s3_pull(doc_id: Vec<u8>, owner: Vec<u8>) -> Result<String, String> {
     for device in &payload.devices {
         for (_, nk) in keychain.iter().rev() {
             let name = object_name(nk, b"oplog", device).await?;
-            if let Some(blob) = get_object_unsigned(&st, &name).await? {
+            if let Some(blob) = get_object_unsigned(&st, &EngineFetch, &name).await? {
                 let events: Vec<StaticEvent<T>> =
                     bincode::deserialize(&blob).map_err(|e| format!("oplog decode: {e}"))?;
                 ingested += events.len();
@@ -2051,7 +1515,7 @@ async fn s3_pull(doc_id: Vec<u8>, owner: Vec<u8>) -> Result<String, String> {
     for device in &payload.devices {
         for (_, nk) in keychain.iter().rev() {
             let name = object_name(nk, b"manifest", device).await?;
-            let Some(blob) = get_object_unsigned(&st, &name).await? else {
+            let Some(blob) = get_object_unsigned(&st, &EngineFetch, &name).await? else {
                 continue;
             };
             let signed: SignedManifest =
@@ -2104,7 +1568,7 @@ async fn s3_pull(doc_id: Vec<u8>, owner: Vec<u8>) -> Result<String, String> {
             .get(epoch)
             .ok_or(format!("keychain missing epoch {epoch}"))?;
         let name = object_name(nk, b"chunk", cref).await?;
-        let blob = get_object_unsigned(&st, &name)
+        let blob = get_object_unsigned(&st, &EngineFetch, &name)
             .await?
             .ok_or(format!("chunk object missing for epoch {epoch}"))?;
         let parent_set: BTreeSet<CommitId> =
@@ -3051,7 +2515,8 @@ impl DriverGuest for Component {
                 // An explicit location body: some servers reject a bodyless
                 // CreateBucket arriving without a Content-Length.
                 let create = br#"<CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>us-east-1</LocationConstraint></CreateBucketConfiguration>"#.to_vec();
-                let (status, resp) = s3_signed(&st, "PUT", "", "", create).await?;
+                let (status, resp) =
+                    s3_signed(&st, &EngineFetch, &EngineSigner, "PUT", "", "", create).await?;
                 if status != 200 && status != 409 {
                     return Err(format!(
                         "create bucket: {status} {}",
@@ -3063,7 +2528,16 @@ impl DriverGuest for Component {
                     st.bucket
                 );
                 let (status, resp) =
-                    s3_signed(&st, "PUT", "", "policy=", policy.into_bytes()).await?;
+                    s3_signed(
+                        &st,
+                        &EngineFetch,
+                        &EngineSigner,
+                        "PUT",
+                        "",
+                        "policy=",
+                        policy.into_bytes(),
+                    )
+                    .await?;
                 if status == 200 || status == 204 {
                     Ok(())
                 } else {
@@ -3077,9 +2551,10 @@ impl DriverGuest for Component {
                 // Only the roots: doc folders and every link are minted
                 // lazily, on the first grant or flush for a doc.
                 let cfg = dbx()?;
-                dbx_create_folder(&cfg, &format!("/{}", cfg.root), true).await?;
-                dbx_create_folder(&cfg, &format!("/{}/docs", cfg.root), true).await?;
-                dbx_create_folder(&cfg, &format!("/{}/pickup", cfg.root), true).await?;
+                dbx_create_folder(&cfg, &EngineFetch, &format!("/{}", cfg.root), true).await?;
+                dbx_create_folder(&cfg, &EngineFetch, &format!("/{}/docs", cfg.root), true).await?;
+                dbx_create_folder(&cfg, &EngineFetch, &format!("/{}/pickup", cfg.root), true)
+                    .await?;
                 Ok(())
             }
         }
@@ -3130,7 +2605,8 @@ impl DriverGuest for Component {
                     return Ok(Some(link));
                 }
                 let link =
-                    dbx_mint_link(&cfg, &dbx_pickup_path(&cfg.root, &doc_id, &member)).await?;
+                    dbx_mint_link(&cfg, &EngineFetch, &dbx_pickup_path(&cfg.root, &doc_id, &member))
+                        .await?;
                 with_state(|s| {
                     if let Some(b) = s.buckets.get_mut(&doc_id) {
                         b.pickup_links.push((member.clone(), link.clone()));
@@ -3149,7 +2625,13 @@ impl DriverGuest for Component {
                 let my_id = with_state(|s| s.my_peer.as_bytes().to_vec())?;
 
                 // Cooperative immediacy: the pickup object goes away.
-                delete_object(&st, &kp_location(&doc_id, &my_id, &member).await?).await?;
+                delete_object(
+                    &st,
+                    &EngineFetch,
+                    &EngineSigner,
+                    &kp_location(&doc_id, &my_id, &member).await?,
+                )
+                .await?;
 
                 // Hard forward boundary: rotate the name-key epoch alongside
                 // the BeeKEM rotation the keyhive revocation causes.
@@ -3187,19 +2669,24 @@ impl DriverGuest for Component {
 
                 // 1. Their standing capability dies, and the object behind
                 //    it goes away too.
-                dbx_revoke_link(&cfg, &their_link).await?;
-                dbx_delete(&cfg, &dbx_pickup_path(&cfg.root, &doc_id, &member)).await?;
+                dbx_revoke_link(&cfg, &EngineFetch, &their_link).await?;
+                dbx_delete(
+                    &cfg,
+                    &EngineFetch,
+                    &dbx_pickup_path(&cfg.root, &doc_id, &member),
+                )
+                .await?;
 
                 // 2. The hard boundary this strategy exists for: revoking
                 //    the container link kills pull-now AND pull-past,
                 //    server-side, against arbitrarily modified clients —
                 //    including one that hoarded this exact URL.
-                dbx_revoke_link(&cfg, &doc_link).await?;
+                dbx_revoke_link(&cfg, &EngineFetch, &doc_link).await?;
 
                 // 3. Pull-forward: a FRESH link on the SAME folder. Zero
                 //    data movement, no re-encryption, no compaction.
                 let folder = dbx_doc_folder(&cfg.root, &doc_id);
-                let new_link = dbx_mint_link(&cfg, &folder).await?;
+                let new_link = dbx_mint_link(&cfg, &EngineFetch, &folder).await?;
                 let remaining = with_state(|s| {
                     let b = s
                         .buckets

@@ -1,5 +1,5 @@
 [package]
-name = "spike-guest"
+name = "engine-guest"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -29,6 +29,12 @@ polymorph-webcrypto-guest = { git = "https://github.com/polymorph-components/pol
 # generate! expansions share one runtime. inter-task-wakeup is load-bearing:
 # subduction's tasks sleep on Rust-side channels.
 wit-bindgen = { version = "0.59", features = ["async", "async-spawn", "inter-task-wakeup"] }
+
+# The storage providers, extracted (protocol only; no keyhive,
+# subduction or automerge reaches them).
+provider-common = { path = "../../providers/common" }
+provider-s3 = { path = "../../providers/s3/store" }
+provider-dropbox = { path = "../../providers/dropbox/store" }
 
 future_form = "0.3.1"
 futures = { version = "0.3", default-features = false, features = ["async-await", "std"] }

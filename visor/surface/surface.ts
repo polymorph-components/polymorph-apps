@@ -137,12 +137,12 @@ export function createSurface(
 
   return {
     imports: {
-      "polymorph:todomvc-spike/dom@0.0.1": {
+      "polyvisor:todomvc/dom@0.0.1": {
         Element: SurfaceElement,
         createElement: (tag: string) => new SurfaceElement(tag),
         createTextNode: (data: string) => makeText(data),
       },
-      "polymorph:todomvc-spike/events@0.0.1": {
+      "polyvisor:todomvc/events@0.0.1": {
         listen: (el: SurfaceElement, kind: string, token: number) => {
           if (el.tag === TEXT_TAG) {
             throw new Error("surface: listen is not valid on a text node");
@@ -151,7 +151,7 @@ export function createSurface(
           backend.listen(el.rep, kind, token);
         },
       },
-      "polymorph:todomvc-spike/shell@0.0.1": {
+      "polyvisor:todomvc/shell@0.0.1": {
         root: () => makeRoot(),
         route,
       },

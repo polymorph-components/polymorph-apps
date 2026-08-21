@@ -1,5 +1,5 @@
 // The validation tables for the curated DOM surface — the policy half of
-// polymorph-apps#16's "typed per-op checks". Imported by BOTH sides of the
+// polyvisor#16's "typed per-op checks". Imported by BOTH sides of the
 // seam (surface front-end and applier) so each side enforces independently;
 // in the full framework these run in different realms.
 

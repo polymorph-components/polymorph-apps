@@ -1,7 +1,7 @@
-# spike-fetcher — no longer part of the engine composite
+# engine-fetcher — no longer part of the engine composite
 
 This component wraps `wasi:http`'s async client behind the generic
-`polymorph:fetchspike/fetch` interface. It was the engine guest's network
+`polyvisor:fetch/fetch` interface. It was the engine guest's network
 seam until the storage-egress retrofit (#7/#11): the guest now imports
 three *named* world imports (`store-owner-fetch`, `store-public-fetch`,
 `store-signer`), because authority lives in the wired instance and is

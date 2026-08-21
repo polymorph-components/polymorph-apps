@@ -34,10 +34,10 @@ mod bindings {
 }
 use bindings::*;
 
-use crate::polymorph::fetchspike::fetch;
-use crate::polymorph::todomvc_spike::dom::{create_element, Element};
-use crate::polymorph::todomvc_spike::events::{listen, EventKind};
-use crate::polymorph::todomvc_spike::shell;
+use crate::polyvisor::fetch::fetch;
+use crate::polyvisor::todomvc::dom::{create_element, Element};
+use crate::polyvisor::todomvc::events::{listen, EventKind};
+use crate::polyvisor::todomvc::shell;
 
 use serde::{Deserialize, Serialize};
 

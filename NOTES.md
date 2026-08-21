@@ -1,4 +1,4 @@
-# polymorph-apps design notes
+# polyvisor design notes
 
 Consolidated from the founding design discussion (2026-08-16).
 
@@ -1382,7 +1382,7 @@ throughout — no scenario edits, which was the extraction's definition
 of "identical".
 
 Blast-zone honesty, recorded after the fact
-([#45](https://github.com/polymorph-components/polymorph-apps/issues/45)):
+([#45](https://github.com/polymorph-components/polyvisor/issues/45)):
 the isolation above is for PIXELS and FAULTS, not time or memory. A
 guest trap is a promise rejection the runner survives by construction
 (differentially tested — identical trap vectors across backends), but
@@ -1697,12 +1697,38 @@ record — nothing outside it consumes anything inside it, so
 delete-at-will is finally literal. CI, setup.sh and the Pages build
 follow the moved paths (`docs/spike-demo` → `docs/demo`); the
 definition of "identical" was the visor extraction's: every invariant
-grep still fires and the demo e2e suite passed unchanged, 12/12. Two
-known debts ride the same round as follow-up PRs: the LIVE provider
-protocol code still sits inside the engine guest (extraction to
-`providers/*/store` is next), and the spike-era names
-(`polymorph:engine-spike`, `polymorph:todomvc-spike`,
-`polymorph-fetchspike`, the `spike-*` crate names) rename after that.
+grep still fires and the demo e2e suite passed unchanged, 12/12. The
+provider protocol then extracted out of the engine guest (same day):
+`providers/common` carries the egress-route taxonomy, the transport
+retry, and the two port seams (`FetchPort`, `Sigv4SignPort`);
+`providers/s3/store` the SigV4 signing, object ops and name-secrecy
+derivation; `providers/dropbox/store` the RPC/link/pickup protocol.
+The engine keeps the world bindings (its fetch imports are inline
+anonymous interfaces, so the ports are the seam), the config
+snapshots, and ALL sealing — provider crates handle opaque blobs at
+derivable locations and depend on nothing from
+keyhive/subduction/automerge. Behavior identical to the counter: the
+G1–G5 harness's per-replica fetch counts match the pre-extraction
+build exactly, e2e 12/12 unchanged. The spike-era names then renamed
+(same day, closing the round) — and the project took its provisional
+name: **polyvisor**. Polyvisor is the namespace for every identifier
+the project mints; anything needing a unique stable identifier hangs
+off it. Concretely: WIT packages `polymorph:engine-spike` →
+`polyvisor:engine` (world `spike` → `engine`),
+`polymorph:todomvc-spike` → `polyvisor:todomvc`,
+`polymorph:fetchspike` → `polyvisor:fetch`, `polymorph-data:tasks` →
+`polyvisor:tasks`; the iroh ALPNs `engine-spike/0`,
+`engine-spike/pair/0` → `polyvisor/0`, `polyvisor/pair/0`
+(wire-visible, safe while every peer builds from this tree and the
+Pages demo rebuilds per push); the `spike-*` crate names → `engine-*`
+(internal, so not polyvisor-prefixed); the harness's default bucket
+de-spiked. External `polymorph:*` packages (webcrypto, iroh,
+websocket, webrtc-datachannels) are other projects' identifiers and
+keep their names, as do consumer-scoped storage keys (`pm-demo-*`).
+Versions unchanged; the spike-execution records in engine/README.md
+and the citations of the archived probe suites keep their words. The
+GitHub repo renames polymorph-apps → polyvisor to match (in-tree URLs
+already point at the new name; old links redirect).
 
 ## Parked and candidate non-goals
 

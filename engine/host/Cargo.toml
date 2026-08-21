@@ -1,5 +1,5 @@
 [package]
-name = "spike-host"
+name = "engine-host"
 version = "0.0.0"
 edition = "2021"
 publish = false

@@ -1,6 +1,6 @@
-package polymorph:fetchspike@0.1.0;
+package polyvisor:fetch@0.1.0;
 
-/// A minimal buffered HTTP fetch surface: the spike's network capability.
+/// A minimal buffered HTTP fetch surface: the engine's network capability.
 /// Implemented by a dedicated component wrapping `wasip3`'s async
 /// `wasi:http/client` (isolating its wit-bindgen runtime); imported by the
 /// storage guest. Scoping this import is where the framework's
