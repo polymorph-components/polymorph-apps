@@ -29,7 +29,6 @@
 import type { Ctx, Scenario } from "../run.ts";
 import {
   act,
-  ANNOUNCE_MS,
   assert,
   assertEquals,
   assertIncludes,
@@ -39,12 +38,12 @@ import {
   hook,
   onStoragePage,
   paneStatus,
+  PULSE_MS,
   regionText,
   sheetOpen,
   stripText,
   stripUnobscured,
   UI_TIMEOUT,
-  waitForBottom,
   waitForDrawerHidden,
   waitForPanelSurface,
   waitForStoragePage,
@@ -84,6 +83,34 @@ const scenario: Scenario = {
     let framesWithPanel = 0;
     await act("the storage page mounts the s3 panel as a sandboxed surface", async () => {
       const before = await frameProbe(page);
+      // THE PULSE IS A TRANSIENT, so it is RECORDED rather than sampled:
+      // the arrival cue lives 1.8s and a later act could easily arrive
+      // after it cleared, which would make a poll flaky in the direction
+      // that hides regressions. The observer is installed BEFORE the
+      // navigation, and it captures the bottom line's text AT THE INSTANT
+      // the class lands — which is what makes claim (c) below a statement
+      // about the arrival moment itself rather than about some later one.
+      await page.evaluate(() => {
+        const el = document.getElementById("visor-context")!;
+        // deno-lint-ignore no-explicit-any
+        const log: any[] = [];
+        // deno-lint-ignore no-explicit-any
+        (globalThis as any).__pulseLog = log;
+        let on = false;
+        new MutationObserver(() => {
+          const now = el.classList.contains("pulse");
+          if (now && !on) {
+            log.push({
+              at: performance.now(),
+              clearedAt: null,
+              bottom: el.querySelector(".ctx-bottom")?.textContent ?? "",
+            });
+          } else if (!now && on && log.length > 0) {
+            log[log.length - 1].clearedAt = performance.now();
+          }
+          on = now;
+        }).observe(el, { attributes: true, attributeFilter: ["class"] });
+      });
       await hook(page, "openStorage");
       await waitForPanelSurface(page);
       assertEquals(await onStoragePage(page), true, "the storage page after openStorage");
@@ -125,34 +152,85 @@ const scenario: Scenario = {
         true,
         "the visor dim while the storage page is up",
       );
-      // THE LOUD HANDOFF, first. Arriving on the panel's page is
-      // ANNOUNCED on the visor's own line — the beat the modal made
-      // invisible is now both visible and said — and an announcement
-      // owns the bottom line for its window (visor/ui/visor.ts).
-      // Framework voice throughout: it describes the component rather
-      // than quoting it, because a flat string cannot carry the app-voice
-      // marking that a nickname would need.
-      const said = await waitForBottom(
-        page,
-        (t) => t.includes("this page is drawn by"),
-        "the arrival announcement",
-      );
+      // THE LOUD HANDOFF, first — and it is a PULSE now, not a timed
+      // sentence. The visor points at its own context lines
+      // (visor/ui/visor.ts's `pulseContext`) instead of paraphrasing
+      // them on the bottom line for 8s.
+      //
+      // why: the old design ANNOUNCED the arrival, which meant the
+      // bottom line spent its most important seconds saying "the strip
+      // above says NEW" while covering the strip's own answer. So claim
+      // (c) below is a STRENGTHENING the old design could not make at
+      // all: it asserts the panel's app-voice content is on the line
+      // IMMEDIATELY on arrival, where before it was necessarily absent
+      // until the announcement expired.
+      //
+      // (a) the cue itself: the class the animation hangs off, caught by
+      // the recorder installed before the navigation.
+      await page.waitForFunction(
+        // deno-lint-ignore no-explicit-any
+        () => ((globalThis as any).__pulseLog ?? []).length > 0,
+        undefined,
+        { timeout: UI_TIMEOUT },
+      ).catch((e) => {
+        throw new Error(`waiting for the arrival pulse on the context cluster: ${e.message}`);
+      });
+
+      // (b) the screen-reader channel. The pulse carries no words on
+      // screen, so the sentence a non-visual user gets lives in the
+      // strip's visually-hidden live region — and it is subject to the
+      // SAME voice policy the announcement was: framework voice,
+      // describing the component rather than quoting it, because a flat
+      // string cannot carry the app-voice marking a nickname would need.
+      const spoken = await page.waitForFunction(
+        () => {
+          const t = document.getElementById("visor-live")?.textContent ?? "";
+          return t.includes("this page is now drawn by") ? t : false;
+        },
+        undefined,
+        { timeout: UI_TIMEOUT },
+      ).then((h) => h.jsonValue() as Promise<string>).catch((e) => {
+        throw new Error(`waiting for the arrival sentence in #visor-live: ${e.message}`);
+      });
       assert(
-        !said.includes("panel-s3"),
-        `the announcement carried the component's own key: ${JSON.stringify(said)}`,
+        !spoken.includes("panel-s3"),
+        `the live region carried the component's own key: ${JSON.stringify(spoken)}`,
       );
-      // Then the line REVERTS to the surface it is about, by re-render.
-      // Waiting for that is deterministic (the announcement expires on
-      // its own timer) and asserts the anchor is not merely visible but
-      // CORRECT: it names the surface the user is looking at.
-      // The line carries what the component CALLS ITSELF (app voice:
-      // quoted, monospaced, plated), not the provenance key the visor
-      // fetched it by — the key is a sheet's business, not the strip's.
-      await waitForBottom(
-        page,
-        (t) => t.includes("S3 object storage"),
-        "the surface-name line after the arrival announcement",
-        ANNOUNCE_MS + 5_000,
+
+      // (c) and the line the pulse points AT was ALREADY CORRECT at the
+      // instant the cue fired: what the component CALLS ITSELF (app
+      // voice: quoted, monospaced, plated), not the provenance key the
+      // visor fetched it by — the key is a sheet's business, not the
+      // strip's. Read from the recorder's snapshot, so this is a claim
+      // about the arrival moment and not about the aftermath.
+      const pulses = await page.evaluate(() =>
+        // deno-lint-ignore no-explicit-any
+        (globalThis as any).__pulseLog as { at: number; clearedAt: number | null; bottom: string }[]
+      );
+      assertIncludes(
+        pulses[0].bottom,
+        "S3 object storage",
+        "the surface-name line AT THE INSTANT the arrival pulse fired",
+      );
+
+      // (d) and the cue is timed: it clears itself within the animation's
+      // life (visor/ui/visor.css `visor-ctx-pulse`, PULSE_MS) — an
+      // attention cue that stayed up would stop being one.
+      const cleared = await page.waitForFunction(
+        () => {
+          // deno-lint-ignore no-explicit-any
+          const log = (globalThis as any).__pulseLog as { clearedAt: number | null }[];
+          return log[0]?.clearedAt === null ? false : log[0].clearedAt;
+        },
+        undefined,
+        { timeout: PULSE_MS + 5_000 },
+      ).then((h) => h.jsonValue() as Promise<number>).catch((e) => {
+        throw new Error(`the arrival pulse never cleared: ${e.message}`);
+      });
+      const lived = cleared - pulses[0].at;
+      assert(
+        lived <= PULSE_MS + 2_000,
+        `the arrival pulse outlived its animation: ${Math.round(lived)}ms (PULSE_MS=${PULSE_MS})`,
       );
     });
 

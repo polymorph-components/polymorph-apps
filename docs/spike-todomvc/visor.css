@@ -165,6 +165,76 @@
 #visor-context .said { opacity: .85; overflow: hidden;
                         text-overflow: ellipsis; }
 
+/* THE PULSE — the visor pointing at its own context lines. Fired by
+   visor/ui/visor.ts's `pulseContext` when what the lines MEAN just
+   changed (a component surface arriving on the page, say): the cluster's
+   background washes twice and clears, and the lines themselves are left
+   completely alone. That is what it is for. The alternative it replaced
+   was a timed announcement, which takes the bottom line away for its
+   window and so HIDES the arriving surface's plated nickname during
+   exactly the seconds a user should be reading it.
+
+   ALPHA-WHITE ONLY, for the same reason the app-voice plate is (see this
+   file's header): the surface underneath is the user's anchor hue, one
+   of ten at 38% lightness, and a fixed colour would read on some and
+   vanish on others.
+
+   EXPLICITLY NOT THE PLATE'S DRESS: no border, no inset shadow. Those
+   two marks are what APP VOICE looks like in this visor — "a component
+   said this, embedded in the visor's surface" — and the pulse is the
+   framework speaking about its own chrome. A framework-voice attention
+   cue that wore app-voice clothing would say, for a second and a half,
+   that the whole cluster was a quoted token. (It is not the BUTTON dress
+   either, which is the other bordered rectangle here.)
+
+   ZERO LAYOUT SHIFT is a hard requirement — the strip's line and cluster
+   geometry is measured by the `strip-geometry` e2e scenario, and an
+   attention cue that nudges the text it is pointing at is a bug. The
+   breathing room around the wash is therefore padding CANCELLED BY AN
+   EQUAL NEGATIVE MARGIN: the border box grows, the content box does not
+   move, and nothing reflows. */
+@keyframes visor-ctx-pulse {
+  0%   { background-color: rgba(255,255,255,0); }
+  50%  { background-color: rgba(255,255,255,.14); }
+  100% { background-color: rgba(255,255,255,0); }
+}
+#visor-context.pulse {
+  border-radius: 4px;
+  padding: 0 .4em; margin: 0 -.4em;
+  animation: visor-ctx-pulse .9s ease-in-out 2;
+}
+/* REDUCED MOTION: no oscillation. The chosen substitute is a SINGLE
+   FADE-OUT over the same total duration — the wash is present at full
+   strength the instant the pulse starts and decays once to nothing —
+   because the information the cue carries is "something here just
+   changed", which one appearance conveys as well as two, and repetition
+   is precisely the part a motion-sensitive user asked not to receive.
+   (Not a hard static block removed at the end: an abrupt disappearance
+   is itself a movement-like event, and the fade costs nothing.) */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes visor-ctx-pulse-once {
+    0%   { background-color: rgba(255,255,255,.14); }
+    100% { background-color: rgba(255,255,255,0); }
+  }
+  #visor-context.pulse {
+    animation: visor-ctx-pulse-once 1.8s ease-out 1;
+  }
+}
+
+/* THE STRIP'S LIVE REGION — visually hidden, never `display:none`. A
+   display:none (or [hidden]) live region is not announced by assistive
+   tech at all, which would make the element decorative and useless; the
+   clip-rect recipe is the one that keeps it in the accessibility tree
+   while giving it no pixels. The node is created by visor/ui/visor.ts's
+   `initVisor`, not by a consumer's markup — the strip's internals are
+   the visor's own. */
+#visor-live {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* THE PETNAME — USER VOICE (see the three-voices table in this file's
    header). The user's own word for a component, so the visor says it in
    the visor's own sentence: no quotes, no monospace, no plate, full

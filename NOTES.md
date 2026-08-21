@@ -1509,6 +1509,31 @@ OAuth ceremony keeps its window); never for same-origin component
 surfaces whose anchor is the visor. Multi-window visors would need
 their own design pass; parked.
 
+**The arrival cue is a pulse, not a sentence** (2026-08-21, #22,
+executed same day). Correcting the entry above: the storage page's
+arrival is no longer announced on the visor's line. The announcement
+paraphrased the strip while covering it — "the strip above says NEW"
+owned the bottom line for 8 seconds, and the bottom line is where the
+arriving panel's plated nickname had just landed, so the design
+pointed at the answer by hiding it. The cue is now `pulseContext` (a
+visor API): a 1.8s alpha-white background wash on the context
+cluster, two cycles — the visor pointing at its own lines, framework
+voice BY CONSTRUCTION since it puts no words on screen and so has no
+string to mark. The lines stay up, and the TOFU beat is readable at
+the moment it happens; the e2e now asserts the nickname is on the
+line AT THE INSTANT the cue fires, an assertion the old design could
+not make because the line was necessarily covered until expiry.
+Explicitly not the plate's dress (no border, no inset shadow — an
+attention cue must not dress the cluster as a quoted token) and
+alpha-only for the ten hues; single decaying wash, no oscillation,
+under prefers-reduced-motion; zero layout shift (padding cancelled by
+equal negative margin), gated by `strip-geometry`. The sentence moved
+to the right medium rather than dying: a visually-hidden `aria-live`
+region on the strip (`#visor-live`, created by the visor, never
+`display:none`) speaks the arrival to assistive tech — closing a gap
+that predates this change, in which no strip announcement had EVER
+reached a screen reader; `announce()` now mirrors its text there too.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic

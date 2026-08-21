@@ -2591,24 +2591,34 @@ async function boot() {
 
     // THE LOUD HANDOFF. The page has changed under the user and the
     // pixels below the strip now belong to a component — so the visor
-    // says so, on its own line, at the moment the surface actually
-    // arrives rather than when the navigation started. The modal made
-    // this beat invisible (top layer above the anchor, backdrop dimming
-    // the page); the slide makes it visible, and this makes it SAID.
+    // points at itself, at the moment the surface actually arrives
+    // rather than when the navigation started. The modal made this beat
+    // invisible (top layer above the anchor, backdrop dimming the page);
+    // the slide makes it visible, and this makes it NOTICED.
     //
-    // ANNOUNCEMENT POLICY (visor/ui/visor.ts's `announce`): an
-    // announcement is a flat string and cannot carry class marking, so
-    // it speaks in framework voice and may embed USER-voice words
-    // inline — the petname, which the user wrote — but never the
-    // component's nickname and never its provenance key. Those are app
-    // voice; they belong on the strip and on sheets where `foreignToken`
-    // can plate them. Hence the unnamed branch DESCRIBES rather than
-    // names, and points at the strip, where the offer to fix that is.
+    // WHY A PULSE AND NOT AN ANNOUNCEMENT. This used to be
+    // `visor.announce(...)`, which owns the bottom line for 8s — so it
+    // spent those 8 seconds PARAPHRASING the strip ("the strip above
+    // says NEW") while covering the very thing it was paraphrasing. The
+    // pulse points AT the lines instead of talking over them: the
+    // panel's plated nickname, the NEW marker and the offer to name it
+    // are all readable during the arrival, which is when they matter.
+    //
+    // ANNOUNCEMENT POLICY (visor/ui/visor.ts's `pulseContext`): the
+    // pulse puts no words on screen at all, so nothing here can wear the
+    // wrong voice. The sr string is heard, not seen, and obeys the same
+    // rule an announcement would: framework voice, USER-voice words
+    // inline (the petname, which the user wrote), but never the
+    // component's nickname and never its provenance key — those are app
+    // voice, and a flat string cannot wear the app-voice plate. Hence
+    // the unnamed branch DESCRIBES rather than names. It also avoids
+    // spatial-visual wording ("the strip above"), which means nothing to
+    // a listener.
     const named = (identity.petname ?? "").trim().slice(0, 40);
-    visor.announce(
+    visor.pulseContext(
       named !== ""
-        ? `this page is drawn by ${named} — a component, in its own sandbox`
-        : "this page is drawn by a component you have not named — the strip above says NEW",
+        ? `this page is now drawn by ${named} — a component, in its own sandbox`
+        : "this page is now drawn by a component you have not named — the visor offers to name it",
     );
   };
 

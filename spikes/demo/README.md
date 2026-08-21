@@ -64,7 +64,18 @@ visor (page JS, trusted)           panel component (sandboxed, per-provider)
   becomes a PLACE: the whole page slides sideways while the strip stays
   exactly where it is, so the motion points AT the anchor instead of
   covering it, the browser's Back button becomes an honest way out, and
-  the arrival is ANNOUNCED on the visor's own line. It also deleted
+  the arrival is MARKED on the anchor itself: the strip's left text
+  cluster PULSES (a 1.8s alpha-white background wash, `pulseContext` in
+  `visor/ui/visor.ts`, `visor-ctx-pulse` in `visor/ui/visor.css`) while a
+  visually-hidden `aria-live` region on the strip (`#visor-live`) says
+  the same thing to a screen reader. It used to be a timed announcement
+  on the strip's bottom line, and that was backwards: the announcement
+  spent eight seconds paraphrasing the strip ("the strip above says
+  NEW") while covering the very line that carried the answer — the
+  arriving panel's plated nickname. A pulse POINTS at the lines instead
+  of talking over them, so the whole TOFU beat is readable exactly when
+  it happens. Under `prefers-reduced-motion` the wash appears once and
+  fades, with no oscillation. It also deleted
   machinery rather than adding it — see the `<dialog>` findings below,
   every one of which is now moot by construction.
 - **The visor brokers OAuth.** Navigation, popups and redirect handling are
