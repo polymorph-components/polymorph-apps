@@ -25,7 +25,7 @@ bad() {
 # that could read it could impersonate the user's trust in itself; a
 # component that could influence it could put attacker-chosen words into
 # the visor's own voice. So it must not appear anywhere on the seam.
-echo "[1/7] petname never crosses the frame seam"
+echo "[1/8] petname never crosses the frame seam"
 echo "      (the visor's word for a component is never readable or influenceable by it)"
 hits=$(grep -n "petname" ../../visor/frame/frame-backend.ts ../../visor/frame/frame.ts ../../visor/frame/frame.html 2>/dev/null)
 if [ -n "$hits" ]; then
@@ -42,7 +42,7 @@ fi
 # borrowed the visor's authority. The ONLY admissible occurrence is the
 # bare token "password" as an input-masking type — never inside a sentence.
 # Comments are exempt: they explain the rule rather than render it.
-echo "[2/7] the visor never renders the word \"password\""
+echo "[2/8] the visor never renders the word \"password\""
 echo "      (the visor's labels are the visor's own; a panel must never borrow them)"
 # BOTH halves of the visor render strings now: the system-UI core
 # (visor/ui/*.ts — visor.ts's strip/drawer host, sheets.ts's naming and
@@ -79,7 +79,7 @@ fi
 # that ever gained a style attribute (or a class resolving the variable)
 # could paint the visor's exact colour without reading it. Scope keeps the
 # secrecy structural instead of a property of the allowlist.
-echo "[3/7] the anchor colour is never made ambient"
+echo "[3/8] the anchor colour is never made ambient"
 echo "      (--visor-bg is scoped to the visor's own elements; inheriting it would disclose it)"
 # `applyVisorHue` lives in the framework core now, so the scan follows
 # it there; host/*.ts stays in the list because a consumer painting the
@@ -117,7 +117,7 @@ done
 # Banning the verb outright from host code keeps the property one grep
 # wide instead of a review argument. Comments are exempt: they explain
 # the rule rather than perform it.
-echo "[4/7] the visor never exports a key"
+echo "[4/8] the visor never exports a key"
 echo "      (escrowed signing keys are non-extractable; nothing reads them back)"
 exported=$(grep -n "exportKey" host/*.ts 2>/dev/null |
   grep -vE "^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)")
@@ -138,7 +138,7 @@ fi
 # that could INFLUENCE them would be putting attacker-chosen words into
 # the visor's own voice on the anchor. So neither the storage key nor the
 # cluster's id may appear anywhere on the seam.
-echo "[5/7] the user's identity never crosses the frame seam"
+echo "[5/8] the user's identity never crosses the frame seam"
 echo "      (name, device and icon are visor pixels; no component may read or steer them)"
 idhits=$(grep -n "pm-demo-identity\|visor-identity" \
   ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts ../../visor/frame/frame.html 2>/dev/null)
@@ -167,7 +167,7 @@ fi
 # framework layer rather than of one demo file, so the definer scan
 # covers BOTH the visor's own UI modules and every demo host file —
 # a rogue definition anywhere on either side fails here.
-echo "[6/7] pairing code and SAS render only in visor-owned surfaces"
+echo "[6/8] pairing code and SAS render only in visor-owned surfaces"
 echo "      (renderPairingCode()/renderSas() are defined and called only in ../../visor/ui/pairing.ts)"
 outside=$(grep -rln "renderPairingCode(\|renderSas(" \
   ../../visor/frame/frame.ts ../../visor/frame/frame-backend.ts ../../visor/frame/frame.html web/frame.js \
@@ -212,7 +212,7 @@ fi
 #        it is called where the value ENTERS. So the check pins the
 #        ADJACENCY: the call must appear in the same file, within a few
 #        lines of the read.
-echo "[7/7] the pet-icon vocabulary is curated, and a nomination is validated at the seam"
+echo "[7/8] the pet-icon vocabulary is curated, and a nomination is validated at the seam"
 echo "      (no security-semantic glyph in APP_MARK_ICONS; isAppMarkIcon guards the mark-nomination read)"
 ICONS_FILE=../../visor/ui/visor.ts
 # The literal set, from the opening bracket to the closing one. Read as
@@ -279,6 +279,55 @@ if [ -n "$unguarded" ]; then
   bad "a mark-nomination read bypasses readMarkNomination (and therefore isAppMarkIcon):$unguarded"
 else
   ok "every mark-nomination read goes through readMarkNomination"
+fi
+
+# --- (h) app voice is CONSTRUCTED, never styled by hand ---------------------
+# The three-voices rule (visor/ui/visor.css's header, visor/README.md):
+# every string the visor renders is framework voice, user voice or APP
+# voice, and app voice — a component-influenced string — is quoted,
+# monospaced, textually attributed and plated. All of that hangs off one
+# class, `foreign`.
+#
+# THE RULE IS ONE-DIRECTIONAL, and that is why it is checkable: an
+# app-influenced string must only be renderable through the app-voice
+# constructor; the reverse direction (visor text accidentally styled as a
+# plate) is ugly but not dangerous. So the property to enforce is not
+# "everything plated is foreign" — it is "there is exactly ONE DOOR", and
+# a hand-written class assignment anywhere else is a second door that a
+# later refactor can forget to dress (or, worse, dress inconsistently, so
+# that one app string on one sheet reads as the visor's own words).
+#
+# Part 1: no `foreign` class assignment anywhere else in visor-rendering
+# code. Part 2: exactly one inside visor.ts — the constructor itself.
+# CODE ONLY, both halves: the comments here and there DESCRIBE the class,
+# and a check that counted prose would be a check on the prose.
+echo "[8/8] app-voice text is built by the constructor, never class-assigned by hand"
+echo "      (foreignToken() in ../../visor/ui/visor.ts is the only door to the \"foreign\" class)"
+# A class ASSIGNMENT mentioning foreign, in any of the shapes the DOM
+# offers: className =, classList.add(...), setAttribute("class", ...).
+FOREIGN_ASSIGN='(className[[:space:]]*=|classList\.(add|toggle)\(|setAttribute\([[:space:]]*"class")[^\n]*foreign'
+VOICE_RENDERERS=$(ls host/*.ts ../../visor/ui/*.ts 2>/dev/null | grep -v '/visor/ui/visor\.ts$')
+handmade=""
+for f in $VOICE_RENDERERS; do
+  hit=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' "$f" | grep -nE "$FOREIGN_ASSIGN")
+  [ -n "$hit" ] && handmade="$handmade
+       $f:$(printf '%s' "$hit" | tr '\n' ' ')"
+done
+if [ -n "$handmade" ]; then
+  bad "the \"foreign\" class is assigned outside the constructor:$handmade"
+else
+  ok "no host/*.ts or ../../visor/ui/*.ts file outside visor.ts assigns the \"foreign\" class"
+fi
+# And inside visor.ts: EXACTLY ONE. Zero would mean the door was renamed
+# or removed (and the check silently stopped meaning anything); two would
+# mean a second door exists in the very file that is supposed to hold the
+# only one.
+doors=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' ../../visor/ui/visor.ts |
+  grep -cE "$FOREIGN_ASSIGN")
+if [ "$doors" -ne 1 ]; then
+  bad "../../visor/ui/visor.ts has $doors \"foreign\" class assignments, expected exactly 1 (foreignToken is the only door: app-influenced strings must only be renderable through the app-voice constructor)"
+else
+  ok "../../visor/ui/visor.ts assigns the \"foreign\" class in exactly 1 place (foreignToken)"
 fi
 
 echo

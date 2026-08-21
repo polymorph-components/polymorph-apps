@@ -35,6 +35,7 @@
 
 import {
   APP_MARK_ICONS,
+  foreignToken,
   identityIcon,
   IDENTITY_MAX,
   isAppMarkIcon,
@@ -498,7 +499,8 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
    * the one place the visor says everything it knows about a component.
    * EVERY pixel here is the visor's. The only component-influenced strings
    * are the nickname, the provenance key and (for a panel) its declared
-   * destination — all quoted, clamped and foreign-styled.
+   * destination — all in APP VOICE through `foreignToken`: quoted,
+   * clamped, monospaced and plated.
    *
    * It is the SAME tenant and the same session variable as the old
    * naming sheet: evolved, not added to. A fourth drawer tenant would
@@ -533,10 +535,10 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     const fromLead = document.createElement("span");
     fromLead.className = "said";
     fromLead.textContent = "the visor fetched it as";
-    const key = document.createElement("q");
-    key.className = "foreign";
-    key.textContent = surface.name.slice(0, 60);
-    from.append(fromLead, key);
+    // APP VOICE through the one door: `<q>` as before, same clamp, same
+    // rendered text — the provenance key is machine-supplied, so it is
+    // plated rather than spoken in the visor's sentence.
+    from.append(fromLead, foreignToken(surface.name, { maxLen: 60 }));
 
     // FIRST SIGHT, from the trust record itself: the date the mark was
     // assigned. This is the visor's own memory of the component, and the
@@ -556,7 +558,7 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
     // THE METADATA BLOCK — visor-known facts about this surface, when
     // there are any: a panel's declared destination, or the regions
     // the visor drew the app into. A component-influenced value is
-    // foreign-quoted like every other thing a component said.
+    // rendered in app voice like every other thing a component said.
     const meta = document.createElement("div");
     meta.className = "cred-line";
     if (surface.meta) {
@@ -565,10 +567,7 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
       // THE VISOR'S word, always — `label` is never component-supplied.
       metaLead.textContent = surface.meta.label;
       if (surface.meta.foreign) {
-        const q = document.createElement("q");
-        q.className = "foreign";
-        q.textContent = surface.meta.value.slice(0, 120);
-        meta.append(metaLead, q);
+        meta.append(metaLead, foreignToken(surface.meta.value, { maxLen: 120 }));
       } else {
         const value = document.createElement("span");
         value.textContent = surface.meta.value.slice(0, 120);
@@ -639,10 +638,10 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
       const asksTail = document.createElement("span");
       asksTail.className = "said";
       asksTail.textContent = "— offered first below; the rest are the visor's own";
-      const q = document.createElement("q");
-      q.className = "foreign";
-      q.textContent = nominated.glyph;
-      nominationLine.append(asksLead, q, asksTail);
+      // The nominated glyph is the one component-influenced string in the
+      // ceremony: app voice, quoted and plated, clamped by the validated
+      // vocabulary anyway (a single BMP scalar — `isAppMarkIcon`).
+      nominationLine.append(asksLead, foreignToken(nominated.glyph), asksTail);
     }
 
     const iconRow = document.createElement("div");

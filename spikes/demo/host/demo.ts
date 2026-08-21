@@ -23,6 +23,7 @@ import { createSurface } from "../../../visor/surface/surface.ts";
 // storage keys, the surface the strip falls back to, and the CONTENT of
 // the three sheets it registers as drawer tenants.
 import {
+  foreignToken,
   initVisor,
   isAppMarkIcon,
   markIcon,
@@ -1678,10 +1679,9 @@ async function boot() {
     }
     const lead = document.createElement("span");
     lead.textContent = "released only toward";
-    const origin = document.createElement("q");
-    origin.className = "foreign";
-    origin.textContent = boundDestination.slice(0, 120);
-    credBinding.append(lead, origin);
+    // APP VOICE through the visor's one door (`foreignToken`): the same
+    // `<q>`, the same 120 clamp, the same rendered text — plus the plate.
+    credBinding.append(lead, foreignToken(boundDestination, { maxLen: 120 }));
     if (isCleartextDestination(boundDestination)) {
       credWarning.textContent = "unencrypted destination — credentials will travel in the clear";
     }

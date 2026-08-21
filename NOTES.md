@@ -1425,6 +1425,38 @@ Engine-side, `us-mark` carries the glyph and repair clears a
 collision loser to "" + needs-reconfirm — the engine never invents
 vocabulary; the visor re-offers its picker.
 
+**Three voices: provenance as a design language** (2026-08-21, #22,
+executed same day). Every string the visor renders belongs to exactly
+one provenance class, and the class is visible: **framework voice**
+(unmarked — it is what the visor looks like; `.said` commentary
+slightly muted), **user voice** (the user's own vocabulary spoken by
+the visor: `.petname`/`.who`, weight 600, full opacity, never quoted,
+never monospace — NOT italics, which CJK renders as synthetic oblique,
+Arabic lacks entirely, and which reads as quotation, the wrong
+connotation for the one voice not being quoted), and **app voice**
+(component-influenced strings: quoted + monospace + textual
+attribution + a recessed PLATE — alpha background so it reads on all
+ten anchor hues, inset shadow, NO border because a bordered light
+rectangle is the visor's button dress and NOT dark because a dark
+recessed box is the visor's input dress; a non-interactive foreign
+token wears neither). Pet icons outside the picker are user voice BY
+CONSTRUCTION (a nominated glyph never renders outside the ceremony)
+and so carry no marker. This is not anti-spoofing — an app can copy
+any styling inside its own rectangle; it defends against confusion
+WITHIN visor pixels, and the rule that carries the security weight is
+one-directional: app-influenced strings are only renderable through
+the app-voice constructor (`foreignToken`, the single site assigning
+`.foreign`, pinned by invariant (h)); the reverse direction is ugly,
+not dangerous. The constructor funnel promptly earned its keep: the
+audit it forced found `describeEvent` interpolating the PROVENANCE KEY
+— app voice by the visor's own classification, synced from another
+device — into flat announcements on the anchor line, undressed and
+unclamped. Announcements take flat strings and cannot carry marking,
+so the policy is: framework voice, user-voice words permitted inline,
+app voice never — a component is referred to by the user's word for
+it (the petname, resolved per drained batch) or described without
+naming; its provenance key and nickname never ride an announcement.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
