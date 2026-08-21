@@ -1,4 +1,4 @@
-# Engine spike: automerge-DAG tasks engine over keyhive + subduction +
+# Engine: automerge-DAG tasks engine over keyhive + subduction +
 # component-iroh (realtime) and an S3-compatible bucket (non-realtime).
 #
 # MinIO is fetched once into .deps/ and run as a user process.
@@ -65,10 +65,10 @@ fetch-endpoint-wasm:
         tools/fetch-endpoint-wasm.ts .deps/iroh_endpoint.wasm
 
 fetcher:
-    cargo build --target wasm32-wasip2 --release -p spike-fetcher
+    cargo build --target wasm32-wasip2 --release -p engine-fetcher
 
 guest:
-    cargo build --target wasm32-wasip2 --release -p spike-guest
+    cargo build --target wasm32-wasip2 --release -p engine-guest
 
 # The fetcher component is deliberately NOT plugged in any more: storage
 # egress is now three NAMED world imports the host wires per instance
@@ -79,7 +79,7 @@ guest:
 # `polymorph:iroh` WIT is the published shape byte-for-byte, so no
 # sibling checkout is needed by any target here.
 compose: guest fetch-endpoint-wasm
-    wac plug target/wasm32-wasip2/release/spike_guest.wasm \
+    wac plug target/wasm32-wasip2/release/engine_guest.wasm \
         --plug .deps/iroh_endpoint.wasm \
         -o target/composed.wasm
 
@@ -89,7 +89,7 @@ compose: guest fetch-endpoint-wasm
 # matches the vendored one — a checkout behind (or ahead of) the publish
 # fails `wac plug` on the type mismatch, which is the correct outcome.
 compose-checkout: guest
-    wac plug target/wasm32-wasip2/release/spike_guest.wasm \
+    wac plug target/wasm32-wasip2/release/engine_guest.wasm \
         --plug {{IROH_CHECKOUT}}/target/wasm32-wasip2/release/iroh_endpoint.wasm \
         -o target/composed.wasm
 
@@ -119,17 +119,17 @@ run: compose minio relay-bin
         if curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then break; fi
         sleep 0.2
     done
-    cargo run --release -p spike-host -- target/composed.wasm \
+    cargo run --release -p engine-host -- target/composed.wasm \
         --relay http://127.0.0.1:3340 \
-        --endpoint http://127.0.0.1:9000 --bucket pm-tasks-spike \
+        --endpoint http://127.0.0.1:9000 --bucket pm-tasks \
         --access minioadmin --secret minioadmin
 
 check:
     cargo clippy --target wasm32-wasip2 \
         -p provider-common -p provider-s3 -p provider-dropbox -- -D warnings
-    cargo clippy --target wasm32-wasip2 -p spike-fetcher -- -D warnings
-    cargo clippy --target wasm32-wasip2 -p spike-guest -- -D warnings
-    cargo clippy -p spike-host -- -D warnings
+    cargo clippy --target wasm32-wasip2 -p engine-fetcher -- -D warnings
+    cargo clippy --target wasm32-wasip2 -p engine-guest -- -D warnings
+    cargo clippy -p engine-host -- -D warnings
 
 # The PAIRING.md §6 acts: device pairing + the user-system partition.
 # Relay only — no bucket is involved, so no MinIO.
@@ -142,5 +142,5 @@ pair: compose relay-bin
     relay_pid=$!
     trap 'kill $relay_pid 2>/dev/null || true' EXIT
     sleep 0.5
-    cargo run --release -p spike-host -- target/composed.wasm \
+    cargo run --release -p engine-host -- target/composed.wasm \
         --acts pairing --relay http://127.0.0.1:3340

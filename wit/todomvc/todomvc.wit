@@ -14,7 +14,7 @@
 ///
 /// In the full framework these split into separate packages
 /// (`polymorph:dom` vs app-world glue); one package keeps the spike small.
-package polymorph:todomvc-spike@0.0.1;
+package polymorph:todomvc@0.0.1;
 
 /// WebIDL-mirror subset. The host validates every call: tag allowlist,
 /// per-(tag, attribute) validation, URL-typed values never cross raw (the
@@ -341,7 +341,7 @@ world dropbox-panel {
   import dom;
   import events;
   import shell;
-  import polymorph:fetchspike/fetch@0.1.0;
+  import polymorph:fetch/fetch@0.1.0;
 
   use events.{event};
   use credentials.{credential-kind};

@@ -5,7 +5,7 @@
 // a mock.").
 //
 // Wraps one `Engine.driver` (host/engine.ts, itself a typed view over
-// the composite's `polymorph:engine-spike/driver@0.1.0` export) as the
+// the composite's `polymorph:engine/driver@0.1.0` export) as the
 // `PairingDriver` shape the visor pairing UI consumes. The TYPE stays
 // imported from visor/ui/pairing-driver.ts (the visor owns the
 // contract); only the implementation lives here.
@@ -183,7 +183,7 @@ function toMockEvent(e: UsEvent): MockUsEvent {
       return {
         tag: "mark-conflict-repaired",
         provenance: e.val[0],
-        // CONTRACT: spike.wit ~254 types the field name as a bare
+        // CONTRACT: engine.wit ~254 types the field name as a bare
         // `string` (tuple<string,string>), not an enum restricted to
         // "petname"|"icon" — the contract's stricter TS union
         // (visor/ui/pairing-driver.ts's `UsEvent`) is a visor-side

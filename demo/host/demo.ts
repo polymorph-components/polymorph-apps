@@ -612,14 +612,14 @@ async function authorize(clientId: string): Promise<void> {
 const DROPBOX_DESTINATION = "https://api.dropboxapi.com";
 
 /**
- * `polymorph:fetchspike/fetch@0.1.0`, scoped to one host. THIS SHIM IS
+ * `polymorph:fetch/fetch@0.1.0`, scoped to one host. THIS SHIM IS
  * THE PER-DESTINATION NETWORK GRANT: the panel holds no ambient network
  * capability, only this closure, and the closure will not carry a
  * request anywhere but the Dropbox API. The refusal is a WIT err, not a
  * trap — a panel is entitled to observe (and render) a denied egress.
  */
 const dropboxFetchImports = {
-  "polymorph:fetchspike/fetch@0.1.0": {
+  "polymorph:fetch/fetch@0.1.0": {
     async request(
       method: string,
       url: string,
@@ -3730,7 +3730,7 @@ async function boot() {
           petname,
           // The pet icon crosses as the GLYPH ITSELF — the partition
           // holds it opaquely and repairs collisions on exact equality
-          // (spike.wit's `us-mark.icon`). No index, no palette: the
+          // (engine.wit's `us-mark.icon`). No index, no palette: the
           // vocabulary is the visor's, and a device running a different
           // visor build simply refuses to render a glyph it does not
           // know (`isAppMarkIcon`) rather than mis-rendering an index.
@@ -4026,7 +4026,7 @@ async function boot() {
     },
     // The panel's granted fetch, exposed so the DENIAL side of the
     // per-destination grant is demonstrable and not merely asserted.
-    panelFetch: dropboxFetchImports["polymorph:fetchspike/fetch@0.1.0"],
+    panelFetch: dropboxFetchImports["polymorph:fetch/fetch@0.1.0"],
     // The live credential binding, for driving: what the visor believes the
     // held values may be released toward (null = nothing may).
     boundDestination: () => boundDestination,

@@ -1679,10 +1679,17 @@ snapshots, and ALL sealing — provider crates handle opaque blobs at
 derivable locations and depend on nothing from
 keyhive/subduction/automerge. Behavior identical to the counter: the
 G1–G5 harness's per-replica fetch counts match the pre-extraction
-build exactly, e2e 12/12 unchanged. One debt remains for the round's
-last PR: the spike-era names (`polymorph:engine-spike`,
-`polymorph:todomvc-spike`, `polymorph-fetchspike`, the `spike-*`
-crate names).
+build exactly, e2e 12/12 unchanged. The spike-era names then renamed
+(same day, closing the round): `polymorph:engine-spike` →
+`polymorph:engine` (world `spike` → `engine`),
+`polymorph:todomvc-spike` → `polymorph:todomvc`,
+`polymorph:fetchspike` → `polymorph:fetch`, the `spike-*` crate names
+→ `engine-*`, the harness's default bucket, and the iroh ALPNs
+(`engine-spike/0`, `engine-spike/pair/0` → `engine/0`,
+`engine/pair/0` — wire-visible, safe while every peer builds from
+this tree and the Pages demo rebuilds per push). Versions unchanged;
+the spike-execution records in engine/README.md and the citations of
+the archived probe suites keep their words.
 
 ## Parked and candidate non-goals
 

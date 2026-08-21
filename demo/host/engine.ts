@@ -15,7 +15,7 @@ import { websocketImports } from "@polymorph/websocket-deltic";
 import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "./stubs.ts";
 
-const DRIVER = "polymorph:engine-spike/driver@0.1.0";
+const DRIVER = "polymorph:engine/driver@0.1.0";
 const TASKS = "polymorph-data:tasks/tasks@0.1.0";
 
 /** `store-config` — a WIT variant; `{tag, val}` per the value-mapping
@@ -87,7 +87,7 @@ export interface Driver {
     secret: Uint8Array | undefined,
   ): Promise<string>;
 
-  // --- device pairing (#10) + user-system (#36) --- (spike.wit ~214-280)
+  // --- device pairing (#10) + user-system (#36) --- (engine.wit ~214-280)
 
   pairJoinStart(): Promise<PairOffer>;
   pairJoinStatus(): Promise<PairJoinState>;
@@ -96,7 +96,7 @@ export interface Driver {
   pairAddStart(code: string): Promise<void>;
   pairAddStatus(): Promise<PairAddState>;
   /** device-name: the user's own word for the new device, recorded in
-   * the devices annotations by the ADDER (spike.wit's pair-add-confirm
+   * the devices annotations by the ADDER (engine.wit's pair-add-confirm
    * doc comment). */
   pairAddConfirm(deviceName: string): Promise<void>;
 
@@ -129,7 +129,7 @@ export interface Driver {
 }
 
 // --- device-pairing + user-system WIT record/variant mirrors
-// (spike.wit ~214-280). `option<T>` lowers to `T | undefined`, `list<u8>`
+// (engine.wit ~214-280). `option<T>` lowers to `T | undefined`, `list<u8>`
 // to Uint8Array, `u64` to bigint, `u16`/`u32` to number, `tuple<A, B>` to
 // `[A, B]`, and a no-payload variant case to `{ tag: "case-name" }` — same
 // conventions the existing Driver/Tasks types above already use.
@@ -168,7 +168,7 @@ export interface UsProfile {
 export interface UsMark {
   provenance: string;
   petname: string;
-  /** The pet-icon glyph (spike.wit's `us-mark.icon`), or "" for
+  /** The pet-icon glyph (engine.wit's `us-mark.icon`), or "" for
    * unmarked. Opaque to the engine — repair is exact-equality only; the
    * curated vocabulary and its confusability rules are the visor's
    * (visor/ui/visor.ts's APP_MARK_ICONS). Was `hue: u16` (#22). */
@@ -302,7 +302,7 @@ export async function newEngine(
     // import key is ignored — the same reason the wasi:http fragment
     // above can stay — whereas a missing one would be fatal if a future
     // translator does surface it.
-    "polymorph:engine-spike/store-fetch-types@0.1.0": {},
+    "polymorph:engine/store-fetch-types@0.1.0": {},
   };
   const instance = await instantiate(
     artifactsFromEnvelope(artifacts.envelope, artifacts.bytes),

@@ -1,4 +1,4 @@
-//! Engine-spike host: three engine instances — Alice's laptop and phone
+//! Engine host: three engine instances — Alice's laptop and phone
 //! (device stand-in: both direct members) and Bob (collaborator) — over
 //! iroh, exercising the tasks data service on the automerge change DAG.
 //!
@@ -22,7 +22,7 @@ use wasmtime_websocket::{WasiWebsocketCtx, WasiWebsocketCtxView, WasiWebsocketVi
 mod bindings {
     wasmtime::component::bindgen!({
         path: "../guest/wit",
-        world: "spike",
+        world: "engine",
         imports: {
             default: async | store | trappable,
         },
@@ -34,8 +34,8 @@ mod bindings {
 
 mod pairing_acts;
 
-use bindings::exports::polymorph::engine_spike::driver::{Guest as Driver, S3Config, StoreConfig};
-use bindings::polymorph::engine_spike::store_fetch_types::Response as FetchResponse;
+use bindings::exports::polymorph::engine::driver::{Guest as Driver, S3Config, StoreConfig};
+use bindings::polymorph::engine::store_fetch_types::Response as FetchResponse;
 use bindings::exports::polymorph_data::tasks::tasks::{Guest as Tasks, TodoItem};
 
 struct Ctx {
@@ -250,7 +250,7 @@ impl bindings::store_owner_fetch::Host for Ctx {}
 impl bindings::store_shared_fetch::Host for Ctx {}
 impl bindings::store_public_fetch::Host for Ctx {}
 impl bindings::store_signer::Host for Ctx {}
-impl bindings::polymorph::engine_spike::store_fetch_types::Host for Ctx {}
+impl bindings::polymorph::engine::store_fetch_types::Host for Ctx {}
 
 impl bindings::store_owner_fetch::HostWithStore<Ctx> for Ctx {
     async fn request(
@@ -352,7 +352,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("target/composed.wasm"));
     let mut relay = "http://127.0.0.1:3340".to_string();
     let mut endpoint = "http://127.0.0.1:9000".to_string();
-    let mut bucket = "pm-tasks-spike".to_string();
+    let mut bucket = "pm-tasks".to_string();
     let mut access = "minioadmin".to_string();
     let mut secret = "minioadmin".to_string();
     // Which act set to run. `full` is the G1–G5 scenario (needs a relay
@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
     // The three storage-egress imports. Each is a separately NAMED world
     // import satisfied by its own host implementation — the linker is
     // where authority is attached (#7).
-    bindings::polymorph::engine_spike::store_fetch_types::add_to_linker::<Ctx, Ctx>(
+    bindings::polymorph::engine::store_fetch_types::add_to_linker::<Ctx, Ctx>(
         &mut linker,
         |c| c,
     )?;
@@ -441,12 +441,12 @@ async fn main() -> Result<()> {
     let mut store = make_store(&[]);
 
     let t0 = Instant::now();
-    let laptop = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
-    let phone = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
-    let bob = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
-    let tablet = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
-    let laptop2 = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
-    let laptop3 = bindings::Spike::instantiate_async(&mut store, &component, &linker).await?;
+    let laptop = bindings::Engine::instantiate_async(&mut store, &component, &linker).await?;
+    let phone = bindings::Engine::instantiate_async(&mut store, &component, &linker).await?;
+    let bob = bindings::Engine::instantiate_async(&mut store, &component, &linker).await?;
+    let tablet = bindings::Engine::instantiate_async(&mut store, &component, &linker).await?;
+    let laptop2 = bindings::Engine::instantiate_async(&mut store, &component, &linker).await?;
+    let laptop3 = bindings::Engine::instantiate_async(&mut store, &component, &linker).await?;
     println!(
         "[{:>9.2?}] instantiated laptop + phone + bob + tablet (+2 restart shells)",
         t0.elapsed()
@@ -482,10 +482,10 @@ async fn pairing_scenarios(
     let relay_for_post_seal = relay.clone();
 
     let mut store = make_store(&[]);
-    let laptop = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-    let phone = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-    let stranger = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-    let rejoin = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let laptop = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+    let phone = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+    let stranger = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+    let rejoin = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
     let r = relay.clone();
     outcomes.push((
         "positive acts",
@@ -498,8 +498,8 @@ async fn pairing_scenarios(
     ));
 
     let mut store = make_store(&[("PM_PAIR_FAULT", "commit")]);
-    let adder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-    let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let adder = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+    let joiner = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
     let r = relay.clone();
     outcomes.push((
         "commitment violation aborts",
@@ -513,7 +513,7 @@ async fn pairing_scenarios(
 
     let relay_expiry = relay.clone();
     let mut store = make_store(&[("PM_PAIR_TTL_MS", &TEST_TTL_MS.to_string())]);
-    let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let joiner = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
     outcomes.push((
         "offer expiry",
         store
@@ -527,8 +527,8 @@ async fn pairing_scenarios(
     // Post-seal add on the account's doc: the readability boundary a
     // late-joining device sits on (direct decrypt vs causal walk).
     let mut store = make_store(&[]);
-    let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-    let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let founder = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+    let joiner = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
     let r = relay_for_post_seal;
     outcomes.push((
         "post-seal add readable on the original doc",
@@ -544,8 +544,8 @@ async fn pairing_scenarios(
     let mut history_failures: Vec<String> = Vec::new();
     for seed in 0..10u32 {
         let mut store = make_store(&[]);
-        let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-        let joiner = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+        let founder = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+        let joiner = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
         let r = relay.clone();
         let outcome = store
             .run_concurrent(async move |acc| {
@@ -571,9 +571,9 @@ async fn pairing_scenarios(
 
     // Concurrent writes across an enrollment, including a deletion.
     let mut store = make_store(&[]);
-    let founder = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-    let second = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
-    let third = bindings::Spike::instantiate_async(&mut store, component, linker).await?;
+    let founder = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+    let second = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
+    let third = bindings::Engine::instantiate_async(&mut store, component, linker).await?;
     let r = relay.clone();
     outcomes.push((
         "partitioned writes merge natively (add + rename + forget)",
@@ -717,21 +717,21 @@ fn render(items: &[TodoItem]) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn scenario(
     acc: &Accessor<Ctx>,
-    laptop: bindings::Spike,
-    phone: bindings::Spike,
-    bob: bindings::Spike,
-    tablet: bindings::Spike,
-    laptop2: bindings::Spike,
-    laptop3: bindings::Spike,
+    laptop: bindings::Engine,
+    phone: bindings::Engine,
+    bob: bindings::Engine,
+    tablet: bindings::Engine,
+    laptop2: bindings::Engine,
+    laptop3: bindings::Engine,
     relay: String,
     s3: S3Args,
 ) -> Result<()> {
-    let l: &Driver = laptop.polymorph_engine_spike_driver();
-    let p: &Driver = phone.polymorph_engine_spike_driver();
-    let b: &Driver = bob.polymorph_engine_spike_driver();
-    let tb: &Driver = tablet.polymorph_engine_spike_driver();
-    let l2: &Driver = laptop2.polymorph_engine_spike_driver();
-    let l3: &Driver = laptop3.polymorph_engine_spike_driver();
+    let l: &Driver = laptop.polymorph_engine_driver();
+    let p: &Driver = phone.polymorph_engine_driver();
+    let b: &Driver = bob.polymorph_engine_driver();
+    let tb: &Driver = tablet.polymorph_engine_driver();
+    let l2: &Driver = laptop2.polymorph_engine_driver();
+    let l3: &Driver = laptop3.polymorph_engine_driver();
     let lt: &Tasks = laptop.polymorph_data_tasks_tasks();
     let pt: &Tasks = phone.polymorph_data_tasks_tasks();
     let bt: &Tasks = bob.polymorph_data_tasks_tasks();

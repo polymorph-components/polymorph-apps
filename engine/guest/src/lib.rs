@@ -17,7 +17,7 @@
 
 wit_bindgen::generate!({
     path: "wit",
-    world: "spike",
+    world: "engine",
     generate_all,
 });
 
@@ -101,7 +101,7 @@ use subduction_keyhive::protocol::KeyhiveProtocol;
 use subduction_keyhive::signed_message::SignedMessage;
 use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
-use exports::polymorph::engine_spike::driver::{
+use exports::polymorph::engine::driver::{
     Guest as DriverGuest, PairAddState, PairJoinState, PairOffer, StoreConfig, UsDevice, UsEvent,
     UsMark, UsProfile,
 };
@@ -111,7 +111,7 @@ use polymorph::iroh::identity_generate;
 use polymorph::iroh::types::{EndpointAddr, TransportAddr};
 
 /// The iroh ALPN for the engine's subduction wire.
-const ALPN: &[u8] = b"engine-spike/0";
+const ALPN: &[u8] = b"engine/0";
 
 // --- types ---
 
@@ -872,7 +872,7 @@ fn store() -> Result<S3Cfg, String> {
 
 /// The engine's `FetchPort`: Route selects WHICH WORLD IMPORT the call
 /// travels through (#7). The imports are inline anonymous interfaces in
-/// the `spike` world, so their bindings exist only here — which is why
+/// the `engine` world, so their bindings exist only here — which is why
 /// the provider crates take a port rather than generating their own.
 ///
 /// The per-attempt fetch counter lives here, and `do_fetch` calls this

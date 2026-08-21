@@ -1262,6 +1262,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-fetcher"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body-util",
+ "wasip3",
+ "wit-bindgen 0.57.1",
+]
+
+[[package]]
+name = "engine-guest"
+version = "0.0.0"
+dependencies = [
+ "argon2",
+ "async-channel",
+ "async-lock",
+ "automerge",
+ "beekem",
+ "bincode",
+ "blake3",
+ "data-encoding",
+ "ed25519-dalek",
+ "future_form",
+ "futures",
+ "hex",
+ "keyhive_core",
+ "keyhive_crypto",
+ "nonempty 0.10.0",
+ "polymorph-webcrypto-guest",
+ "provider-common",
+ "provider-dropbox",
+ "provider-s3",
+ "rand 0.8.7",
+ "sedimentree_core",
+ "serde",
+ "serde_json",
+ "subduction_core",
+ "subduction_crypto",
+ "subduction_keyhive",
+ "wit-bindgen 0.59.0",
+]
+
+[[package]]
+name = "engine-host"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "hmac",
+ "polymorph-webcrypto-wasmtime",
+ "reqwest",
+ "sha2 0.10.9",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-http",
+ "wasmtime-webrtc-datachannels",
+ "wasmtime-websocket",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3717,67 +3778,6 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "spike-fetcher"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "http",
- "http-body-util",
- "wasip3",
- "wit-bindgen 0.57.1",
-]
-
-[[package]]
-name = "spike-guest"
-version = "0.0.0"
-dependencies = [
- "argon2",
- "async-channel",
- "async-lock",
- "automerge",
- "beekem",
- "bincode",
- "blake3",
- "data-encoding",
- "ed25519-dalek",
- "future_form",
- "futures",
- "hex",
- "keyhive_core",
- "keyhive_crypto",
- "nonempty 0.10.0",
- "polymorph-webcrypto-guest",
- "provider-common",
- "provider-dropbox",
- "provider-s3",
- "rand 0.8.7",
- "sedimentree_core",
- "serde",
- "serde_json",
- "subduction_core",
- "subduction_crypto",
- "subduction_keyhive",
- "wit-bindgen 0.59.0",
-]
-
-[[package]]
-name = "spike-host"
-version = "0.0.0"
-dependencies = [
- "hex",
- "hmac",
- "polymorph-webcrypto-wasmtime",
- "reqwest",
- "sha2 0.10.9",
- "tokio",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-wasi-http",
- "wasmtime-webrtc-datachannels",
- "wasmtime-websocket",
 ]
 
 [[package]]

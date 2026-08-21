@@ -5,7 +5,7 @@
 //! (other devices, other users, the bucket) arrive as revision bumps
 //! observed by `poll`.
 //!
-//! Rendering stays the todomvc spike's deliberately naive full-rebuild.
+//! Rendering stays deliberately naive full-rebuild.
 
 use std::cell::RefCell;
 
@@ -15,9 +15,9 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-use crate::polymorph::todomvc_spike::dom::{create_element, Element};
-use crate::polymorph::todomvc_spike::events::{listen, EventKind};
-use crate::polymorph::todomvc_spike::shell;
+use crate::polymorph::todomvc::dom::{create_element, Element};
+use crate::polymorph::todomvc::events::{listen, EventKind};
+use crate::polymorph::todomvc::shell;
 use crate::polymorph_data::tasks::tasks;
 
 const TOK_NEW: u32 = 1;

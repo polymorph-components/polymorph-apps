@@ -110,7 +110,7 @@ is the defense; the residual is a same-room adversary racing both, out
 of scope for v1. Enrollment is THE consequential grant (a device is
 admin of everything); the adder's confirm carries the heavy ceremony.
 
-## 3. WIT additions (exact; Track A applies to `guest/wit/spike.wit`)
+## 3. WIT additions (exact; Track A applies to `guest/wit/engine.wit`)
 
 Added to `interface driver`:
 

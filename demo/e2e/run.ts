@@ -3,7 +3,7 @@
 //   just e2e            (builds the site first, then runs this)
 //   deno run -A e2e/run.ts [scenario-name ...]
 //
-// WHY THIS EXISTS. Every visor and storage flow in this spike has so far
+// WHY THIS EXISTS. Every visor and storage flow in this demo has so far
 // been driven BY HAND in a browser, once per session, by whoever last
 // touched it. That is not a regression test: it is a memory. Worse, the
 // hand-driving surface was paseo's embedded webview, which is not a

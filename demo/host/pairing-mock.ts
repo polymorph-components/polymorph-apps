@@ -107,7 +107,7 @@ function ensureQueue(doc: UserGroupDoc, instanceId: string) {
 // --- marks invariants + deterministic repair (§4) --------------------------
 
 // PET ICONS are OPAQUE STRINGS here, exactly as they are to the engine
-// (engine/guest/wit/spike.wit's `us-mark.icon`): the mock
+// (engine/guest/wit/engine.wit's `us-mark.icon`): the mock
 // compares them for EXACT EQUALITY and nothing else. It does not know
 // the curated vocabulary, cannot judge visual confusability, and must
 // not try — that is the visor's job, discharged by construction (one

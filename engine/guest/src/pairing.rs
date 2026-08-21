@@ -31,7 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use data_encoding::BASE32_NOPAD_VISUAL;
 use serde::{Deserialize, Serialize};
 
-use crate::exports::polymorph::engine_spike::driver::{
+use crate::exports::polymorph::engine::driver::{
     PairAddState, PairEnrollment, PairJoinState, PairOffer,
 };
 use crate::polymorph::iroh::endpoint::{Connection, Endpoint};
@@ -40,7 +40,7 @@ use crate::{arr32, iroh_reader, iroh_writer, with_state};
 
 /// Pairing runs on its own ALPN: a pairing dial can never be mistaken for
 /// (or consumed as) an engine sync connection.
-pub(crate) const PAIR_ALPN: &[u8] = b"engine-spike/pair/0";
+pub(crate) const PAIR_ALPN: &[u8] = b"engine/pair/0";
 
 /// Code payload version (PAIRING.md §1).
 const CODE_VERSION: u8 = 0x01;
