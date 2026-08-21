@@ -1129,6 +1129,72 @@ ecosystem. This is existential for the app side of the design.
 - The embedded-UI story needs an asset pipeline (bundle →
   srcdoc/blob injection) and a dev loop (local shell, hot reload).
 
+## App publishing: transparency without a registry authority
+
+Recorded 2026-08-21 from design discussion; leaning, not ruling;
+tracked in [#52](../../issues/52). The framework-release half of this
+story is [Release integrity](#release-integrity) (#3, one publisher,
+constant root); this is the many-publishers half: how third-party app
+versions publish such that targeted substitution, rollback and
+freezes are DETECTABLE, without a registry anyone must trust.
+
+The primitive is the **per-publisher append-only sigchain**: a
+hash-linked chain of `(seq, prev, version, component-hash,
+manifest-hash, timestamp)` signed by the publisher key, blake3
+content addressing (iroh-native), carried as iroh blobs.
+Offline-verifiable and self-certifying — Keybase's sigchain shape,
+hypercore/SSB's fork semantics (a forked feed is invalid to anyone
+who sees both branches). The visor enforces locally: linkage,
+monotonic seq, **no fork ever observed, no rollback below
+last-seen**. Every transparency design then reduces to one question —
+who else's view do you compare against, since a lone client can be
+shown a consistent lie (equivocation) or a consistent stale one
+(freeze).
+
+Layered answers, cheapest first, each subsuming none of the others:
+
+- **Contact-graph gossip.** App heads piggyback on the contact/us-*
+  sync that already exists; the visor alarms when a contact saw a
+  different head for the same publisher. CT gossip famously never
+  shipped in browsers — partly because browsers have no trust
+  topology to gossip over; this design has one, and it maps to who
+  the user would actually believe.
+- **Witness cosigning.** k-of-n independent witnesses countersign a
+  head before the visor offers the upgrade
+  ([Sigsum](https://www.sigsum.org)'s minimalist shape; CoSi
+  lineage). Witnesses attest extension, never content. Federated
+  home-origin operators are the natural witness set — small,
+  semi-independent, self-hostable, anyone can join.
+- **Cross-entanglement.** Logs periodically embed heads of other logs
+  they have seen (Haber–Stornetta linking; KSI's calendar
+  industrially): rewriting one history means unweaving everyone who
+  ever quoted it. No protocol beyond "include what you saw";
+  detection strength grows with degree.
+- **External anchors as witnesses, not authorities.** JSR (immutable
+  versions, per-file sha256 manifests, sigstore provenance — measured
+  2026-08-21: raw wasm served with open CORS and immutable caching),
+  Rekor, OpenTimestamps: each is one more witness, none is solely
+  trusted. The live registry serves bytes; belief comes from the
+  offline-verifiable chain plus multi-path witnessing — "nothing is
+  both live and trusted", applied to publishing.
+
+**Freshness stays advisory** (same ruling as #3: hard expiry bricks
+the offline use local-first exists to serve): witness timestamps with
+expiry degrade to staleness warnings, and the gossip cross-check
+covers targeted freezes. **Detection requires a response path**, or
+the log is a diary: fork and rollback alarms are consequential
+announcements in the visor's own voice (#22), and the petname table's
+provenance line — "the visor fetched it as" — gains a verifiable
+history rather than a bare name. Steal
+[Chainiac](https://www.usenix.org/conference/usenixsecurity17/technical-sessions/presentation/nikitin)'s
+skipchain forward-links so an offline client verifies an update chain
+from ANY copy of it, no log query. Full-consensus registries are
+ruled out: a token economy or a permissioned committee, plus
+governance, for value the witness and entanglement layers already
+buy. Open questions (log granularity, witness-set composition, fork
+response semantics, publisher-key rotation via the TUF root-rotation
+crib) are enumerated in #52.
+
 ## Addressing and discovery
 
 `user@host` addressing keeps trying to sneak a dynamic lookup back onto
@@ -1373,6 +1439,21 @@ ceremony honest against a guest that never yields.
   cross-platform.
 - [Code Verify](https://github.com/facebookincubator/meta-code-verify)
   — extension-checked hash manifests for web-delivered E2E clients.
+- Transparency-log canon (mined 2026-08-21 for #52): Certificate
+  Transparency ([RFC 9162](https://www.rfc-editor.org/rfc/rfc9162) —
+  inclusion/consistency proofs, the undeployed gossip half);
+  [Sigsum](https://www.sigsum.org) — minimalist witnessed log,
+  self-hostable, witnesses attest extension not content;
+  [CoSi](https://arxiv.org/abs/1503.08768) — decentralized witness
+  cosigning;
+  [Chainiac](https://www.usenix.org/conference/usenixsecurity17/technical-sessions/presentation/nikitin)
+  — software-update transparency via collectively signed skipchains,
+  offline-verifiable update chains (the single closest fit); Keybase
+  sigchains — per-publisher append-only chains under a globally
+  anchored root, the production precedent; Haber–Stornetta linking /
+  Guardtime KSI / [OpenTimestamps](https://opentimestamps.org) —
+  cross-entanglement and anchoring; TUF — role separation and the
+  freshness/rollback vocabulary (crib, don't re-derive).
 - Object-capability literature — E, CapTP, capability UX ("user
   interaction is the grant"); SES/Endo as the JS-confinement road not
   taken (components chosen instead).
