@@ -56,15 +56,21 @@
    non-interactive token must not wear a control's clothes. The inset
    shadow says RECESSED, not raised — embedded in the visor's surface
    rather than sitting on top of it offering to be pressed.
-   NO VERTICAL PADDING: the strip's line height is measured (the
-   `strip-geometry` e2e scenario) and a token must never change it. */
+   VERTICAL PADDING IS PAINT-ONLY here: on an inline non-replaced
+   element, vertical padding does not contribute to line-box height, so
+   it cannot change the strip's measured geometry (the `strip-geometry`
+   e2e scenario) — the constraint is visual, not layout: the chip's
+   ~1px overhang must stay inside the .15em gap between the strip's two
+   lines, which it does. (First shipped at .08 alpha with no vertical
+   inset; raised after the plate proved too subtle to register as a
+   chip at a glance.) */
 #visor-context q.foreign, #visor-context span.foreign,
 .cred-sheet q.foreign, .cred-sheet span.foreign,
 .name-sheet .name-nomination q.foreign,
 .name-sheet .name-nomination span.foreign {
-  background: rgba(255,255,255,.08);
+  background: rgba(255,255,255,.13);
   box-shadow: inset 0 1px 2px rgba(0,0,0,.35);
-  border-radius: 3px; padding: 0 .3em;
+  border-radius: 3px; padding: .08em .45em;
 }
 
 /* THE VISOR STRIP (#22). The one region an app can never paint, so
@@ -624,7 +630,10 @@
                                               "Apple Symbols", monospace; }
 .name-sheet .name-icons button.nominated {
   border-style: dashed;
-  background: rgba(255,255,255,.08);
+  /* Follows the app-voice plate's background (see the plate rule near
+     the top of this file): the nominated glyph is the picker's one
+     app-voice token, and the two must brighten together. */
+  background: rgba(255,255,255,.13);
   box-shadow: inset 0 1px 2px rgba(0,0,0,.35);
 }
 .name-sheet .name-icons button.picked { outline: 2px solid #fff;
