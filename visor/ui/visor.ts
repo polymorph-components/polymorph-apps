@@ -377,8 +377,9 @@ export interface SurfaceIdentity {
   /** One line of visor-known metadata about this surface, for the App
    * settings sheet. `label` is THE VISOR'S word (never a component's);
    * `value` may be component-influenced (a panel's declared
-   * destination), so the sheet renders it foreign-quoted. `foreign`
-   * says which. */
+   * destination), so the sheet renders it in APP VOICE — through
+   * `foreignToken`, quoted, monospaced and plated. `foreign` says
+   * which. */
   meta?: { label: string; value: string; foreign: boolean };
 }
 
@@ -395,10 +396,11 @@ export type VisorContext =
   | { kind: "settings" }
   | null;
 
-/** The user's word for a component, in THE VISOR'S voice: not quoted, not
- * monospaced, because the user wrote it and the visor is entitled to say
- * it. Clamped anyway — the naming sheet caps input at 40, but a record
- * hand-edited in devtools should not be able to stretch the strip. */
+/** USER VOICE: the user's word for a component, in THE VISOR'S voice —
+ * not quoted, not monospaced, full opacity, weight 600, because the user
+ * wrote it and the visor is entitled to say it. Clamped anyway — the
+ * naming sheet caps input at 40, but a record hand-edited in devtools
+ * should not be able to stretch the strip. */
 export function petnameSpan(petname: string): HTMLElement {
   const el = document.createElement("span");
   el.className = "petname";
@@ -406,13 +408,61 @@ export function petnameSpan(petname: string): HTMLElement {
   return el;
 }
 
-/** The component's own account of itself, always foreign: quoted,
- * monospaced, clamped, never joined into a visor sentence. */
+/** THE APP-VOICE CONSTRUCTOR — the only door in the visor through which
+ * an app-influenced string reaches the screen.
+ *
+ * THREE VOICES (visor/README.md, visor/ui/visor.css's header): every
+ * piece of content the visor renders belongs to exactly one provenance
+ * class, and the class is visible.
+ *
+ *   - FRAMEWORK VOICE — the unmarked baseline: the visor's own headings,
+ *     labels, hints, `.said` commentary, announcements, SAS digits,
+ *     pairing codes, the `.fresh` badge. No marker; it is what the visor
+ *     looks like.
+ *   - USER VOICE — the user's own vocabulary spoken by the visor:
+ *     `.petname`, `.who` (`.who.device` as its quieter half), and pet
+ *     icons, which are user voice BY CONSTRUCTION (a nominated glyph is
+ *     never rendered outside the naming ceremony's picker) and therefore
+ *     carry no extra marker. Weight 600, full opacity, never quoted,
+ *     never monospace. NOT italics: CJK has only synthetic oblique,
+ *     Arabic has no italics at all, 12px italic legibility is poor, and
+ *     italics read as quotation — the wrong connotation for the one
+ *     voice that is not being quoted.
+ *   - APP VOICE — component-influenced strings: quoted, monospaced,
+ *     textually attributed, and PLATED (a recessed background so they
+ *     read as embedded tokens rather than as words in the visor's own
+ *     sentence). This function, and only this function, assigns the
+ *     `foreign` class that carries all of it.
+ *
+ * THE ONE-DIRECTIONAL SECURITY RULE: app-influenced strings must only be
+ * renderable through the app-voice constructor; the reverse direction
+ * (visor text accidentally styled as a plate) is ugly but not dangerous.
+ * That asymmetry is why the enforcement is a construction funnel rather
+ * than a style audit, and why invariant (h) in
+ * spikes/demo/scripts/check-invariants.sh pins the `foreign`
+ * class-assignment count in this file at exactly one.
+ *
+ * `maxLen` clamps at the render site (defaults to 40, the petname cap);
+ * `quoted` picks the element kind — a `<q>` renders quote marks around
+ * the text and is the default, `{ quoted: false }` gives a plain span for
+ * a site whose surrounding sentence already supplies the punctuation. */
+export function foreignToken(
+  text: string,
+  { maxLen = 40, quoted = true }: { maxLen?: number; quoted?: boolean } = {},
+): HTMLElement {
+  const el = document.createElement(quoted ? "q" : "span");
+  el.className = "foreign";
+  el.textContent = text.slice(0, maxLen);
+  return el;
+}
+
+/** The component's own account of itself, always app voice: quoted,
+ * monospaced, plated, clamped, never joined into a visor sentence. A
+ * named wrapper over `foreignToken` because "what it calls itself" is
+ * the most-repeated app-voice site in the UI and deserves to read as
+ * itself at the call sites. */
 export function nicknameQuote(nickname: string): HTMLElement {
-  const q = document.createElement("q");
-  q.className = "foreign";
-  q.textContent = nickname.slice(0, 40);
-  return q;
+  return foreignToken(nickname, { maxLen: 40 });
 }
 
 // --- the drawer host's timing ------------------------------------------------
@@ -603,7 +653,19 @@ export interface Visor {
    * announcement is showing: a sheet opens or closes, a petname is
    * assigned, the context moves to another surface. Restoring a saved
    * string would then put a stale sentence back on the anchor, in the
-   * visor's voice, which is the one place a wrong word costs something. */
+   * visor's voice, which is the one place a wrong word costs something.
+   *
+   * ANNOUNCEMENT POLICY (the three voices, see `foreignToken`): this
+   * takes a FLAT STRING, so it cannot carry class marking — an
+   * announcement is therefore spoken entirely in FRAMEWORK VOICE, and
+   * may embed USER-voice words inline (a petname, the user's word for a
+   * device), because the user's vocabulary is already something the
+   * visor is entitled to say in its own sentence. An APP-INFLUENCED
+   * string must NEVER be passed here: there is no way to plate it, so it
+   * would arrive on the anchor's own line indistinguishable from the
+   * visor's words. A fact about a component is announced by DESCRIBING
+   * it in the visor's vocabulary; the component's own string belongs on
+   * a surface where `foreignToken` can dress it. */
   announce(text: string, ms?: number): void;
   identity(): VisorIdentity;
   saveIdentity(rec: VisorIdentity): void;
@@ -753,8 +815,9 @@ export function initVisor(config: VisorConfig): Visor {
       const icon = markIcon(surface.icon);
       if (icon) ctxTop.append(icon);
       // A component that declares nothing gets nothing quoted: an empty
-      // foreign quote would render as bare quote marks — punctuation in
-      // the visor's pixels standing for a claim nobody made.
+      // app-voice token would render as a bare plate with quote marks —
+      // punctuation in the visor's pixels standing for a claim nobody
+      // made.
       if (surface.nickname !== "") ctxTop.append(nicknameQuote(surface.nickname));
     }
 

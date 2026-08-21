@@ -57,3 +57,59 @@ backend by default). Source-level invariants for all of it are
 enforced by `spikes/demo/scripts/check-invariants.sh`, whose greps
 follow the code here (each check names its files); the demo's
 Playwright e2e suite (`spikes/demo/e2e/`) is the behavioral gate.
+
+## Three voices
+
+Every piece of content the visor renders belongs to exactly one
+provenance class, and the class is visible. The design language is
+three voices, no more:
+
+| class | meaning | marking | examples |
+| --- | --- | --- | --- |
+| *(unmarked)* | **framework voice** — the visor's own words | none; it is what the visor looks like. `.said` commentary is slightly muted (.85), headings and labels are full strength | sheet headings, labels, hints, `.said` lines, announcements, SAS digits, the pairing code, the `.fresh` badge |
+| `.petname`, `.who` (and pet icons, `.mark-icon`) | **user voice** — the user's own vocabulary, spoken by the visor | weight 600, full opacity, never quoted, never monospace, no plate; `.who.device` is the quieter half at 500 | the petname on the strip and on sheets, the user's name, their word for this device, the pet icon |
+| `.foreign` | **app voice** — component-influenced strings | quoted (`<q>`) + monospace + textual attribution + a recessed *plate* (an alpha background with an inset shadow), so it reads as an embedded token rather than as a word in the visor's sentence | "calls itself", the provenance key the visor fetched an artifact by, a panel's declared destination, a nominated glyph |
+
+User voice is deliberately **not** italics: CJK has only synthetic
+oblique, Arabic has no italics at all, italic legibility at 12px is
+poor, and italics read as quotation — the wrong connotation for the one
+voice that is not being quoted. The plate is alpha-based on purpose (it
+must read on all ten anchor hues at 38% lightness) and carries **no
+border**: a bordered light rectangle is this visor's *button* dress, and
+a non-interactive token must not wear a control's clothes. The inset
+shadow says recessed, not raised. It also carries no vertical padding —
+the strip's line height is a measured property.
+
+**The one-directional security rule: app-influenced strings must only be
+renderable through the app-voice constructor; the reverse direction
+(visor text accidentally styled as a plate) is ugly but not dangerous.**
+
+That asymmetry is why app voice is enforced by CONSTRUCTION rather than
+by style review. `foreignToken()` in `ui/visor.ts` is the only door: the
+single site in the codebase that assigns the `foreign` class (its thin
+wrapper `nicknameQuote()` goes through it too). Invariant (h) of
+`spikes/demo/scripts/check-invariants.sh` pins both halves — zero
+hand-written `foreign` class assignments in consumer host code and in
+the rest of `visor/ui/`, and exactly one inside `ui/visor.ts`.
+
+**Announcements are framework voice.** `Visor.announce()` and the
+`AnnounceSink` of `ui/pairing.ts` take a flat string, so they cannot
+carry class marking at all. An announcement therefore speaks in the
+visor's own voice and may embed user-voice words inline (a petname, a
+device word); an app-influenced string must never be passed to one,
+because it would land on the anchor's own line indistinguishable from
+the visor's words. A fact about a component is announced by describing
+it in the visor's vocabulary. Concretely: a component is referred to by
+the user's word for it — its petname, clamped at 40 — or described
+without naming when there is no petname; its provenance key and its
+nickname never ride an announcement.
+
+**Pet icons are user voice by construction**, which is why they carry no
+marker of their own: a glyph reaches the strip or a sheet only after the
+user adopted it in the naming ceremony. A component may *nominate* a
+glyph, and a merely nominated glyph is never rendered outside that
+ceremony's picker — where it is dashed (it is a button, so a border is
+honest), plated with the app-voice background and inset shadow, and
+introduced by an app-voice attribution line ("it asks to wear <q>…</q>").
+Adoption is the user's act, and it converts the glyph from app voice to
+user voice.

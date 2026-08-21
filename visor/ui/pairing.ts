@@ -159,7 +159,30 @@ function qrDataUrl(text: string, scale = 4): string {
  * key)`; a visor-integrated consumer owns no such element and passes
  * `visorAnnounceSink(visor)`, which speaks on the strip's rule line in
  * the visor's own voice. Neither shape has to know about the other, and
- * a test double is one arrow function. */
+ * a test double is one arrow function.
+ *
+ * THE THREE-VOICES POLICY, same as `Visor.announce`'s (visor/ui/visor.ts,
+ * visor/README.md): `line` is a FLAT STRING and therefore cannot carry
+ * class marking, so an announcement speaks FRAMEWORK VOICE and may embed
+ * USER-voice words inline (a petname, the user's word for a device). An
+ * APP-INFLUENCED string must NEVER be passed to a sink: there is no way
+ * to dress it as app voice here, so it would arrive in the visor's own
+ * sentence wearing the visor's own authority. Describe such a fact in
+ * the visor's vocabulary instead, and leave the component's own string
+ * to a surface where `foreignToken` can plate it. In this module that
+ * rule is concrete: a component is referred to by the user's word for
+ * it, or described without naming (see `describeEvent`).
+ *
+ * WHERE THE BOUNDARY SITS. Sinks below are also handed DRIVER-supplied
+ * strings — a `PairAddState`/`PairJoinState` failure message, a
+ * `{ ok: false; error }` from a call. That is admissible because a
+ * `PairingDriver` is CONSUMER HOST CODE (the demo's mock and its engine
+ * adapter), on the visor's side of the app seam, not a sandboxed
+ * component: it speaks with the same authority as the rest of the host.
+ * The rule bites on strings that crossed the seam — a component's
+ * nickname, a nominated glyph, a provenance key an app influenced. If a
+ * driver ever became a relay for such text, it would have to clamp and
+ * describe it before it reached a sink. */
 export type AnnounceSink = (line: string, consequential?: boolean) => void;
 
 /** How long a consequential announcement holds the surface against
@@ -205,23 +228,64 @@ export function visorAnnounceSink(visor: Visor, key = "visor-strip"): AnnounceSi
   };
 }
 
-function describeEvent(ev: UsEvent): string {
+/** One event, as a sentence for an announcement sink.
+ *
+ * HOW A COMPONENT IS REFERRED TO HERE (the three-voices announcement
+ * policy — see `AnnounceSink` above and visor/README.md): by THE USER'S
+ * WORD for it, the petname, which is user voice and therefore admissible
+ * inline in a framework-voice sentence; or, when there is no petname to
+ * use, DESCRIBED WITHOUT NAMING. The PROVENANCE KEY never rides an
+ * announcement. It used to: the key was interpolated straight into these
+ * lines, which put a string the visor classifies as APP VOICE everywhere
+ * else (visor/ui/sheets.ts renders it through `foreignToken`, quoted,
+ * monospaced and plated) onto the anchor's own line, undressed and
+ * indistinguishable from the visor's own words — and a mark event can
+ * arrive from another device running another visor build, so that key is
+ * exactly the attacker-influenceable input `isAppMarkIcon`'s comment
+ * enumerates. An announcement is a flat string with no way to dress it,
+ * so the fix is to not say it.
+ *
+ * `petnameOf` resolves a provenance key to the user's word for that
+ * record, or undefined when the account has none (a record the list did
+ * not return, or an empty petname). The fallback is expected to be RARE:
+ * a petname-conflict repair flags the loser but keeps its petname, and
+ * an icon-conflict repair clears the loser's ICON while keeping its
+ * petname, so a lookup succeeds in both repair cases — but it must
+ * exist, because the visor never assumes the partition's shape.
+ *
+ * Petnames are CLAMPED at 40 (the naming sheet's own cap) on the way
+ * in: a record hand-edited in devtools, or written by another build,
+ * must not be able to stretch the anchor line. */
+function describeEvent(ev: UsEvent, petnameOf: (provenance: string) => string | undefined): string {
   switch (ev.tag) {
     case "profile-changed":
       return "profile updated on another device";
-    case "mark-added":
-      return `new trust record: ${ev.provenance}`;
-    case "mark-changed":
-      return `trust record changed: ${ev.provenance}`;
-    case "mark-conflict-repaired":
+    case "mark-added": {
+      const p = petnameOf(ev.provenance);
+      return p ? `new trust record: ${p}` : "a new trust record arrived from another device";
+    }
+    case "mark-changed": {
+      const p = petnameOf(ev.provenance);
+      return p ? `trust record changed: ${p}` : "a trust record changed on another device";
+    }
+    case "mark-conflict-repaired": {
       // Both wordings say what the user has to DO. An icon repair
       // CLEARS the losing record's mark rather than reassigning it (the
       // vocabulary is the visor's, not the partition's — see the naming
       // sheet's picker), so the honest sentence is that the mark is gone
-      // and the ceremony will offer a new one.
-      return ev.field === "petname"
-        ? `NEW — a naming conflict was found and repaired for ${ev.provenance} (re-confirm its name)`
-        : `NEW — two components claimed the same mark; ${ev.provenance} lost its mark and needs a new one`;
+      // and the ceremony will offer a new one. The unnamed fallbacks are
+      // the same sentences minus the identifier: still actionable,
+      // because the ceremony is where the user acts either way.
+      const p = petnameOf(ev.provenance);
+      if (ev.field === "petname") {
+        return p
+          ? `NEW — two components were both named ${p}; re-confirm which is which`
+          : "NEW — a naming conflict was found and repaired (re-confirm the name)";
+      }
+      return p
+        ? `NEW — two components claimed the same mark; ${p} lost its mark and needs a new one`
+        : "NEW — two components claimed the same mark; one lost its mark and needs a new one";
+    }
     case "device-added":
       return `device added: ${ev.name || "(unnamed)"}`;
     case "device-revoked":
@@ -241,7 +305,26 @@ export async function drainAnnouncements(
 ): Promise<UsEvent[]> {
   const res = await driver.usEvents();
   if (!res.ok) return [];
-  for (const ev of res.value) status(describeEvent(ev), true);
+  // A component is named in an announcement by THE USER'S WORD for it
+  // (see `describeEvent`), so a batch carrying any mark event needs the
+  // account's marks. ONE list call per batch, and only when the batch
+  // actually mentions a record: the drain runs on a 3s poll and most
+  // batches are empty, so the common path stays a single `usEvents`
+  // round trip. A failed list is not a failed drain — the sentences
+  // simply fall back to their unnamed forms, which is the same
+  // degradation as a record the list does not return.
+  const names = new Map<string, string>();
+  if (res.value.some((ev) => "provenance" in ev)) {
+    const marks = await driver.usMarksList();
+    if (marks.ok) {
+      for (const m of marks.value) {
+        const petname = (m.petname ?? "").trim().slice(0, 40);
+        if (petname !== "") names.set(m.provenance, petname);
+      }
+    }
+  }
+  const petnameOf = (provenance: string) => names.get(provenance);
+  for (const ev of res.value) status(describeEvent(ev, petnameOf), true);
   return res.value;
 }
 
