@@ -456,11 +456,17 @@ export interface BackAction {
  * artifact the visor fetched and drew into the three regions. `kind` says
  * whose pixels the secondary surface is: a component's config panel,
  * the visor's own credential sheet, the visor's own naming/App-settings sheet,
- * or the visor's own settings sheet. The last has no component behind it at
- * all, which is why it is a bare `kind` rather than a surface. */
+ * the visor's own settings sheet, or the visor's own reset ceremony. The last
+ * two have no component behind them at all, which is why they are bare
+ * `kind`s rather than surfaces. */
 export type VisorContext =
   | (SurfaceIdentity & { kind?: "panel" | "credentials" | "naming" })
   | { kind: "settings" }
+  // THE ERASE CEREMONY (sheets.ts's third sheet). Like "settings" it is
+  // about the VISOR, not about any component, so it carries no surface —
+  // and unlike "settings" it is a destructive act, which changes the
+  // tenant's weight class (armed, dimmed) but not what the context means.
+  | { kind: "reset" }
   | null;
 
 /** USER VOICE: the user's word for a component, in THE VISOR'S voice —
@@ -807,6 +813,26 @@ export interface Visor {
   applyHue(hue: number): void;
   /** Commit: remember, paint, persist. */
   commitHue(hue: number): void;
+  /** FORGET EVERYTHING THIS VISOR HOLDS ON THIS DEVICE — the storage half
+   * of the reset ceremony. The identity record, the committed anchor hue
+   * and (when the consumer configured one) the legacy hue key are
+   * removed; nothing else is touched.
+   *
+   * THE CEREMONY IS NOT HERE. sheets.ts owns it — the statement of
+   * consequence, the arming delay, the typed confirmation, and the OTHER
+   * half of the wipe, the trust table (`SurfaceMarks.eraseAll`). This is
+   * the small, infallible piece it calls last.
+   *
+   * IT DOES NOT REPAINT, ANNOUNCE, OR RESTORE ANYTHING, and that is not
+   * an omission. The caller reloads the page immediately afterwards, and
+   * a fresh boot rolls a fresh anchor colour and announces it through the
+   * existing `fresh` mechanics — every component NEW again, a new colour
+   * on the bar, said out loud. THAT RELOAD IS THE ANNOUNCED-NEVER-SILENT
+   * STORY HERE: repainting a live visor from now-deleted records would
+   * only produce a half-erased screen to announce over, and every
+   * in-memory cache in the consumer would still be speaking names that no
+   * longer exist. */
+  erase(): void;
   readonly drawer: DrawerHost;
   // NO CONSUMER-CONTROL SLOT. There was one — an optional strip element
   // a consumer could mount its own buttons into, exposed here as a
@@ -979,10 +1005,13 @@ export function initVisor(config: VisorConfig): Visor {
    * split between them is by VOICE and not by subject. The visor's own
    * settings sheet has no component behind it, so the cluster keeps
    * naming the app: which component the strip is about is a property of
-   * what is INSTALLED, not of which visor sheet happens to be open. */
+   * what is INSTALLED, not of which visor sheet happens to be open. The
+   * erase ceremony is the same answer for the same reason — it is the
+   * visor talking about itself, and the strip's top line is not the
+   * place to stop naming what is drawn underneath. */
   const topSurface = (ctx: VisorContext): SurfaceIdentity | null => {
     if (ctx === null) return appSurface();
-    if (ctx.kind === "settings") return appSurface();
+    if (ctx.kind === "settings" || ctx.kind === "reset") return appSurface();
     return ctx;
   };
 
@@ -1003,7 +1032,8 @@ export function initVisor(config: VisorConfig): Visor {
     // already on screen must not offer to open it again), and the bottom
     // line names the sheet.
     const kind = ctx === null ? "app" : (ctx.kind ?? "panel");
-    const sheet = kind === "credentials" || kind === "naming" || kind === "settings";
+    const sheet = kind === "credentials" || kind === "naming" ||
+      kind === "settings" || kind === "reset";
 
     // --- the TOP line: THE USER'S RECOGNITION PAIR ---------------------
     // The mark the user picked and the word the user chose, side by side,
@@ -1125,6 +1155,13 @@ export function initVisor(config: VisorConfig): Visor {
         ? "storage credentials"
         : kind === "naming"
         ? "naming"
+        // The visor's own words for its own destructive ceremony, and
+        // deliberately the same words the button that opened it used:
+        // the anchor and the sheet hanging off it must not describe the
+        // act differently while the user decides whether to go through
+        // with it.
+        : kind === "reset"
+        ? "erase this visor"
         : "visor settings";
       ctxBottom.append(lead);
     }
@@ -1510,6 +1547,19 @@ export function initVisor(config: VisorConfig): Visor {
       try {
         localStorage.setItem(config.hueKey, String(h));
       } catch { /* not durable here */ }
+    },
+    erase() {
+      // Best-effort per key, and each in its own try: storage can throw
+      // (a locked-down embedding, a quota-ish failure on some engines),
+      // and one key refusing must not leave the others behind — a
+      // partial erase should be as small as the failure, not as large as
+      // whatever happened to be first in the list.
+      for (const key of [config.identityKey, config.hueKey, config.legacyHueKey]) {
+        if (key === undefined) continue;
+        try {
+          localStorage.removeItem(key);
+        } catch { /* nothing durable to remove from */ }
+      }
     },
     drawer: drawerHost,
   };

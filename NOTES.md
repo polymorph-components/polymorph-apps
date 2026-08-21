@@ -1558,6 +1558,40 @@ The division of labour after both same-day changes: the PULSE marks
 the moment of arrival, the CHEVRON marks the state of being away —
 timed cue and persistent signal, neither doing the other's job.
 
+**The erase ceremony — the visor's third sheet** (2026-08-21, #22,
+executed same day). "Your visor" gains a danger entry ("erase this
+visor…", the `.forget` idiom escalated: alpha-red for the ten hues,
+placed AFTER Save/Cancel — danger past the ordinary way out) opening
+the framework's first HEAVY tenant in `visor/ui/sheets.ts`: armed +
+dimmed, a statement of consequence, and a TYPED confirmation — the
+user's own name, or the visor's fixed word "erase" when the record
+holds none (the name is optional; petnames and pairing are not
+therefore erasable by gesture). Compare is trimmed/case-insensitive:
+deliberateness, not authentication — the name is on the strip in
+front of them; the field buys that the erase is reached by a
+sentence, not a tap. Rulings: FRAMEWORK POLICY, not a consumer
+`extraAction` (a consumer that could contribute the exit could also
+decline to, leaving a visor whose memory of the user has no exit);
+consumer halves are two config hooks — `onReset` (its own wipe, run
+FIRST because it is the fallible half: a throw refuses the ceremony
+with nothing visor-held lost — the deliberate inverse of
+`onIdentityCommitted`'s visor-writes-first, because a late mirror is
+harmless and a late erase is a record that survived a wipe) and
+`resetConsequences` (extra statement lines, consumer's own words,
+never component-influenced). The reload IS the announced-never-silent
+story: a fresh boot rolls and announces a fresh anchor and every
+component is honestly NEW; repainting a live visor from deleted
+records would leave every in-memory cache speaking names that no
+longer exist. DEMO SCOPE RULING: reset means THIS DEVICE LEAVES the
+account — storage config, boot caches, legacy keys and the signing
+keystore (whole IndexedDB dropped; `onblocked` rejects rather than
+silently part-erasing) — NOT an account-wide erase; other paired
+devices keep their copies. Deferred, deliberately unpromised in the
+sheet's text: a "download a backup first" affordance once export
+exists (#5-adjacent), and revoke-on-leave (the departed device stays
+in the grant table until another device revokes it); account-wide
+erase, if ever, is its own ceremony with its own statement.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic

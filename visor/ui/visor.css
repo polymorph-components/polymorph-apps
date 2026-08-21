@@ -665,6 +665,73 @@
                                         border: 1px solid rgba(255,255,255,.45); }
 .settings-sheet .picked { outline: 2px solid #fff; outline-offset: 1px; }
 .settings-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
+/* THE DANGER ENTRY, below the Save/Cancel row (danger last, the same
+   placement as the naming sheet's forget row) and separated from it by
+   the same hairline rule .name-forget uses, so "past the way out" is
+   visible and not merely a matter of order. */
+.settings-sheet .settings-reset { display: flex; flex-direction: column;
+                                  gap: .25em; margin-top: .9em;
+                                  padding-top: .6em;
+                                  border-top: 1px solid rgba(255,255,255,.18); }
+/* The `.forget` idiom escalated one step — same font, padding and radius,
+   a warmer red on the text and a stronger border. ALPHA-BASED (like every
+   plate and every control here) so it reads on all ten anchor hues at 38%
+   lightness; the border is honest because this IS a button, which is the
+   one thing a bordered light rectangle is allowed to be in this visor. */
+.settings-sheet .settings-reset button.reset { font: inherit; font-size: 12px;
+                                               cursor: pointer; padding: .3em .7em;
+                                               border-radius: 4px; color: #ffd0d0;
+                                               align-self: flex-start;
+                                               background: transparent;
+                                               border: 1px solid rgba(255,140,140,.6); }
+.settings-sheet .settings-reset .hint { font-size: 10px; opacity: .75; }
+
+/* --- the reset sheet -------------------------------------------------
+   THE HEAVY TENANT of the same drawer, and the only one of the three
+   framework sheets that is: armed and dimmed, because what it does is
+   total and has no undo (see the reset tenant in visor/ui/sheets.ts).
+   It does NOT ship `.armed` — the drawer host adds that class when the
+   arming timer elapses, and here the delay is real, so the dimmed button
+   row is telling the truth rather than decorating a wait that does not
+   exist.
+
+   THE STATEMENT OF CONSEQUENCE is recessed and red-tinted, so it reads
+   as a block the sheet is standing behind rather than as another hint.
+   All alpha, again for the ten anchor hues at 38% lightness; the text
+   stays --visor-fg, because colouring the sentence itself would trade
+   legibility for alarm. */
+.reset-sheet .cred-danger { background: rgba(255,120,120,.12);
+                            border: 1px solid rgba(255,140,140,.45);
+                            border-radius: 4px; padding: .55em .7em;
+                            margin: .4em 0 .2em; font-size: 12px;
+                            line-height: 1.5; color: var(--visor-fg, #f2f4fb); }
+.reset-sheet .cred-danger div + div { margin-top: .35em; }
+/* The user's own name inside the confirmation label: USER VOICE, the
+   same weight it wears in the identity cluster. */
+.reset-sheet .cred-field label .who { font-weight: 600; }
+/* THE ERASE BUTTON. It is `.cred-row button:first-child`, which is the
+   Save dress (solid white) everywhere else — overridden here, because a
+   destructive control must not wear the affirmative one's clothes. While
+   the sheet is unarmed it keeps the row's dimmed opacity (the shared
+   arming convention) and this softer fill; once the host adds `.armed`
+   it comes up to full strength and says what it does. */
+.reset-sheet .cred-row button.erase-confirm,
+.reset-sheet .cred-row button.erase-confirm:first-child {
+                                background: rgba(255,100,100,.14);
+                                color: #ffd0d0; font-weight: 600;
+                                border-color: rgba(255,140,140,.55);
+                                transition: opacity 200ms, background 200ms,
+                                            border-color 200ms, color 200ms; }
+.reset-sheet.armed .cred-row button.erase-confirm,
+.reset-sheet.armed .cred-row button.erase-confirm:first-child {
+                                background: rgba(255,100,100,.25);
+                                border-color: rgba(255,140,140,.8);
+                                color: #ffe4e4; }
+/* Inert while disabled — including the case that is NOT the arming
+   delay: both buttons are disabled again for the duration of the wipe,
+   when the sheet is already `.armed` and the row's opacity rule has
+   stopped dimming anything. */
+.reset-sheet .cred-row button:disabled { opacity: .45; cursor: default; }
 
 /* --- Mobile geometry (<=480px) for the sheets, moved with them. */
 @media (max-width: 480px) {

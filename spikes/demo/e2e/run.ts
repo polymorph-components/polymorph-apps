@@ -40,6 +40,7 @@ import tenantPrecedence from "./scenarios/tenant-precedence.ts";
 import storagePageNavigation from "./scenarios/storage-page-navigation.ts";
 import stripOwnership from "./scenarios/strip-ownership.ts";
 import devicePairing from "./scenarios/device-pairing.ts";
+import visorReset from "./scenarios/visor-reset.ts";
 
 // Re-exported so a scenario imports its whole contract from one place:
 // `Scenario` and the `Ctx` it is handed.
@@ -77,6 +78,11 @@ const SCENARIOS: Scenario[] = [
   // (see the scenario's own header for why, and PAIRING.md §6), so it
   // needs no relay and no store.
   devicePairing,
+  // The erase ceremony: seeds a name, a petname and a storage sentinel,
+  // then reloads the page (twice) as part of its own claim. It runs
+  // after the other identity/naming scenarios and before the one that
+  // must stay last, on its own fresh context either way.
+  visorReset,
   // Last: it provokes the visor-timer races, so it is the scenario most
   // likely to leave a page in an interesting state — and it gets a fresh
   // context either way.
