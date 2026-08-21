@@ -34,6 +34,7 @@ import {
   assertEquals,
   assertIncludes,
   assertList,
+  backControl,
   consoleLog,
   frameProbe,
   hook,
@@ -81,6 +82,15 @@ const scenario: Scenario = {
   }),
 
   async run(page) {
+    await act("the strip carries NO back control while the user is home", async () => {
+      // Absence, not a disabled button: the control means "you are
+      // somewhere, not home", so at home there is nothing to render. An
+      // affordance that is present but inert teaches the user to
+      // distrust the ones that are present and live.
+      const back = await backControl(page);
+      assertEquals(back.present, false, "a back control on the main page");
+    });
+
     let framesWithPanel = 0;
     await act("the storage page mounts the s3 panel as a sandboxed surface", async () => {
       const before = await frameProbe(page);
@@ -145,6 +155,20 @@ const scenario: Scenario = {
       // Waiting for that is deterministic (the announcement expires on
       // its own timer) and asserts the anchor is not merely visible but
       // CORRECT: it names the surface the user is looking at.
+      // THE UNFORGEABLE EXIT, in the same breath as the visibility
+      // claim, because they are halves of one property: the anchor is
+      // watchable AND it is the way out. The frame's own Cancel button
+      // is visor pixels too, but it sits in scrollable content that an
+      // app can reproduce pixel for pixel inside its own rectangle;
+      // `closest("#visor-strip")` is the assertion that this one does
+      // not — it is in the region no component can draw.
+      const back = await backControl(page);
+      assertEquals(back.present, true, "the back control on the storage page");
+      assertEquals(back.inStrip, true, "the back control lives inside the visor strip");
+      // Framework voice, naming the RETURN. The app is unnamed in this
+      // scenario, so the visor describes it rather than borrowing a word
+      // the user never wrote.
+      assertEquals(back.label, "back to the app", "the back control's accessible name");
       // The line carries what the component CALLS ITSELF (app voice:
       // quoted, monospaced, plated), not the provenance key the visor
       // fetched it by — the key is a sheet's business, not the strip's.
@@ -154,6 +178,19 @@ const scenario: Scenario = {
         "the surface-name line after the arrival announcement",
         ANNOUNCE_MS + 5_000,
       );
+    });
+
+    await act("the chevron survives an announcement and the context flips under it", async () => {
+      // PRESENCE IS A FACT ABOUT WHERE THE USER IS, not about what the
+      // strip currently says — so the control must outlive every render
+      // cycle that runs during the stay. By this point the arrival
+      // announcement has come and gone (the act above waited out its
+      // window, which re-rendered the context line), and the control is
+      // still the same element: a promise that lapsed mid-visit would be
+      // worse than one never made.
+      const back = await backControl(page);
+      assertEquals(back.present, true, "the back control after the announcement reverted");
+      assertEquals(back.inStrip, true, "the back control after the announcement reverted");
     });
 
     await act("the browser's own Back — not the visor's Cancel — leaves the page", async () => {
@@ -198,13 +235,44 @@ const scenario: Scenario = {
       );
     });
 
-    await act("the visor's own Cancel is the same close path, and re-entry works", async () => {
-      // Retirement left the visor in a re-usable state rather than a
-      // half-torn-down one — and the second exit takes the OTHER route,
-      // so both user-driven paths are exercised in one scenario.
+    await act("the back control goes with the place it exits", async () => {
+      // The inverse of the first act, and the one that keeps the anchor
+      // honest: an exit affordance that outlived the place it exits
+      // would be the strip making a false statement about where the user
+      // is, which is the one thing it may not do.
+      const back = await backControl(page);
+      assertEquals(back.present, false, "a back control after leaving the storage page");
+    });
+
+    await act("the STRIP'S OWN back control is a third door to the same teardown", async () => {
+      // The claim with teeth for this control: it is not a decoration
+      // beside the real exits, it runs the SAME `closeStorage` — panel
+      // retired, page left, history synced, context returned. Driven as
+      // a real click on visor pixels, which is the only way a user can
+      // reach it.
       await hook(page, "openStorage");
       await waitForPanelSurface(page);
       assertEquals(await onStoragePage(page), true, "the storage page on a second entry");
+      await page.click("#visor-back");
+      await waitForStoragePage(page, false);
+      assertEquals(await panelLive(page), false, "the panel surface after the chevron");
+      assertEquals((await backControl(page)).present, false, "the back control after the chevron");
+      assertEquals(
+        await page.evaluate(() => JSON.stringify(history.state)),
+        JSON.stringify({ page: "main" }),
+        "the history entry after the chevron",
+      );
+      const { bottom } = await stripText(page);
+      assertIncludes(bottom, "TodoMVC", "the surface-name line after the chevron");
+    });
+
+    await act("the visor's own Cancel is the same close path, and re-entry works", async () => {
+      // Retirement left the visor in a re-usable state rather than a
+      // half-torn-down one — and this exit takes the THIRD route, so all
+      // three doors are exercised in one scenario.
+      await hook(page, "openStorage");
+      await waitForPanelSurface(page);
+      assertEquals(await onStoragePage(page), true, "the storage page on a third entry");
       await page.click("#storage-cancel");
       await waitForStoragePage(page, false);
       assertEquals(await panelLive(page), false, "the panel surface after Cancel");

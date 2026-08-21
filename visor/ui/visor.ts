@@ -438,6 +438,18 @@ export interface SurfaceIdentity {
   meta?: { label: string; value: string; foreign: boolean };
 }
 
+/** WHAT THE STRIP'S BACK CHEVRON DOES, and what it is called. `label` is
+ * THE VISOR'S OWN WORDING for the return, used as the control's `title`
+ * and `aria-label` (never rendered as text beside the glyph — the strip
+ * has no room for a word there, and the glyph is the affordance). It may
+ * embed USER-voice vocabulary such as a petname, exactly as an
+ * announcement may; it must never carry an app-influenced string, which
+ * could not be plated in an attribute. */
+export interface BackAction {
+  onBack: () => void;
+  label?: string;
+}
+
 /** The visor's context slot: what secondary surface, if any, is on screen.
  * Called with null for "no secondary surface" — which is no longer
  * "nothing": the strip falls back to THE APP's own identity, the
@@ -722,6 +734,41 @@ export interface Visor {
    * it in the visor's vocabulary; the component's own string belongs on
    * a surface where `foreignToken` can dress it. */
   announce(text: string, ms?: number): void;
+  /** THE STRIP'S OWN WAY OUT of a nested place. Non-null renders a back
+   * chevron at the strip's far left; null removes it entirely.
+   *
+   * WHY IT LIVES ON THE ANCHOR. A page's own Cancel button is visor
+   * pixels by construction, but it sits in scrollable content — and an
+   * app can paint a pixel-perfect copy of it inside its own rectangle,
+   * so a user cannot tell the real exit from a decoy by looking. The
+   * strip is the one region no component can draw in, which makes a
+   * control here STRUCTURALLY unforgeable: the guarantee "you can always
+   * leave through the bar" replaces the convention "the page offers a
+   * cancel button". The browser's own Back does the same job but is
+   * outside the visor's vocabulary — nothing on screen promises it, and
+   * an embedded surface may not have it at all.
+   *
+   * IT IS ALSO THE ONLY PERSISTENT NESTING SIGNAL. The arrival
+   * announcement is timed and the NEW badge is about naming; without
+   * this, nothing on the anchor says "you are somewhere, not home" for
+   * the whole stay.
+   *
+   * PAGES, NOT SHEETS. A drawer sheet is an overlay BRACKETED by the
+   * strip, with its own dismissal and (for the credential sheet)
+   * exclusive, armed semantics that must not gain a second cancel path.
+   * The chevron marks PLACE nesting only, so a consumer sets it when it
+   * navigates and clears it when it comes back — never around a sheet.
+   *
+   * SHEETS ARE ORTHOGONAL TO IT. Clicking back navigates the page under
+   * an open sheet without touching the sheet: a sheet is about a
+   * SURFACE and says which one, and names outlive visits.
+   *
+   * ONE LEVEL, NOT A STACK. The shape is null-or-one on purpose — the
+   * demo nests exactly one page deep, and a stack whose only user has
+   * depth one is a guess about the second case. Growing this into a
+   * stack later is a change to this one function's body plus a `depth`
+   * on the rendered control; nothing else reads it. */
+  setBack(action: BackAction | null): void;
   identity(): VisorIdentity;
   saveIdentity(rec: VisorIdentity): void;
   /** The hue currently COMMITTED as the user's anchor colour — as opposed
@@ -767,6 +814,76 @@ export function initVisor(config: VisorConfig): Visor {
   const handlers: VisorHandlers = {};
   const requestNaming = (surface: SurfaceIdentity) => handlers.requestNaming?.(surface);
   const requestSettings = () => handlers.requestSettings?.();
+
+  // --- the back chevron: the strip's own way out of a nested place -------
+  //
+  // WHERE IT LIVES, AND WHY THAT IS THE WHOLE TRICK. The button is
+  // inserted as `.bar-inner`'s FIRST CHILD at runtime, so no consumer's
+  // markup has to carry a slot for it — a slot in two index.htmls would
+  // be two places to forget, and an empty one would be a hole in the
+  // strip that only the framework can explain.
+  //
+  // `.bar-inner` is also the one strip element NEITHER RENDER CYCLE
+  // CLEARS: `renderContext` replaces the children of `.ctx-top` and
+  // `.ctx-bottom`, `renderIdentity` replaces the children of
+  // `#visor-identity`, and both live INSIDE `.bar-inner` rather than
+  // being it. So the chevron survives every context flip, every identity
+  // repaint and every timed announcement without being recreated —
+  // which is the behaviour the control has to have: its presence means
+  // "you are in a nested place", a fact about WHERE the user is and not
+  // about what the strip currently says. A control that blinked out
+  // during an announcement would be a promise that lapses.
+  //
+  // NULL RENDERS NOTHING AT ALL — no disabled button, no empty slot,
+  // the same rule the mark icon obeys. An affordance that is present but
+  // inert teaches the user to distrust the ones that are present and
+  // live.
+  const barInner = (strip?.querySelector(".bar-inner") ?? null) as HTMLElement | null;
+  let backBtn: HTMLButtonElement | null = null;
+  /** The live action, read at CLICK TIME rather than captured in the
+   * handler: a consumer may replace the destination without the control
+   * flickering out and back. */
+  let backAction: BackAction | null = null;
+  const setBack = (action: BackAction | null) => {
+    if (action === null) {
+      backBtn?.remove();
+      backBtn = null;
+      backAction = null;
+      return;
+    }
+    if (backBtn === null) {
+      const btn = document.createElement("button");
+      btn.id = "visor-back";
+      btn.type = "button";
+      // THE GLYPH: U+2039 SINGLE LEFT-POINTING ANGLE QUOTATION MARK. The
+      // pet-icon curation lessons apply to every glyph the visor puts in
+      // its own pixels, and this one passes them: a single BMP scalar
+      // (no sequence, no variation selector), text presentation by
+      // default so no platform paints it as colour emoji, and coverage
+      // in every legacy font since it is a Latin-1-era punctuation
+      // character rather than a symbol-block arrow. The obvious
+      // alternatives lose on exactly those grounds — U+276E HEAVY
+      // LEFT-POINTING ANGLE ORNAMENT is a Dingbats codepoint with
+      // patchier coverage, and "←" reads as "undo/previous item" rather
+      // than "up and out of here", which is the iOS chevron's whole
+      // meaning. A CSS-drawn chevron (a rotated border box) renders
+      // identically everywhere but is invisible to a text-only reading
+      // of the strip, and the strip's contents being READABLE AS TEXT is
+      // something several of this framework's checks depend on.
+      btn.textContent = "\u2039";
+      btn.onclick = () => backAction?.onBack();
+      // FIRST CHILD, so it is at the strip's leading edge — before the
+      // context cluster, which is what the user is going back FROM.
+      barInner?.prepend(btn);
+      backBtn = btn;
+    }
+    // THE VISOR'S OWN WORDING, always: `label` is framework voice and may
+    // embed the user's vocabulary, never a component's (see `BackAction`).
+    const label = action.label ?? "back";
+    backBtn.title = label;
+    backBtn.setAttribute("aria-label", label);
+    backAction = action;
+  };
   const appSurface = () => config.appSurface?.() ?? null;
 
   // THE IDENTITY CLUSTER, rebuilt from the record on every commit. Every
@@ -1288,6 +1405,7 @@ export function initVisor(config: VisorConfig): Visor {
     renderContext: () => renderContext({ keepAnnouncement: true }),
     renderIdentity,
     announce,
+    setBack,
     identity: () => loadIdentity(config.identityKey),
     saveIdentity: (rec) => saveIdentity(config.identityKey, rec),
     committedHue: () => committedHue,

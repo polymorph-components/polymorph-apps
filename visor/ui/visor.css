@@ -101,6 +101,48 @@
 #visor-strip .bar-inner { display: flex; align-items: stretch;
                             justify-content: space-between; gap: .8em;
                             padding: 0 .9em; box-sizing: border-box; }
+
+/* THE BACK CHEVRON (visor/ui/visor.ts's `setBack`). Present only while
+   the consumer says the user is in a nested PLACE, and absent — not
+   disabled, absent — otherwise.
+
+   IT IS THE UNFORGEABLE EXIT. A page's own Cancel sits in scrollable
+   content, which an app can reproduce pixel for pixel inside its own
+   rectangle; this sits in the one region no component can draw. Same
+   control dress as #visor-settings and #visor-name-it, because it is the
+   same kind of thing — a visor-owned button, in framework voice — and
+   the strip's controls must be one visual family, so that "this is the
+   visor's" is a learnable look rather than a per-button judgement.
+
+   SQUARE ACROSS BOTH LINES, mirroring #visor-settings at the other edge:
+   the same 44px touch floor for the same reason (at the strip's 12px
+   type, 2.4em is only ~29px), so the two ends of the bar are balanced
+   and both are thumb-sized. */
+#visor-back { font: inherit; color: inherit; cursor: pointer;
+               background: rgba(255,255,255,.12);
+               border: 1px solid rgba(255,255,255,.3);
+               border-radius: 4px; padding: 0;
+               align-self: center; flex: none;
+               display: inline-flex; align-items: center;
+               justify-content: center;
+               width: 2.4em; height: 2.4em;
+               min-width: 44px; min-height: 44px;
+               font-size: 1.5em; line-height: 1; }
+/* NOT A CIRCLE. Round means "me" in this visor (#visor-settings wears the
+   user's own glyph, and the settings sheet's picker is round to match).
+   Back is a navigation verb, about a place rather than a person, so it
+   keeps the rectangular control dress. */
+#visor-back:focus-visible { outline: 2px solid rgba(255,255,255,.7);
+                             outline-offset: 2px; }
+/* THE CENTRE OF THE BAR STAYS EMPTY. With two children, space-between
+   put the exclusion band between them; with three it would put a band on
+   EITHER side of the context cluster, pulling the context away from the
+   chevron it belongs beside and shrinking the gap that separates the
+   visor's cluster from the component's. The auto margin restores the
+   original arrangement: back and context grouped at the leading edge,
+   all remaining space in one band before the identity cluster.
+   (strip-geometry measures that band.) */
+#visor-context { margin-right: auto; }
 /* LEFT CLUSTER — two lines, ordered by WHOSE QUESTION THEY ANSWER:
      .ctx-top    THE USER'S RECOGNITION PAIR: the mark they picked and
                  the word they chose, side by side — or, before those
