@@ -126,6 +126,11 @@ export const UI_TIMEOUT = 15_000;
 /** The strip's announcements last 8s (host/demo.ts `announce` default),
  * so a revert-by-re-render lands just after. */
 export const ANNOUNCE_MS = 8_000;
+/** The context cluster's arrival PULSE lasts 1.8s — the
+ * `visor-ctx-pulse` animation of visor/ui/visor.css, .9s × 2 cycles,
+ * mirrored by `PULSE_MS` in visor/ui/visor.ts's cleanup fallback. The
+ * `pulse` class is off the element by then. */
+export const PULSE_MS = 1_800;
 
 export async function newContext(
   browser: Browser,

@@ -1518,7 +1518,7 @@ UNFORGEABLE EXIT (the page's own Cancel is visor pixels by
 construction but sits in scrollable content an app can counterfeit;
 browser Back is outside the visor's vocabulary; strip pixels are the
 one region no component can draw) and the strip's only PERSISTENT
-nesting signal (the arrival announcement is timed). Scope rulings:
+nesting signal (the arrival cue is timed). Scope rulings:
 PAGES ONLY, never sheets (the credential sheet's exclusive/armed
 semantics must not gain a second cancel path); sheets are orthogonal
 — back navigates the page under an open sheet without touching it
@@ -1528,6 +1528,35 @@ means "me" in this visor and back is a place verb. All exits — Cancel,
 Save, popstate, chevron — share the one `closeStorage` teardown, and
 the affordance is cleared there: an exit control that outlived its
 place would be the anchor making a false statement.
+
+**The arrival cue is a pulse, not a sentence** (2026-08-21, #22,
+executed same day, in parallel with the chevron). Correcting the
+storage-page entry above: the arrival is no longer announced on the
+visor's line. The announcement
+paraphrased the strip while covering it — "the strip above says NEW"
+owned the bottom line for 8 seconds, and the bottom line is where the
+arriving panel's plated nickname had just landed, so the design
+pointed at the answer by hiding it. The cue is now `pulseContext` (a
+visor API): a 1.8s alpha-white background wash on the context
+cluster, two cycles — the visor pointing at its own lines, framework
+voice BY CONSTRUCTION since it puts no words on screen and so has no
+string to mark. The lines stay up, and the TOFU beat is readable at
+the moment it happens; the e2e now asserts the nickname is on the
+line AT THE INSTANT the cue fires, an assertion the old design could
+not make because the line was necessarily covered until expiry.
+Explicitly not the plate's dress (no border, no inset shadow — an
+attention cue must not dress the cluster as a quoted token) and
+alpha-only for the ten hues; single decaying wash, no oscillation,
+under prefers-reduced-motion; zero layout shift (padding cancelled by
+equal negative margin), gated by `strip-geometry`. The sentence moved
+to the right medium rather than dying: a visually-hidden `aria-live`
+region on the strip (`#visor-live`, created by the visor, never
+`display:none`) speaks the arrival to assistive tech — closing a gap
+that predates this change, in which no strip announcement had EVER
+reached a screen reader; `announce()` now mirrors its text there too.
+The division of labour after both same-day changes: the PULSE marks
+the moment of arrival, the CHEVRON marks the state of being away —
+timed cue and persistent signal, neither doing the other's job.
 
 ## Parked and candidate non-goals
 

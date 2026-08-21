@@ -53,7 +53,6 @@
 import type { Scenario } from "../run.ts";
 import {
   act,
-  ANNOUNCE_MS,
   assert,
   assertEquals,
   assertIncludes,
@@ -141,18 +140,20 @@ const scenario: Scenario = {
       await sleep(WATCH_MS);
       const samples = await strip.stop();
 
-      // The arrival is ANNOUNCED (host/demo.ts's loud handoff), and an
-      // announcement owns the bottom line for its window — so the line
-      // is read once it has reverted by re-render, which is the state
-      // the claim is about. Deterministic: the revert is on a timer the
-      // harness knows (ANNOUNCE_MS), not a settle.
+      // The line names the panel, and it does so WITHOUT A WINDOW TO WAIT
+      // OUT. The arrival used to be ANNOUNCED (host/demo.ts's loud
+      // handoff), which owned the bottom line for 8s, so this read had to
+      // be deferred past the announcement's expiry before it was about
+      // anything. The handoff is a PULSE now — it points at the lines
+      // instead of replacing them — so the surface-name line is correct
+      // from the mount onward and the ordinary UI timeout is the right
+      // bound. Same claim, arrived at sooner and with a tighter fence.
       // (The predicate is stringified and evaluated IN THE PAGE, so it
       // closes over nothing — PANEL is spelled out rather than captured.)
       await waitForBottom(
         page,
         (t) => t.includes("S3 object storage"),
         "the surface-name line once the panel is mounted",
-        ANNOUNCE_MS + 5_000,
       );
 
       const late = appLabels(samples.slice(afterMount));

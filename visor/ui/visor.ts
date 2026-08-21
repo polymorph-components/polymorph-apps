@@ -732,8 +732,34 @@ export interface Visor {
    * would arrive on the anchor's own line indistinguishable from the
    * visor's words. A fact about a component is announced by DESCRIBING
    * it in the visor's vocabulary; the component's own string belongs on
-   * a surface where `foreignToken` can dress it. */
+   * a surface where `foreignToken` can dress it.
+   *
+   * SCREEN-READER MIRROR: the text is also written to the strip's
+   * visually-hidden `#visor-live` region, so an announcement reaches
+   * assistive tech and not only sighted users. */
   announce(text: string, ms?: number): void;
+  /** THE VISOR POINTING AT ITS OWN CONTEXT LINES: a timed background
+   * pulse on the context cluster, meaning "what you are looking at just
+   * changed meaning — read me".
+   *
+   * It does NOT touch the lines' contents. That is the whole point, and
+   * it is what a timed announcement could not do: an announcement takes
+   * the bottom line away for its window, so the very content a user
+   * should be reading at an arrival (the surface's plated nickname, the
+   * NEW marker, the offer to name it) is hidden during exactly the
+   * seconds it matters. Pure attention direction leaves the lines up and
+   * says only "look here".
+   *
+   * VOICE: framework voice by construction, and trivially so — it
+   * carries NO WORDS ON SCREEN, so there is no string to mark and
+   * therefore no way for it to leak any voice class onto the anchor. Its
+   * only text channel is `srText`, which goes ONLY to the visually-
+   * hidden live region and is subject to the same policy as `announce`:
+   * a flat string, framework voice, user-voice words allowed inline, an
+   * app-influenced string never.
+   *
+   * Calling it during a live pulse RESTARTS the animation. */
+  pulseContext(srText?: string): void;
   /** THE STRIP'S OWN WAY OUT of a nested place. Non-null renders a back
    * chevron at the strip's far left; null removes it entirely.
    *
@@ -748,10 +774,10 @@ export interface Visor {
    * outside the visor's vocabulary — nothing on screen promises it, and
    * an embedded surface may not have it at all.
    *
-   * IT IS ALSO THE ONLY PERSISTENT NESTING SIGNAL. The arrival
-   * announcement is timed and the NEW badge is about naming; without
-   * this, nothing on the anchor says "you are somewhere, not home" for
-   * the whole stay.
+   * IT IS ALSO THE ONLY PERSISTENT NESTING SIGNAL. The arrival cue is a
+   * timed pulse (`pulseContext`) and the NEW badge is about naming;
+   * without this, nothing on the anchor says "you are somewhere, not
+   * home" for the whole stay.
    *
    * PAGES, NOT SHEETS. A drawer sheet is an overlay BRACKETED by the
    * strip, with its own dismissal and (for the credential sheet)
@@ -1135,6 +1161,69 @@ export function initVisor(config: VisorConfig): Visor {
     }
   };
 
+  /** THE STRIP'S SCREEN-READER CHANNEL, built here rather than in a
+   * consumer's markup: the strip's internals are the visor's, and a
+   * consumer that had to remember to add a live region is a consumer
+   * that can forget to.
+   *
+   * VISUALLY HIDDEN, NOT `display:none` — a display:none (or hidden)
+   * live region is not announced at all, so the clip-rect recipe is the
+   * only correct one here. The styling lives in visor/ui/visor.css
+   * (`#visor-live`); the element is created here so it exists in every
+   * embedding. */
+  const liveRegion = (() => {
+    const host = strip ?? document.body;
+    const existing = host.querySelector("#visor-live") as HTMLElement | null;
+    if (existing) return existing;
+    const el = document.createElement("span");
+    el.id = "visor-live";
+    el.setAttribute("aria-live", "polite");
+    el.setAttribute("aria-atomic", "true");
+    host.append(el);
+    return el;
+  })();
+
+  /** Say something to assistive tech only. CLEAR THEN SET, in two turns:
+   * writing the same string a live region already holds is not a change,
+   * and an unchanged live region announces nothing — so a repeated
+   * identical sentence would be silently dropped. */
+  const speak = (text: string) => {
+    if (!text) return;
+    liveRegion.textContent = "";
+    setTimeout(() => {
+      liveRegion.textContent = text;
+    }, 30);
+  };
+
+  /** The pulse's total on-screen life, in ms. MUST match the
+   * `visor-ctx-pulse` animation in visor/ui/visor.css (.9s × 2). Used
+   * only for the belt-and-braces cleanup timer below. */
+  const PULSE_MS = 1800;
+  let pulseTimer = 0;
+  // `animationend` fires ONCE at the end of the last iteration (the
+  // per-cycle event is `animationiteration`), so it is the natural end
+  // of the pulse. ONE PERSISTENT LISTENER, guarded by target: the event
+  // BUBBLES, so a future animation ending on a child of the cluster
+  // must not cut the pulse short (and a per-call `once` listener would
+  // both accumulate across restarts and be consumed by exactly such a
+  // bubbled event). The timer below is the fallback for the cases where
+  // the event never arrives at all — a backgrounded tab, an engine that
+  // drops it.
+  context.addEventListener("animationend", (e) => {
+    if (e.target === context) context.classList.remove("pulse");
+  });
+  const pulseContext = (srText?: string) => {
+    // RESTART CLEANLY. Re-adding a class that is already present does
+    // not restart a CSS animation, so: remove, force a reflow (the
+    // offsetWidth read is the flush), re-add.
+    context.classList.remove("pulse");
+    void context.offsetWidth;
+    context.classList.add("pulse");
+    clearTimeout(pulseTimer);
+    pulseTimer = setTimeout(() => context.classList.remove("pulse"), PULSE_MS + 400);
+    if (srText) speak(srText);
+  };
+
   const announce = (text: string, ms = 8000) => {
     const token = ++announceToken;
     announcing = true;
@@ -1143,6 +1232,10 @@ export function initVisor(config: VisorConfig): Visor {
     said.className = "said announce";
     said.textContent = text;
     ctxBottom.append(said);
+    // The same words to assistive tech. Sighted users get the line; this
+    // is the other half, and it was missing entirely until the pulse
+    // needed a screen-reader channel of its own.
+    speak(text);
     clearTimeout(announceTimer);
     announceTimer = setTimeout(() => {
       // Overtaken by a newer render or announcement: that one owns the
@@ -1405,6 +1498,7 @@ export function initVisor(config: VisorConfig): Visor {
     renderContext: () => renderContext({ keepAnnouncement: true }),
     renderIdentity,
     announce,
+    pulseContext,
     setBack,
     identity: () => loadIdentity(config.identityKey),
     saveIdentity: (rec) => saveIdentity(config.identityKey, rec),
