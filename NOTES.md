@@ -1667,12 +1667,22 @@ record — nothing outside it consumes anything inside it, so
 delete-at-will is finally literal. CI, setup.sh and the Pages build
 follow the moved paths (`docs/spike-demo` → `docs/demo`); the
 definition of "identical" was the visor extraction's: every invariant
-grep still fires and the demo e2e suite passed unchanged, 12/12. Two
-known debts ride the same round as follow-up PRs: the LIVE provider
-protocol code still sits inside the engine guest (extraction to
-`providers/*/store` is next), and the spike-era names
-(`polymorph:engine-spike`, `polymorph:todomvc-spike`,
-`polymorph-fetchspike`, the `spike-*` crate names) rename after that.
+grep still fires and the demo e2e suite passed unchanged, 12/12. The
+provider protocol then extracted out of the engine guest (same day):
+`providers/common` carries the egress-route taxonomy, the transport
+retry, and the two port seams (`FetchPort`, `Sigv4SignPort`);
+`providers/s3/store` the SigV4 signing, object ops and name-secrecy
+derivation; `providers/dropbox/store` the RPC/link/pickup protocol.
+The engine keeps the world bindings (its fetch imports are inline
+anonymous interfaces, so the ports are the seam), the config
+snapshots, and ALL sealing — provider crates handle opaque blobs at
+derivable locations and depend on nothing from
+keyhive/subduction/automerge. Behavior identical to the counter: the
+G1–G5 harness's per-replica fetch counts match the pre-extraction
+build exactly, e2e 12/12 unchanged. One debt remains for the round's
+last PR: the spike-era names (`polymorph:engine-spike`,
+`polymorph:todomvc-spike`, `polymorph-fetchspike`, the `spike-*`
+crate names).
 
 ## Parked and candidate non-goals
 

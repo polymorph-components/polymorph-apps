@@ -125,6 +125,8 @@ run: compose minio relay-bin
         --access minioadmin --secret minioadmin
 
 check:
+    cargo clippy --target wasm32-wasip2 \
+        -p provider-common -p provider-s3 -p provider-dropbox -- -D warnings
     cargo clippy --target wasm32-wasip2 -p spike-fetcher -- -D warnings
     cargo clippy --target wasm32-wasip2 -p spike-guest -- -D warnings
     cargo clippy -p spike-host -- -D warnings

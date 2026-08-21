@@ -2641,6 +2641,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "provider-common"
+version = "0.0.0"
+dependencies = [
+ "polymorph-webcrypto-guest",
+ "wit-bindgen 0.59.0",
+]
+
+[[package]]
+name = "provider-dropbox"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "provider-common",
+ "serde_json",
+]
+
+[[package]]
+name = "provider-s3"
+version = "0.0.0"
+dependencies = [
+ "hex",
+ "provider-common",
+]
+
+[[package]]
 name = "ptr_meta"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3725,6 +3750,9 @@ dependencies = [
  "keyhive_crypto",
  "nonempty 0.10.0",
  "polymorph-webcrypto-guest",
+ "provider-common",
+ "provider-dropbox",
+ "provider-s3",
  "rand 0.8.7",
  "sedimentree_core",
  "serde",
