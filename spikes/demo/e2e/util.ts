@@ -167,19 +167,169 @@ export async function newContext(
   return context;
 }
 
+/** The renderer stopped answering the protocol altogether: no evaluate
+ * result, no rejection, and (in the observed CI mode) no crash event
+ * either. Distinct from a timeout, because it is a statement about the
+ * BROWSER rather than about the demo — the runner retries a scenario
+ * that fails this way. */
+export class RendererGoneError extends Error {
+  constructor(what: string, detail: string) {
+    super(
+      `the renderer stopped answering (crashed without delivering a crash event?) ` +
+        `while waiting for ${what}: ${detail}`,
+    );
+    this.name = "RendererGoneError";
+  }
+}
+
+/** How long a single probe may take before the renderer counts as
+ * silent for that interval. */
+const PROBE_STALL_MS = 5_000;
+/** Continuous protocol silence that means the renderer is gone. */
+const RENDERER_SILENCE_MS = 20_000;
+/** How long past an IN-PAGE timeout the driver waits before declaring
+ * the renderer gone. */
+const GRACE_MS = 10_000;
+/** Race token: this probe answered nothing within PROBE_STALL_MS. */
+const STALLED = Symbol("stalled");
+
 /** Wait for the demo to finish booting: `__demo` installed AND the
  * banner saying so. Both, because `__demo` is assigned near the end of
- * `boot` but the banner is the user-visible claim. */
+ * `boot` but the banner is the user-visible claim.
+ *
+ * A HARNESS-SIDE PROBE LOOP, not `page.waitForFunction`. CI run
+ * 32486407187: the renderer took SIGSEGV (SEGV_ACCERR) mid reload-boot
+ * and hung in its own crash handler — no crash event was delivered,
+ * `browser.isConnected()` stayed true, and the boot wait never returned
+ * because once `waitForFunction` has INJECTED its poller the timeout is
+ * enforced in the page, and it died with the renderer. Reproduced
+ * deterministically by SIGSTOPping the renderer: silence AFTER injection
+ * hangs forever; silence BEFORE it gets the driver-side 90s. So the whole
+ * clock lives here, in Deno timers, where no part of it can die with the
+ * page.
+ *
+ * A probe REJECTION resets the silence clock: a rejection is a protocol
+ * ANSWER (e.g. "Execution context was destroyed", which is what an
+ * ordinary mid-reload probe gets), and the mode being detected answers
+ * nothing at all. Only crash/closed-shaped rejections are fatal. */
 export async function waitForBoot(page: Page): Promise<void> {
-  await page.waitForFunction(
-    () => {
-      const d = (globalThis as Record<string, unknown>).__demo;
-      const banner = document.getElementById("banner")?.textContent ?? "";
-      return d !== undefined && banner.includes("ready");
-    },
-    undefined,
-    { timeout: BOOT_TIMEOUT },
-  );
+  let crashed = false;
+  const onCrash = () => {
+    crashed = true;
+  };
+  // waitForBoot runs many times per run; a leaked listener per call
+  // accumulates, so it comes off in the finally below.
+  page.on("crash", onCrash);
+  const started = performance.now();
+  let silentSince: number | null = null;
+  let last = "no probe has answered yet";
+  try {
+    for (;;) {
+      // A crash delivered BEFORE this call (the runner attaches its own
+      // listener at `fresh` time) counts too.
+      if (crashed || (page as unknown as { __crashed?: () => boolean }).__crashed?.()) {
+        throw new RendererGoneError("the demo to boot", "a crash event was delivered");
+      }
+      if (performance.now() - started > BOOT_TIMEOUT) {
+        throw new Error(
+          `boot timeout: the demo did not report ready within ${BOOT_TIMEOUT / 1000}s (${last})`,
+        );
+      }
+      const probe = page.evaluate(() => {
+        const d = (globalThis as Record<string, unknown>).__demo;
+        const banner = document.getElementById("banner")?.textContent ?? "";
+        return d !== undefined && banner.includes("ready");
+      });
+      let stallTimer: number | undefined;
+      const stall = new Promise<symbol>((r) => {
+        stallTimer = setTimeout(() => r(STALLED), PROBE_STALL_MS);
+      });
+      let outcome: boolean | symbol | string;
+      try {
+        outcome = await Promise.race<boolean | symbol | string>([
+          probe.then((v) => v, (e: unknown) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            // A rejection is an ANSWER. Only crash/closed-shaped ones say
+            // the renderer is gone; "Execution context was destroyed" is
+            // the ordinary mid-reload case and just means "probe again".
+            if (/crash|closed/i.test(msg)) throw new RendererGoneError("the demo to boot", msg);
+            return `the probe rejected: ${msg}`;
+          }),
+          stall,
+        ]);
+      } finally {
+        clearTimeout(stallTimer);
+      }
+      if (outcome === STALLED) {
+        // Do NOT keep awaiting the abandoned probe — but DO swallow its
+        // eventual rejection: under Deno an unhandled rejection (this one
+        // lands minutes later, when the browser is closed) kills the
+        // process.
+        probe.catch(() => {});
+        silentSince ??= performance.now() - PROBE_STALL_MS;
+        const silentFor = performance.now() - silentSince;
+        last = `no answer for ${(silentFor / 1000).toFixed(1)}s`;
+        if (silentFor >= RENDERER_SILENCE_MS) {
+          throw new RendererGoneError(
+            "the demo to boot",
+            `no probe answered for ${(silentFor / 1000).toFixed(1)}s`,
+          );
+        }
+        continue;
+      }
+      // Anything else is an ANSWER: the renderer is talking.
+      silentSince = null;
+      if (outcome === true) return;
+      last = typeof outcome === "boolean" ? "the page said it is not ready yet" : String(outcome);
+      await sleep(250);
+    }
+  } finally {
+    page.off("crash", onCrash);
+  }
+}
+
+/** A DRIVER-SIDE grace bomb around an in-page wait.
+ *
+ * Every `page.waitForFunction` carries its timeout INSIDE the page, so it
+ * dies with the renderer (see waitForBoot). When the renderer is alive
+ * the in-page timeout at `timeoutMs` always fires first; therefore this
+ * bomb firing at `timeoutMs + GRACE_MS` MEANS the renderer is gone. */
+async function driverBounded<T>(
+  page: Page,
+  p: Promise<T>,
+  timeoutMs: number,
+  what: string,
+): Promise<T> {
+  let timer: number | undefined;
+  const bomb = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new RendererGoneError(
+            what,
+            `the in-page wait's own ${timeoutMs / 1000}s timeout never fired ` +
+              `(${GRACE_MS / 1000}s past it)`,
+          ),
+        ),
+      timeoutMs + GRACE_MS,
+    );
+  });
+  let onCrash!: () => void;
+  const crash = new Promise<never>((_, reject) => {
+    onCrash = () => reject(new RendererGoneError(what, "a crash event was delivered"));
+  });
+  page.on("crash", onCrash);
+  try {
+    return await Promise.race([p, bomb, crash]);
+  } finally {
+    clearTimeout(timer);
+    page.off("crash", onCrash);
+    // The loser can settle much later; an unhandled rejection is fatal
+    // under Deno.
+    p.catch(() => {});
+    bomb.catch(() => {});
+    crash.catch(() => {});
+  }
 }
 
 /** The strip's two lines, as text. The whole harness reads the visor
@@ -204,20 +354,22 @@ export async function waitForBottom(
   what: string,
   timeout = UI_TIMEOUT,
 ): Promise<string> {
-  const handle = await page.waitForFunction(
-    (src: string) => {
-      const fn = new Function("t", `return (${src})(t)`) as (t: string) => boolean;
-      const el = document.querySelector("#visor-context .ctx-bottom");
-      const text = el?.textContent ?? "";
-      return fn(text) ? text : false;
-    },
-    pred.toString(),
-    { timeout },
-  ).catch(async (e) => {
-    const now = (await stripText(page)).bottom;
-    throw new Error(`waiting for ${what}: bottom line was ${JSON.stringify(now)} (${e.message})`);
-  });
-  return await handle.jsonValue() as string;
+  return await driverBounded(page, (async () => {
+    const handle = await page.waitForFunction(
+      (src: string) => {
+        const fn = new Function("t", `return (${src})(t)`) as (t: string) => boolean;
+        const el = document.querySelector("#visor-context .ctx-bottom");
+        const text = el?.textContent ?? "";
+        return fn(text) ? text : false;
+      },
+      pred.toString(),
+      { timeout },
+    ).catch(async (e) => {
+      const now = (await stripText(page)).bottom;
+      throw new Error(`waiting for ${what}: bottom line was ${JSON.stringify(now)} (${e.message})`);
+    });
+    return await handle.jsonValue() as string;
+  })(), timeout, what);
 }
 
 /** Is a visor sheet of the given tenant open? Read through `__demo`,
@@ -243,20 +395,27 @@ export async function waitForSheet(
   want: boolean,
   timeout = UI_TIMEOUT,
 ): Promise<void> {
-  await page.waitForFunction(
-    ({ t, want }: { t: string; want: boolean }) => {
-      const d = (globalThis as Record<string, unknown>).__demo as Record<
-        string,
-        { open?: () => boolean; isOpen?: () => boolean }
-      >;
-      const open = t === "picker" ? d[t].isOpen?.() === true : d[t].open?.() === true;
-      return open === want;
-    },
-    { t: tenant, want },
-    { timeout },
-  ).catch((e) => {
-    throw new Error(`waiting for the ${tenant} sheet to be ${want ? "open" : "closed"}: ${e.message}`);
-  });
+  await driverBounded(
+    page,
+    page.waitForFunction(
+      ({ t, want }: { t: string; want: boolean }) => {
+        const d = (globalThis as Record<string, unknown>).__demo as Record<
+          string,
+          { open?: () => boolean; isOpen?: () => boolean }
+        >;
+        const open = t === "picker" ? d[t].isOpen?.() === true : d[t].open?.() === true;
+        return open === want;
+      },
+      { t: tenant, want },
+      { timeout },
+    ).catch((e) => {
+      throw new Error(
+        `waiting for the ${tenant} sheet to be ${want ? "open" : "closed"}: ${e.message}`,
+      );
+    }),
+    timeout,
+    `the ${tenant} sheet to be ${want ? "open" : "closed"}`,
+  );
 }
 
 /** WHICH PAGE THE TRACK IS SHOWING. The storage configuration is a
@@ -275,14 +434,20 @@ export function waitForStoragePage(
   want: boolean,
   timeout = UI_TIMEOUT,
 ): Promise<unknown> {
-  return page.waitForFunction(
-    (want: boolean) =>
-      (document.getElementById("page-track")?.classList.contains("show-storage") === true) === want,
-    want,
-    { timeout },
-  ).catch((e) => {
-    throw new Error(`waiting for the storage page to be ${want ? "up" : "left"}: ${e.message}`);
-  });
+  return driverBounded(
+    page,
+    page.waitForFunction(
+      (want: boolean) =>
+        (document.getElementById("page-track")?.classList.contains("show-storage") === true) ===
+          want,
+      want,
+      { timeout },
+    ).catch((e) => {
+      throw new Error(`waiting for the storage page to be ${want ? "up" : "left"}: ${e.message}`);
+    }) as Promise<unknown>,
+    timeout,
+    `the storage page to be ${want ? "up" : "left"}`,
+  );
 }
 
 /** THE STRIP'S BACK CHEVRON (visor/ui/visor.ts's `setBack`), as the DOM
@@ -347,33 +512,45 @@ export function stripUnobscured(page: Page): Promise<{ visible: boolean; hitInSt
  * is never WRONG. That it is never wrong is its own claim, made by
  * scenarios/strip-ownership.ts.) */
 export async function waitForPanelSurface(page: Page, timeout = UI_TIMEOUT): Promise<void> {
-  await page.waitForFunction(
-    () =>
-      document.querySelectorAll("#panel-region iframe").length > 0 &&
-      // deno-lint-ignore no-explicit-any
-      (globalThis as any).__demo.boundDestination() !== null,
-    undefined,
-    { timeout },
-  ).catch(async (e) => {
-    const region = await page.evaluate(() =>
-      document.getElementById("panel-region")?.textContent?.slice(0, 200) ?? ""
-    );
-    throw new Error(
-      `waiting for the panel surface to register: the region said ${JSON.stringify(region)} (${e.message})`,
-    );
-  });
+  await driverBounded(
+    page,
+    page.waitForFunction(
+      () =>
+        document.querySelectorAll("#panel-region iframe").length > 0 &&
+        // deno-lint-ignore no-explicit-any
+        (globalThis as any).__demo.boundDestination() !== null,
+      undefined,
+      { timeout },
+    ).catch(async (e) => {
+      const region = await page.evaluate(() =>
+        document.getElementById("panel-region")?.textContent?.slice(0, 200) ?? ""
+      );
+      throw new Error(
+        `waiting for the panel surface to register: the region said ${
+          JSON.stringify(region)
+        } (${e.message})`,
+      );
+    }),
+    timeout,
+    "the panel surface to register",
+  );
 }
 
 /** The drawer HIDES on a transition (the sheet collapses its height
  * first), so "the drawer is away" is a wait rather than a sample. */
 export async function waitForDrawerHidden(page: Page, timeout = UI_TIMEOUT): Promise<void> {
-  await page.waitForFunction(
-    () => (document.getElementById("visor-drawer") as HTMLElement).hidden === true,
-    undefined,
-    { timeout },
-  ).catch((e) => {
-    throw new Error(`waiting for the drawer to be hidden: ${e.message}`);
-  });
+  await driverBounded(
+    page,
+    page.waitForFunction(
+      () => (document.getElementById("visor-drawer") as HTMLElement).hidden === true,
+      undefined,
+      { timeout },
+    ).catch((e) => {
+      throw new Error(`waiting for the drawer to be hidden: ${e.message}`);
+    }),
+    timeout,
+    "the drawer to be hidden",
+  );
 }
 
 /** The text of the sheet currently in the drawer. */
@@ -398,21 +575,23 @@ export async function waitForPaneStatus(
   what: string,
   timeout = UI_TIMEOUT,
 ): Promise<string> {
-  const handle = await page.waitForFunction(
-    ({ p, src }: { p: string; src: string }) => {
-      const fn = new Function("t", `return (${src})(t)`) as (t: string) => boolean;
-      const text = document.getElementById(`${p}-status`)?.textContent ?? "";
-      return fn(text) ? text : false;
-    },
-    { p: pane, src: pred.toString() },
-    { timeout },
-  ).catch(async (e) => {
-    const now = await paneStatus(page, pane);
-    throw new Error(
-      `waiting for ${what} on ${pane}: status was ${JSON.stringify(now)} (${e.message})`,
-    );
-  });
-  return await handle.jsonValue() as string;
+  return await driverBounded(page, (async () => {
+    const handle = await page.waitForFunction(
+      ({ p, src }: { p: string; src: string }) => {
+        const fn = new Function("t", `return (${src})(t)`) as (t: string) => boolean;
+        const text = document.getElementById(`${p}-status`)?.textContent ?? "";
+        return fn(text) ? text : false;
+      },
+      { p: pane, src: pred.toString() },
+      { timeout },
+    ).catch(async (e) => {
+      const now = await paneStatus(page, pane);
+      throw new Error(
+        `waiting for ${what} on ${pane}: status was ${JSON.stringify(now)} (${e.message})`,
+      );
+    });
+    return await handle.jsonValue() as string;
+  })(), timeout, `${what} on ${pane}`);
 }
 
 /** Record every `localStorage` write from now on.
@@ -473,21 +652,23 @@ export async function recordPaneStatus(
   return {
     seen,
     async sawText(needle: string, timeout = UI_TIMEOUT) {
-      const handle = await page.waitForFunction(
-        ({ s, needle }: { s: string; needle: string }) => {
-          const store = (globalThis as unknown as Record<string, string[]>)[s] ?? [];
-          return store.find((t) => t.includes(needle)) ?? false;
-        },
-        { s: slot, needle },
-        { timeout },
-      ).catch(async (e) => {
-        throw new Error(
-          `${pane} never showed ${JSON.stringify(needle)}; it showed ${
-            JSON.stringify(await seen())
-          } (${e.message})`,
-        );
-      });
-      return await handle.jsonValue() as string;
+      return await driverBounded(page, (async () => {
+        const handle = await page.waitForFunction(
+          ({ s, needle }: { s: string; needle: string }) => {
+            const store = (globalThis as unknown as Record<string, string[]>)[s] ?? [];
+            return store.find((t) => t.includes(needle)) ?? false;
+          },
+          { s: slot, needle },
+          { timeout },
+        ).catch(async (e) => {
+          throw new Error(
+            `${pane} never showed ${JSON.stringify(needle)}; it showed ${
+              JSON.stringify(await seen())
+            } (${e.message})`,
+          );
+        });
+        return await handle.jsonValue() as string;
+      })(), timeout, `${pane} to show ${JSON.stringify(needle)}`);
     },
   };
 }

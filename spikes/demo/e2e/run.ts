@@ -28,7 +28,15 @@
 import { chromium } from "npm:playwright@1.57.0";
 import type { Browser, Page } from "npm:playwright@1.57.0";
 import { serveDir } from "jsr:@std/http@1.0.13/file-server";
-import { actCount, type Ctx, type FreshOptions, newContext, resetActs, waitForBoot } from "./util.ts";
+import {
+  actCount,
+  type Ctx,
+  type FreshOptions,
+  newContext,
+  RendererGoneError,
+  resetActs,
+  waitForBoot,
+} from "./util.ts";
 
 import bootAppSurface from "./scenarios/boot-app-surface.ts";
 import petnameCeremony from "./scenarios/petname-ceremony.ts";
@@ -41,6 +49,7 @@ import storagePageNavigation from "./scenarios/storage-page-navigation.ts";
 import storagePicker from "./scenarios/storage-picker.ts";
 import stripOwnership from "./scenarios/strip-ownership.ts";
 import devicePairing from "./scenarios/device-pairing.ts";
+import visorReset from "./scenarios/visor-reset.ts";
 
 // Re-exported so a scenario imports its whole contract from one place:
 // `Scenario` and the `Ctx` it is handed.
@@ -79,6 +88,11 @@ const SCENARIOS: Scenario[] = [
   // (see the scenario's own header for why, and PAIRING.md §6), so it
   // needs no relay and no store.
   devicePairing,
+  // The erase ceremony: seeds a name, a petname and a storage sentinel,
+  // then reloads the page (twice) as part of its own claim. It runs
+  // after the other identity/naming scenarios and before the one that
+  // must stay last, on its own fresh context either way.
+  visorReset,
   // Last: it provokes the visor-timer races, so it is the scenario most
   // likely to leave a page in an interesting state — and it gets a fresh
   // context either way.
@@ -277,8 +291,12 @@ async function main() {
       // SIGSEGV (SEGV_ACCERR, mid-boot at the alice⇄bob wire step) and then
       // hung in its own crash handler — no crash event reached the driver,
       // and waitForFunction's in-page timeout died with the page. When the
-      // event DOES fire, this fails the boot wait in seconds with a name;
-      // when it doesn't, the scenario deadline still catches it.
+      // event DOES fire, this flag fails the boot wait in seconds with a
+      // name; when it doesn't (CI run 32486407187, mid reload-boot), the
+      // boot wait now detects the PROTOCOL SILENCE itself in ~20s — it is
+      // a harness-side probe loop, see util.ts's waitForBoot. Either way
+      // the scenario is retried once on a fresh browser: a renderer SEGV
+      // is a Chromium/environment flake, not a claim about the demo.
       let crashed = false;
       page.on("crash", () => {
         crashed = true;
@@ -290,18 +308,24 @@ async function main() {
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
       if (!opts.noWait) {
         setPhase("waitForBoot");
-        await Promise.race([
-          waitForBoot(page),
-          new Promise<never>((_, reject) => {
-            page.on("crash", () => reject(new Error("renderer crashed during boot")));
-          }),
-        ]);
+        // No crash race here any more: waitForBoot is itself crash-aware
+        // (it reads the flag above through `__crashed` and attaches — and
+        // REMOVES — its own listener), so racing one here would only leak
+        // a `crash` listener per boot.
+        await waitForBoot(page);
       }
       return page;
     },
   };
 
-  const results: { name: string; ok: boolean; ms: number; acts: number; error?: string }[] = [];
+  const results: {
+    name: string;
+    ok: boolean;
+    ms: number;
+    acts: number;
+    error?: string;
+    retried?: boolean;
+  }[] = [];
   const runList = wanted.length > 0
     ? SCENARIOS.filter((s) => wanted.includes(s.name))
     : SCENARIOS;
@@ -322,9 +346,23 @@ async function main() {
   // scenario banner — after the previous scenario, before the first
   // act — for 56 minutes until the JOB timeout killed it, with the
   // headless shell still alive among the orphans. The deadline turns
-  // that hour of silence into a labeled failure in minutes; a
-  // deadline-shaped failure also RELAUNCHES the browser, because a
-  // wedged one stays wedged and would eat every following scenario too.
+  // that hour of silence into a labeled failure in minutes.
+  //
+  // It is no longer the only net under a dead renderer. CI run
+  // 32486407187 (SEGV_ACCERR mid reload-boot, no crash event, the in-page
+  // waitForFunction timeout dying with the renderer — reproduced by
+  // SIGSTOP: silence AFTER poller injection never times out, silence
+  // BEFORE it gets the driver-side 90s) cost 4 minutes of deadline
+  // because nothing below it could see the silence. waitForBoot now sees
+  // it in ~20s. What the deadline still owns is the hang with no in-flight
+  // page wait at all — a wedged newContext/newPage protocol call.
+  //
+  // A CRASH-SHAPED failure (RendererGoneError, a deadline, or a delivered
+  // crash event) relaunches the browser and retries the scenario ONCE: a
+  // wedged browser stays wedged and would eat every following scenario,
+  // and a renderer SEGV is a Chromium/environment flake rather than a
+  // claim about the demo. An ordinary act failure is NOT retried — that
+  // would mask a real regression.
   const SCENARIO_DEADLINE_MS = 240_000; // > BOOT_TIMEOUT + slowest scenario
   const DEADLINE_MARK = "scenario deadline";
   const withDeadline = <T>(p: Promise<T>): Promise<T> => {
@@ -353,7 +391,7 @@ async function main() {
       new Promise((r) => setTimeout(r, 5_000)),
     ]);
     browser = await launchBrowser();
-    console.log("         (browser relaunched after a deadline failure)");
+    console.log("         (browser relaunched)");
   };
 
   // --- memory watch -------------------------------------------------------
@@ -453,92 +491,123 @@ async function main() {
 
   for (const scenario of runList) {
     console.log(`  ── ${scenario.name}: ${scenario.why}`);
-    resetActs();
-    scenarioPeakMb = 0;
-    recordSample();
     const t0 = performance.now();
-    let page: Page | null = null;
-    try {
-      await withDeadline((async () => {
-        setPhase("minio");
-        if (scenario.minio === "down") await minio.stop();
-        else await minio.start();
-        page = await ctx.fresh(
-          typeof scenario.page === "function" ? scenario.page(ctx) : scenario.page,
+    const MAX_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      resetActs();
+      scenarioPeakMb = 0;
+      recordSample();
+      let page: Page | null = null;
+      let failure: unknown;
+      let failed = false;
+      // Sampled INSIDE the catch: the finally below empties openPages, so
+      // the crash-shape test after it has nothing left to ask.
+      let crashEventSeen = false;
+      try {
+        await withDeadline((async () => {
+          setPhase("minio");
+          if (scenario.minio === "down") await minio.stop();
+          else await minio.start();
+          page = await ctx.fresh(
+            typeof scenario.page === "function" ? scenario.page(ctx) : scenario.page,
+          );
+          setPhase("scenario");
+          await scenario.run(page, ctx);
+          setPhase("idle");
+        })());
+      } catch (e) {
+        failed = true;
+        failure = e;
+        crashEventSeen = openPages.some((p) =>
+          (p as unknown as { __crashed?: () => boolean }).__crashed?.() === true
         );
-        setPhase("scenario");
-        await scenario.run(page, ctx);
-        setPhase("idle");
-      })());
-      results.push({
-        name: scenario.name,
-        ok: true,
-        ms: Math.round(performance.now() - t0),
-        acts: actCount().acts,
-      });
-    } catch (e) {
-      // The log is read off whatever pages the scenario opened —
-      // including one that failed to BOOT, which is the case where the
-      // console is the only evidence there is.
-      const log = openPages.flatMap((p) => (p as unknown as { __log: string[] }).__log ?? []);
-      if (log.length > 0) {
-        console.log("         --- page console (last 15) ---");
-        for (const l of log.slice(-15)) console.log(`         ${l}`);
-      }
-      results.push({
-        name: scenario.name,
-        ok: false,
-        ms: Math.round(performance.now() - t0),
-        acts: actCount().acts,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      if (e instanceof Error && e.message.startsWith(DEADLINE_MARK)) {
-        // The diagnostics the two silent CI wedges lacked: WHERE it was
-        // stuck, whether the protocol was alive at all, and whether the
-        // runner was starved for memory (an OOM-killed browser child
-        // manifests as exactly this kind of silence).
-        const stuck = ((performance.now() - phaseAt) / 1000).toFixed(1);
-        console.log(`         wedged in phase '${phase}' for ${stuck}s`);
-        console.log(`         browser.isConnected(): ${browser.isConnected()}`);
-        const crashedPages = openPages.filter((p) =>
-          (p as unknown as { __crashed?: () => boolean }).__crashed?.()
-        ).length;
-        console.log(`         pages with a delivered crash event: ${crashedPages}/${openPages.length}`);
-        // The sampled history answers the question a post-mortem snapshot
-        // cannot: was memory CLIMBING before the stall, or flat?
-        recordSample();
-        if (memHistory.length > 0) {
-          console.log("         --- mem history (5s cadence, oldest first) ---");
-          const now = performance.now();
-          for (const s of memHistory.slice(-12)) {
-            console.log(
-              `         t-${((now - s.t) / 1000).toFixed(0).padStart(3)}s  ` +
-                `chrome ${fmtMb(s.chromeMb)}  orphans ${fmtMb(s.orphanMb)}  ` +
-                `minio ${fmtMb(s.minioMb)}  other ${fmtMb(s.otherMb)}  ` +
-                `harness ${fmtMb(s.harnessMb)}  avail ${fmtMb(s.availMb)}`,
-            );
+        // The log is read off whatever pages the scenario opened —
+        // including one that failed to BOOT, which is the case where the
+        // console is the only evidence there is.
+        const log = openPages.flatMap((p) => (p as unknown as { __log: string[] }).__log ?? []);
+        if (log.length > 0) {
+          console.log("         --- page console (last 15) ---");
+          for (const l of log.slice(-15)) console.log(`         ${l}`);
+        }
+        if (e instanceof Error && e.message.startsWith(DEADLINE_MARK)) {
+          // The diagnostics the two silent CI wedges lacked: WHERE it was
+          // stuck, whether the protocol was alive at all, and whether the
+          // runner was starved for memory (an OOM-killed browser child
+          // manifests as exactly this kind of silence).
+          const stuck = ((performance.now() - phaseAt) / 1000).toFixed(1);
+          console.log(`         wedged in phase '${phase}' for ${stuck}s`);
+          console.log(`         browser.isConnected(): ${browser.isConnected()}`);
+          const crashedPages = openPages.filter((p) =>
+            (p as unknown as { __crashed?: () => boolean }).__crashed?.()
+          ).length;
+          console.log(
+            `         pages with a delivered crash event: ${crashedPages}/${openPages.length}`,
+          );
+          // The sampled history answers the question a post-mortem snapshot
+          // cannot: was memory CLIMBING before the stall, or flat?
+          recordSample();
+          if (memHistory.length > 0) {
+            console.log("         --- mem history (5s cadence, oldest first) ---");
+            const now = performance.now();
+            for (const s of memHistory.slice(-12)) {
+              console.log(
+                `         t-${((now - s.t) / 1000).toFixed(0).padStart(3)}s  ` +
+                  `chrome ${fmtMb(s.chromeMb)}  orphans ${fmtMb(s.orphanMb)}  ` +
+                  `minio ${fmtMb(s.minioMb)}  other ${fmtMb(s.otherMb)}  ` +
+                  `harness ${fmtMb(s.harnessMb)}  avail ${fmtMb(s.availMb)}`,
+              );
+            }
+          }
+          if (Deno.build.os === "linux") {
+            try {
+              const mem = new TextDecoder().decode(
+                (await new Deno.Command("free", { args: ["-m"] }).output()).stdout,
+              );
+              for (const l of mem.trim().split("\n")) console.log(`         ${l}`);
+            } catch { /* diagnostics are best-effort */ }
           }
         }
-        if (Deno.build.os === "linux") {
-          try {
-            const mem = new TextDecoder().decode(
-              (await new Deno.Command("free", { args: ["-m"] }).output()).stdout,
-            );
-            for (const l of mem.trim().split("\n")) console.log(`         ${l}`);
-          } catch { /* diagnostics are best-effort */ }
+      } finally {
+        // Every scenario's contexts go away with it: isolation is the
+        // harness's job, not the scenario's. Bounded for the same reason
+        // as recoverBrowser: close() on a wedged browser never returns.
+        for (const p of openPages.splice(0)) {
+          await Promise.race([
+            p.context().close().catch(() => {}),
+            new Promise((r) => setTimeout(r, 5_000)),
+          ]);
         }
+      }
+      // The crash shape: the renderer stopped answering (either named by
+      // waitForBoot/driverBounded, or caught only by the deadline), or a
+      // crash event was actually delivered. All three say "the browser
+      // died", not "the demo is wrong".
+      const crashShaped = failed && (
+        (failure instanceof RendererGoneError) ||
+        (failure instanceof Error && failure.name === "RendererGoneError") ||
+        (failure instanceof Error && failure.message.startsWith(DEADLINE_MARK)) ||
+        crashEventSeen
+      );
+      if (failed && crashShaped && attempt < MAX_ATTEMPTS) {
+        console.log(
+          "    !!   renderer crash/wedge — relaunching the browser and retrying the scenario",
+        );
         await recoverBrowser();
+        continue;
       }
-    } finally {
-      // Every scenario's contexts go away with it: isolation is the
-      // harness's job, not the scenario's. Bounded for the same reason
-      // as recoverBrowser: close() on a wedged browser never returns.
-      for (const p of openPages.splice(0)) {
-        await Promise.race([
-          p.context().close().catch(() => {}),
-          new Promise((r) => setTimeout(r, 5_000)),
-        ]);
-      }
+      results.push({
+        name: scenario.name,
+        ok: !failed,
+        ms: Math.round(performance.now() - t0),
+        acts: actCount().acts,
+        error: failed
+          ? (failure instanceof Error ? failure.message : String(failure))
+          : undefined,
+        retried: attempt > 1,
+      });
+      // A wedged browser stays wedged: never hand it to the next scenario.
+      if (failed && crashShaped) await recoverBrowser();
+      break;
     }
     const memEnd = recordSample();
     if (memEnd) {
@@ -565,7 +634,9 @@ async function main() {
     console.log(
       `  ${r.ok ? "ok  " : "FAIL"}  ${r.name.padEnd(26)} ${String(r.acts).padStart(2)} acts  ${
         (r.ms / 1000).toFixed(1)
-      }s${r.error ? `  — ${r.error}` : ""}`,
+      }s${r.error ? `  — ${r.error}` : ""}${
+        r.retried && r.ok ? "  (2nd attempt; renderer crashed on the 1st)" : ""
+      }`,
     );
   }
   console.log(

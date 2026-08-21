@@ -75,6 +75,7 @@ import {
   until,
 } from "./engine.ts";
 import {
+  eraseKeystore,
   getSigningKey,
   makeSigner,
   putSigningKey,
@@ -2301,6 +2302,51 @@ async function boot() {
       hint: "pairs another device with this account — it will have full access",
       onSelect: () => openAddDevice(),
     }],
+    // THE CONSUMER'S OWN STATEMENT-OF-CONSEQUENCE LINES (visor/ui/
+    // sheets.ts:1214-1223): what this demo is about to destroy that the
+    // visor itself knows nothing about. SEMANTICS RULING (this dispatch):
+    // reset means THIS DEVICE LEAVES the account — every local copy is
+    // erased so the device can no longer act on the user's behalf — not
+    // an account-wide erase, so both lines say "this device" and name
+    // what other paired devices keep.
+    resetConsequences: [
+      "this device's keys and its storage configurations are erased with it — this device leaves your account",
+      "other devices paired with this account keep their own copies of everything",
+    ],
+    // THE CONSUMER'S FALLIBLE WIPE (visor/ui/sheets.ts:1329-1339): runs
+    // BEFORE the visor erases its own marks table and identity/hue keys,
+    // and a throw here aborts the whole ceremony with nothing visor-held
+    // lost. So this must erase EVERY demo-owned persistence except the
+    // three the visor's own `erase()`/`marks.eraseAll()` already cover
+    // (IDENTITY_KEY, VISOR_KEY, MARKS_KEY — removing them here too would
+    // be harmless but is the visor's job, not the consumer's, per the
+    // ordering contract). THIS IS THE ONE PLACE "this device leaves" is
+    // enforced end to end: any future demo-owned persistence key belongs
+    // in this list.
+    onReset: async () => {
+      // The storage configuration (S3 endpoint/bucket/region) and its
+      // legacy predecessor: device-local wiring the visor never touches.
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(LEGACY_S3_KEY);
+      // The legacy pre-visor anchor-hue key (host/demo.ts's migration
+      // path reads it once on an old boot; a device that just erased
+      // itself must not resurrect a colour from it on the next one).
+      localStorage.removeItem(LEGACY_CHROME_KEY);
+      // The pairing boot cache (visor/ui/pairing.ts's `usCacheKeys`):
+      // hue/name/marks, DEMOTED to a cache of the account's own state
+      // (PAIRING.md §5) but still a local copy that must not survive a
+      // device leaving — a stale cache is exactly what would let a freshly
+      // reset device flash the old name for one frame on the next boot.
+      localStorage.removeItem(US_CACHE_KEYS.hue);
+      localStorage.removeItem(US_CACHE_KEYS.name);
+      localStorage.removeItem(US_CACHE_KEYS.marks);
+      // The signing keystore: this device's escrowed credential handles,
+      // in a separate IndexedDB database the visor's own erase does not
+      // reach. Erasing it is the literal mechanism of "this device can no
+      // longer act on the account" — after this line the device holds no
+      // signing capability at all, escrowed or otherwise.
+      await eraseKeystore();
+    },
   });
 
   /** PUT THE STRIP BACK IN THE HANDS OF WHOEVER ACTUALLY OWNS IT NOW —
@@ -4108,6 +4154,54 @@ async function boot() {
           | HTMLButtonElement
           | null)?.click(),
       identity: () => visor.identity(),
+    },
+    // The visor's erase ceremony, for driving — same conventions as
+    // `settings`: every control is CLICKED (or, for the confirm input, its
+    // value is set the way a user's typing would leave it) rather than
+    // invoked through a handler, so a driver sees the arming delay and the
+    // typed-confirmation gate exactly as a user does.
+    reset: {
+      open: () => sheets.resetOpen(),
+      // Opens from the settings sheet's own danger button — the only
+      // path in (visor/ui/sheets.ts's `requestReset`), matching how a user
+      // reaches it: settings must already be open for this to do anything.
+      openFromSettings: () =>
+        (drawerInner.querySelector("#visor-settings-reset") as HTMLButtonElement | null)?.click(),
+      type: (value: string) => {
+        const input = drawerInner.querySelector("#visor-reset-confirm") as
+          | HTMLInputElement
+          | null;
+        if (input) input.value = value;
+      },
+      // Whether the erase button and the confirm input are still behind
+      // the arming delay — read as `disabled`, the same enforcement the
+      // ceremony itself relies on (visor/ui/sheets.ts's `controls`).
+      armingState: () => {
+        const btn = drawerInner.querySelector(".reset-sheet .erase-confirm") as
+          | HTMLButtonElement
+          | null;
+        const input = drawerInner.querySelector("#visor-reset-confirm") as
+          | HTMLInputElement
+          | null;
+        return {
+          btnDisabled: btn?.disabled ?? null,
+          btnText: btn?.textContent ?? "",
+          inputDisabled: input?.disabled ?? null,
+          armed: drawerInner.querySelector(".reset-sheet")?.classList.contains("armed") ?? false,
+        };
+      },
+      erase: () =>
+        (drawerInner.querySelector(".reset-sheet .erase-confirm") as HTMLButtonElement | null)
+          ?.click(),
+      cancel: () => {
+        const btns = Array.from(
+          drawerInner.querySelectorAll(".reset-sheet .cred-row button"),
+        ) as HTMLButtonElement[];
+        btns.find((b) => b.textContent === "Cancel")?.click();
+      },
+      reason: () =>
+        (drawerInner.querySelector(".reset-sheet .cred-reason") as HTMLElement | null)
+          ?.textContent ?? "",
     },
     /** The pairing ceremonies, for driving. Every one of these CLICKS a
      * real control — the arming delay, the disabled grant button and the
