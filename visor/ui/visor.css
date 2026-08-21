@@ -232,17 +232,30 @@
    ZERO LAYOUT SHIFT is a hard requirement — the strip's line and cluster
    geometry is measured by the `strip-geometry` e2e scenario, and an
    attention cue that nudges the text it is pointing at is a bug. The
-   breathing room around the wash is therefore padding CANCELLED BY AN
-   EQUAL NEGATIVE MARGIN: the border box grows, the content box does not
-   move, and nothing reflows. */
+   wash therefore lives on an ABSOLUTELY POSITIONED PSEUDO-ELEMENT,
+   which cannot participate in layout by construction — the breathing
+   room is the pseudo's inset overhang, painted into the gaps around
+   the cluster without owning them.
+
+   THE LESSON THIS PARAGRAPH REPLACED, kept because the bug shipped: the
+   first version put `padding: 0 .4em; margin: 0 -.4em` on the cluster
+   itself. `margin` is a SHORTHAND — it silently clobbered the
+   cluster's `margin-right: auto` (the rule, above, that makes the
+   cluster absorb the strip's free space), so every pulse shoved the
+   whole cluster ~340px toward the identity box and snapped it back on
+   expiry. A cue that yanks the text it is pointing at is worse than no
+   cue. The pseudo has no such failure mode: it carries no box the flex
+   row can see. (z-index -1 under an isolated stacking context paints
+   it behind the cluster's text, above the strip's background.) */
 @keyframes visor-ctx-pulse {
   0%   { background-color: rgba(255,255,255,0); }
   50%  { background-color: rgba(255,255,255,.14); }
   100% { background-color: rgba(255,255,255,0); }
 }
-#visor-context.pulse {
-  border-radius: 4px;
-  padding: 0 .4em; margin: 0 -.4em;
+#visor-context.pulse { position: relative; isolation: isolate; }
+#visor-context.pulse::before {
+  content: ""; position: absolute; inset: 0 -.4em; z-index: -1;
+  border-radius: 4px; pointer-events: none;
   animation: visor-ctx-pulse .9s ease-in-out 2;
 }
 /* REDUCED MOTION: no oscillation. The chosen substitute is a SINGLE
@@ -258,7 +271,7 @@
     0%   { background-color: rgba(255,255,255,.14); }
     100% { background-color: rgba(255,255,255,0); }
   }
-  #visor-context.pulse {
+  #visor-context.pulse::before {
     animation: visor-ctx-pulse-once 1.8s ease-out 1;
   }
 }

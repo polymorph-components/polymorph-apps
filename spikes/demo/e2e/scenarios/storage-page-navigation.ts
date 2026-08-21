@@ -114,6 +114,15 @@ const scenario: Scenario = {
               at: performance.now(),
               clearedAt: null,
               bottom: el.querySelector(".ctx-bottom")?.textContent ?? "",
+              // The cluster's live position, captured WHILE the cue is
+              // painting. The first pulse implementation put a `margin`
+              // shorthand on the cluster and silently clobbered its
+              // `margin-right: auto` — every pulse shoved the whole
+              // cluster ~340px sideways and snapped it back. A cue that
+              // moves the text it points at is a bug the rest-state
+              // geometry scenario cannot see, so it is pinned here, at
+              // the only moment it can be observed.
+              x: el.getBoundingClientRect().x,
             });
           } else if (!now && on && log.length > 0) {
             log[log.length - 1].clearedAt = performance.now();
@@ -230,7 +239,7 @@ const scenario: Scenario = {
       // about the arrival moment and not about the aftermath.
       const pulses = await page.evaluate(() =>
         // deno-lint-ignore no-explicit-any
-        (globalThis as any).__pulseLog as { at: number; clearedAt: number | null; bottom: string }[]
+        (globalThis as any).__pulseLog as { at: number; clearedAt: number | null; bottom: string; x: number }[]
       );
       assertIncludes(
         pulses[0].bottom,
@@ -256,6 +265,20 @@ const scenario: Scenario = {
       assert(
         lived <= PULSE_MS + 2_000,
         `the arrival pulse outlived its animation: ${Math.round(lived)}ms (PULSE_MS=${PULSE_MS})`,
+      );
+
+      // (e) and the cue DID NOT MOVE what it points at. The recorder
+      // captured the cluster's x while the wash was painting; compared
+      // against the settled position, they must be the same pixel. This
+      // is the regression the first implementation shipped (see the
+      // recorder's comment): rest-state geometry checks are blind to a
+      // shift that begins and ends inside the cue's own lifetime.
+      const settledX = await page.evaluate(() =>
+        document.getElementById("visor-context")!.getBoundingClientRect().x
+      );
+      assert(
+        Math.abs(pulses[0].x - settledX) < 1,
+        `the pulse moved the context cluster: x=${pulses[0].x} during, ${settledX} at rest`,
       );
     });
 
