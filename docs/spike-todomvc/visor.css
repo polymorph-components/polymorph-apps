@@ -13,7 +13,59 @@
    A consumer's page provides: --content-max/.bar-inner style centering
    (or its own layout) and links this file BEFORE its own page-specific
    <style> block, so cascade order matches what this stylesheet was
-   authored against. */
+   authored against.
+
+   --- THREE VOICES ---------------------------------------------------
+   Every piece of content the visor renders belongs to exactly one
+   provenance class, and the class is visible:
+
+   class        | meaning                    | marking                                   | examples
+   -------------|----------------------------|-------------------------------------------|--------------------------------
+   (unmarked)   | FRAMEWORK VOICE — the      | none; it is what the visor looks like.     | sheet headings, labels, hints,
+                | visor's own words          | `.said` commentary sits at .85 opacity,    | `.said` lines, announcements,
+                |                            | headings/labels at full strength.          | SAS digits, pairing code, .fresh
+   .petname     | USER VOICE — the user's    | weight 600, full opacity, NEVER quoted,    | petname on the strip and sheets,
+   .who         | own vocabulary, spoken by  | NEVER monospace, no plate. `.who.device`   | the user's name, their word for
+   (.mark-icon) | the visor                  | is the quieter half at 500. Pet icons are  | this device, the pet icon
+                |                            | user voice BY CONSTRUCTION and so carry    |
+                |                            | no extra marker at all.                    |
+   .foreign     | APP VOICE — component-     | quoted (`<q>`) + monospace + textual       | "calls itself", the provenance
+                | influenced strings         | attribution + a recessed PLATE, so it      | key, a panel's destination, the
+                |                            | reads as an embedded token rather than as  | nominated glyph
+                |                            | a word in the visor's sentence.            |
+
+   NOT italics for user voice: CJK gets only synthetic oblique, Arabic
+   has no italics, 12px italic legibility is poor, and italics read as
+   quotation — the wrong connotation for the one voice that is not being
+   quoted.
+
+   THE ONE-DIRECTIONAL SECURITY RULE: app-influenced strings must only be
+   renderable through the app-voice constructor; the reverse direction
+   (visor text accidentally styled as a plate) is ugly but not dangerous.
+   Hence the enforcement is a CONSTRUCTION funnel — visor/ui/visor.ts's
+   `foreignToken`, the single site that assigns `.foreign`, pinned by
+   invariant (h) of spikes/demo/scripts/check-invariants.sh — and not a
+   style audit. This stylesheet only has to dress what that door emits. */
+
+/* THE PLATE: the app-voice token's own surface. ALPHA-based on purpose —
+   the strip's background is the user's anchor hue, one of ten, and the
+   plate has to read on all of them at 38% lightness; a fixed colour
+   would be legible on some and invisible on others.
+   NO BORDER: a bordered light rectangle is this visor's BUTTON dress
+   (#visor-name-it, #visor-settings, the picker buttons), and a
+   non-interactive token must not wear a control's clothes. The inset
+   shadow says RECESSED, not raised — embedded in the visor's surface
+   rather than sitting on top of it offering to be pressed.
+   NO VERTICAL PADDING: the strip's line height is measured (the
+   `strip-geometry` e2e scenario) and a token must never change it. */
+#visor-context q.foreign, #visor-context span.foreign,
+.cred-sheet q.foreign, .cred-sheet span.foreign,
+.name-sheet .name-nomination q.foreign,
+.name-sheet .name-nomination span.foreign {
+  background: rgba(255,255,255,.08);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.35);
+  border-radius: 3px; padding: 0 .3em;
+}
 
 /* THE VISOR STRIP (#22). The one region an app can never paint, so
    it is where identity lives. Its background is the user's own
@@ -49,17 +101,28 @@
 #visor-strip .bar-inner { display: flex; align-items: stretch;
                             justify-content: space-between; gap: .8em;
                             padding: 0 .9em; box-sizing: border-box; }
-/* LEFT CLUSTER — two lines, and the split between them is the whole
-   point of the restructure:
-     .ctx-top    the COMPONENT's identity: its mark and what it calls
-                 itself. Static after install; nothing the visor does to
-                 its own sheets rewrites it.
-     .ctx-bottom THE VISOR'S line: the user's petname (or the offer to
-                 assign one), the first-sight marker, the name of
-                 whichever visor sheet is open, and timed
-                 announcements.
-   One voice per line: what the component said above, what the visor and
-   the user say below. */
+/* LEFT CLUSTER — two lines, ordered by WHOSE QUESTION THEY ANSWER:
+     .ctx-top    THE USER'S RECOGNITION PAIR: the mark they picked and
+                 the word they chose, side by side — or, before those
+                 exist, the visor's offer to create them (the NEW marker
+                 and "name it", which sit exactly where the answer will
+                 land).
+     .ctx-bottom CLAIMS AND STATUS: what the component calls itself
+                 (quoted, monospaced, plated — app voice), the name of
+                 whichever visor sheet is open, and timed announcements,
+                 which replace the whole line for their window.
+   "What is this, to me?" is answered above "what does it call itself?",
+   which is the demotion of the component's self-description made
+   structural. An app that declares no nickname leaves the bottom line
+   empty outside sheets and announcements — deliberately: an empty row
+   beats a filler sentence, and it leaves the user's own line clean.
+
+   THE LINES ARE FREE TO BE REORDERED BECAUSE THE VOICES ARE MARKED. See
+   the three-voices table at the top of this file: provenance rides the
+   TOKEN (the plate and the monospace say "a component said this", the
+   600 weight says "you said this"), not the row it sits in. When the row
+   was the only marking, moving a token between lines would have changed
+   what it claimed. */
 #visor-context { display: flex; flex-direction: column;
                   justify-content: center; gap: .15em;
                   min-width: 0; max-width: 45%; }
@@ -79,24 +142,36 @@
    was never a recognition device a user could name or rehearse. The
    slot is fixed-width so a mark never shifts the nickname beside it,
    and an UNMARKED surface renders no element at all — not an empty
-   slot, because the visor says nothing before the user has. */
+   slot, because the visor says nothing before the user has.
+
+   USER VOICE BY CONSTRUCTION, which is why it wears no marker: a glyph
+   only reaches this slot after the user adopted it in the naming
+   ceremony, and a merely NOMINATED glyph never renders outside that
+   ceremony's picker — where it is dashed, plated and app-voice
+   attributed. The provenance is enforced by the code path, so the
+   pixels do not have to carry it. */
 #visor-context .mark-icon { flex: none; font-size: 15px; line-height: 1;
                             width: 1.1em; text-align: center;
                             font-family: ui-monospace, "Segoe UI Symbol",
                                          "Apple Symbols", monospace; }
-/* App-supplied text is quoted, clamped and styled as foreign — never
-   part of the visor's own sentence (#22's untrusted-string rule). */
-#visor-context q.foreign { font-family: ui-monospace, monospace;
+/* APP VOICE on the strip: quoted, monospaced, clamped and plated (the
+   plate rule is in this file's header) — never part of the visor's own
+   sentence (#22's untrusted-string rule). Built only by
+   visor/ui/visor.ts's `foreignToken`. */
+#visor-context q.foreign, #visor-context span.foreign {
+                            font-family: ui-monospace, monospace;
                             max-width: 22em; overflow: hidden;
                             text-overflow: ellipsis; white-space: nowrap; }
 #visor-context .said { opacity: .85; overflow: hidden;
                         text-overflow: ellipsis; }
 
-/* THE PETNAME: the user's own word for a component, so the visor says it
-   in THE VISOR'S voice — no quotes, no monospace, full opacity, slightly
-   heavier than the surrounding visor text. The contrast with
-   q.foreign above is the whole message: quoted+monospace means "a
-   component said this", plain visor text means "you said this". */
+/* THE PETNAME — USER VOICE (see the three-voices table in this file's
+   header). The user's own word for a component, so the visor says it in
+   the visor's own sentence: no quotes, no monospace, no plate, full
+   opacity, weight 600. The contrast with q.foreign above is the whole
+   message: quoted + monospace + plate means "a component said this";
+   unquoted, unplated, weight 600 means "you said this"; and everything
+   unmarked is the visor speaking for itself. */
 #visor-context .petname { font-weight: 600; letter-spacing: .01em;
                            max-width: 14em; overflow: hidden;
                            text-overflow: ellipsis; white-space: nowrap;
@@ -126,7 +201,18 @@
    It replaces the bottom line for a few seconds and then the line is
    RE-RENDERED from the live context — never restored from a saved
    string, because what belongs there may have changed underneath. */
-#visor-context .announce { font-weight: 600; overflow: hidden;
+/* FRAMEWORK VOICE, at full strength. The weight-600 that used to be
+   here was the USER-voice marker borrowed by a framework-voice element:
+   an announcement is the visor speaking, so it inherits the visor's
+   weight. Its salience comes from being full-strength AND from
+   replacing the whole bottom line for its window — the span carries
+   `said announce`, so the explicit opacity:1 undoes `.said`'s .85
+   muting, which is for standing commentary and not for a line that
+   arrived just now. An announcement is a flat string and therefore
+   cannot carry class marking at all: see `announce`'s doc comment in
+   visor/ui/visor.ts — framework voice, user-voice words admissible
+   inline, an app-influenced string never. */
+#visor-context .announce { opacity: 1; overflow: hidden;
                             text-overflow: ellipsis; }
 
 /* THE STANDING RULE LINE IS GONE. It used to sit in the
@@ -148,8 +234,9 @@
 /* THE IDENTITY CLUSTER (strip right). The user's own name and their
    word for this device, spoken in THE VISOR'S voice — plain text, full
    opacity, slightly heavier — because the user typed them. Same
-   contrast as the petname above: q.foreign means "a component said
-   this", this means "you said this". Nothing here is ever handed to
+   contrast as the petname above — this is the same USER VOICE family
+   as .petname (weight 600, unquoted, unplated), against q.foreign's
+   plated app voice. Nothing here is ever handed to
    a component (see visor/ui/visor.ts's identity record), so the
    cluster is a second thing an impersonating rectangle cannot
    reproduce: it would have to guess words it can never read.
@@ -178,11 +265,17 @@
    the bar (it is the only control here that opens the visor's own
    settings), and it gives the gesture a target that clears the 44px
    touch minimum at the strip's 12px type — hence the px floor beside
-   the em sizing: at 12px, 2.4em is only ~29px. */
+   the em sizing: at 12px, 2.4em is only ~29px.
+
+   IT IS A CIRCLE, and that shape means "me": the avatar convention, the
+   same one every account menu on the platform uses. The visor spends it
+   on the one control that is about the USER rather than about a
+   component — see the rectangular pet-icon picker in .name-icons, which
+   is about an "it". */
 #visor-settings { font: inherit; color: inherit; cursor: pointer;
                    background: rgba(255,255,255,.12);
                    border: 1px solid rgba(255,255,255,.3);
-                   border-radius: 4px; padding: 0;
+                   border-radius: 50%; padding: 0;
                    align-self: center; flex: none;
                    display: inline-flex; align-items: center;
                    justify-content: center;
@@ -256,7 +349,7 @@
      identity words used to be display:none here — which quietly
      removed half of what makes the anchor unspoofable at exactly the
      width where the strip is most crowded. They stay visible now. */
-  #visor-context q.foreign { max-width: 100%; }
+  #visor-context q.foreign, #visor-context span.foreign { max-width: 100%; }
   #visor-context .petname { max-width: 100%; flex: 0 1 auto; min-width: 0; }
   #visor-identity .who { max-width: 100%; }
 }
@@ -340,9 +433,11 @@
                          width: 1.1em; text-align: center;
                          font-family: ui-monospace, "Segoe UI Symbol",
                                       "Apple Symbols", monospace; }
-/* Panel-influenced strings (component name, destination origin) are
-   quoted, monospaced and clamped — never part of the visor's sentence. */
-.cred-sheet q.foreign { font-family: ui-monospace, monospace;
+/* APP VOICE on a sheet: panel-influenced strings (component name,
+   provenance key, destination origin) are quoted, monospaced, clamped
+   and plated — never part of the visor's sentence. */
+.cred-sheet q.foreign, .cred-sheet span.foreign {
+                        font-family: ui-monospace, monospace;
                         max-width: 20em; overflow: hidden;
                         text-overflow: ellipsis; white-space: nowrap; }
 .cred-sheet .cred-warning { font-size: 12px; color: #ffd79a; margin: .3em 0; }
@@ -378,16 +473,22 @@
    dim — nothing secret is typed here and the ceremony starts from
    strip pixels no app can draw. It ships with `.armed` already set,
    so the button row is never dimmed for a delay that does not exist.
-   The user's own word is shown in the visor's voice; what the component
-   calls itself stays in q.foreign, quoted and monospaced. */
+   The user's own word is shown in USER voice; what the component calls
+   itself stays in q.foreign — app voice, quoted, monospaced, plated. */
 .name-sheet .petname { font-weight: 600; }
 /* THE ICON PICKER (was the recognition-colour swatch row). Six offers,
    each a glyph no other trust record wears. The NOMINATED one — a glyph
    the component itself asked to wear — is drawn differently on purpose:
    a dashed border says "this offer is not the visor's", the same way a
-   dotted underline or a q.foreign says it in text. */
+   dotted underline or a q.foreign says it in text. It keeps its border
+   because it IS a button — a border is honest on a control — while its
+   background and inset shadow are the app-voice PLATE's, so the offer
+   and the attribution line above it speak one vocabulary. */
 .name-sheet .name-icons { display: flex; gap: .4em; flex-wrap: wrap;
                           margin: .1em 0 .6em; }
+/* RECTANGULAR ON PURPOSE: a pet icon is a mark for an "it" — the round
+   shape is reserved for the user's own glyph (see #visor-settings and
+   the settings sheet's picker), because a circle reads as "me". */
 .name-sheet .name-icons button { font: inherit; font-size: 16px;
                                  width: 2em; height: 2em; padding: 0;
                                  cursor: pointer; border-radius: 3px;
@@ -396,13 +497,19 @@
                                  border: 1px solid rgba(255,255,255,.35);
                                  font-family: ui-monospace, "Segoe UI Symbol",
                                               "Apple Symbols", monospace; }
-.name-sheet .name-icons button.nominated { border-style: dashed;
-                                           background: rgba(255,255,255,.04); }
+.name-sheet .name-icons button.nominated {
+  border-style: dashed;
+  background: rgba(255,255,255,.08);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.35);
+}
 .name-sheet .name-icons button.picked { outline: 2px solid #fff;
                                         outline-offset: 1px; }
-/* The foreign attribution line above the row: the visor's sentence, the
-   component's glyph, quoted like every other thing a component said. */
-.name-sheet .name-nomination q.foreign { font-family: ui-monospace,
+/* The app-voice attribution line above the row: the visor's sentence,
+   the component's glyph, quoted and plated like every other thing a
+   component said. */
+.name-sheet .name-nomination q.foreign,
+.name-sheet .name-nomination span.foreign {
+                                         font-family: ui-monospace,
                                          "Segoe UI Symbol", "Apple Symbols",
                                          monospace; font-size: 14px; }
 .name-sheet .cred-line.said { opacity: .8; font-size: 11px; margin-bottom: .15em; }
@@ -431,9 +538,13 @@
 .settings-sheet .settings-icons,
 .settings-sheet .settings-hues { display: flex; gap: .35em; flex-wrap: wrap;
                                  margin: .1em 0 .6em; }
+/* THE USER'S OWN GLYPH, so the offers are ROUND: choosing "me" wears the
+   me-shape, and the button that will carry the choice (#visor-settings)
+   is a circle too. The component pet-icon picker (.name-icons) stays
+   rectangular — that one is an "it". */
 .settings-sheet .settings-icons button { font: inherit; font-size: 14px;
                                          width: 1.9em; height: 1.9em; padding: 0;
-                                         cursor: pointer; border-radius: 3px;
+                                         cursor: pointer; border-radius: 50%;
                                          color: inherit; line-height: 1;
                                          background: rgba(255,255,255,.1);
                                          border: 1px solid rgba(255,255,255,.35); }
@@ -452,7 +563,7 @@
      measured budget (--visor-sheet-max) matters most here — a phone
      viewport is short and the vocabulary fields are stacked. */
   .cred-sheet { padding: .7em .8em 1em; font-size: 13px; }
-  .cred-sheet q.foreign { max-width: 100%; }
+  .cred-sheet q.foreign, .cred-sheet span.foreign { max-width: 100%; }
   .cred-sheet .cred-row { gap: .6em; }
   .cred-sheet .cred-line { row-gap: .2em; }
 }

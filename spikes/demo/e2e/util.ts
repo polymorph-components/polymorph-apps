@@ -406,11 +406,14 @@ export async function recordPaneStatus(
   };
 }
 
-/** Record EVERY value the strip's TOP line takes, from now on.
+/** Record EVERY value the strip's SURFACE-NAME line takes, from now on.
  *
- * The top line is the trust anchor's component-identity line, and the
- * claim being made about it is a NEVER: no deferred visor timer may put
- * one surface's name up while a different surface owns the context. A
+ * That is the BOTTOM line: the claims-and-status row, where the
+ * component's own quoted account of itself lives (the top line is the
+ * user's — their mark and their word, or the visor's offer to create
+ * them). The claim being made about it is a NEVER: no deferred visor
+ * timer may put one surface's name up while a different surface owns the
+ * context. A
  * `never` cannot be checked by sampling — the wrong label may be up for
  * one frame — so this records rather than polls, on BOTH edges:
  *
@@ -419,12 +422,12 @@ export async function recordPaneStatus(
  *     screen (a mutation pair that lands within one frame never painted).
  *
  * `stop()` returns every distinct value observed, in order. */
-export async function recordStripTop(page: Page): Promise<{
+export async function recordSurfaceLine(page: Page): Promise<{
   samples(): Promise<string[]>;
   stop(): Promise<string[]>;
 }> {
   await page.evaluate(() => {
-    const el = document.querySelector("#visor-context .ctx-top") as HTMLElement;
+    const el = document.querySelector("#visor-context .ctx-bottom") as HTMLElement;
     const store = ((globalThis as Record<string, unknown>).__e2e_ctx_top = [] as string[]);
     const push = () => {
       const text = (el.textContent ?? "").trim();
@@ -529,9 +532,11 @@ export function nominationLine(page: Page): Promise<string> {
   return page.evaluate(() => (globalThis as any).__demo.naming.nominationLine());
 }
 
-/** The pet icon the STRIP is currently showing for the surface its top
- * line names — "" when the surface is unmarked, which is the honest
- * rendering of "the user has not said anything about this yet". */
+/** The pet icon the STRIP is currently showing for the surface the
+ * cluster is about — "" when the surface is unmarked, which is the
+ * honest rendering of "the user has not said anything about this yet".
+ * It lives on the TOP line, beside the user's own word for the
+ * component: one recognition pair, read together. */
 export function stripMarkIcon(page: Page): Promise<string> {
   return page.evaluate(() =>
     (document.querySelector("#visor-context .ctx-top .mark-icon") as HTMLElement | null)

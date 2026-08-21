@@ -186,7 +186,7 @@ const scenario: Scenario = {
       assertEquals(table["app"]?.icon, APP_NOMINATION, "the persisted pet icon");
     });
 
-    await act("the adopted mark is now on the STRIP, beside the foreign nickname", async () => {
+    await act("the adopted mark is now on the STRIP, beside the user's own word", async () => {
       assertEquals(await stripMarkIcon(page), APP_NOMINATION, "the strip's pet icon");
       // And it is TEXT in the visor's own foreground, not a painted
       // swatch: the chip element is gone from the strip entirely.
@@ -203,23 +203,24 @@ const scenario: Scenario = {
       // the line can be honest about a table that changed underneath it.
       await sleep(ANNOUNCE_MS + 500);
       const { top, bottom } = await stripText(page);
-      assertIncludes(bottom, PETNAME, "the reverted bottom line");
-      // The demotion: the component's own account of itself stays
-      // UPSTAIRS as a quote; the visor's line is the user's word.
-      assertIncludes(top, "TodoMVC", "the top line still quotes the nickname");
+      assertIncludes(top, PETNAME, "the reverted user line");
+      // The demotion: the user's own word is the FIRST line, beside the
+      // mark they picked; the component's own account of itself sits
+      // below it as a quote.
+      assertIncludes(bottom, "TodoMVC", "the bottom line still quotes the nickname");
       const dom = await page.evaluate(() => ({
-        fresh: document.querySelectorAll("#visor-context .ctx-bottom .fresh").length,
+        fresh: document.querySelectorAll("#visor-context .ctx-top .fresh").length,
         nameIt: document.querySelectorAll("#visor-name-it").length,
-        petname: document.querySelectorAll("#visor-context .ctx-bottom .petname").length,
+        petname: document.querySelectorAll("#visor-context .ctx-top .petname").length,
       }));
       // The regression this scenario exists to catch: a re-render that
       // reads a stale isNew would put NEW back beside the petname.
       assertEquals(dom.fresh, 0, ".fresh must be ABSENT once the component has been named");
       assertEquals(dom.nameIt, 0, "the 'name it' offer once there is a name");
-      assertEquals(dom.petname, 1, "the petname on the visor's line");
+      assertEquals(dom.petname, 1, "the petname on the user's line");
       assert(
-        !bottom.includes("NEW"),
-        `the bottom line still said NEW: ${JSON.stringify(bottom)}`,
+        !top.includes("NEW"),
+        `the user's line still said NEW: ${JSON.stringify(top)}`,
       );
     });
 
@@ -232,11 +233,11 @@ const scenario: Scenario = {
       assertEquals(s?.icon, APP_NOMINATION, "the pet icon after a reload");
       assertEquals(s?.isNew, false, "a component with a stored mark is not NEW again");
       assertEquals(await stripMarkIcon(page), APP_NOMINATION, "the strip's pet icon after a reload");
-      const { bottom } = await stripText(page);
-      assertIncludes(bottom, PETNAME, "the bottom line after a reload");
+      const { top } = await stripText(page);
+      assertIncludes(top, PETNAME, "the user's line after a reload");
       assertEquals(
         await page.evaluate(() =>
-          document.querySelectorAll("#visor-context .ctx-bottom .fresh").length
+          document.querySelectorAll("#visor-context .ctx-top .fresh").length
         ),
         0,
         ".fresh after a reload",
@@ -390,8 +391,8 @@ const scenario: Scenario = {
       });
       const s = await appSurface(next);
       assertEquals(s?.isNew, true, "isNew for a component whose record was forgotten");
-      const { bottom } = await stripText(next);
-      assertIncludes(bottom, "NEW", "the bottom line for a forgotten component");
+      const { top } = await stripText(next);
+      assertIncludes(top, "NEW", "the user's line for a forgotten component");
     });
   },
 };

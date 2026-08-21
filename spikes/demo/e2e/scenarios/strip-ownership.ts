@@ -51,7 +51,7 @@ import {
   assertEquals,
   assertIncludes,
   hook,
-  recordStripTop,
+  recordSurfaceLine,
   sheetOpen,
   sleep,
   stripText,
@@ -96,8 +96,11 @@ const scenario: Scenario = {
 
   async run(page: Page) {
     await act("the strip names the app before anything is opened", async () => {
-      const { top } = await stripText(page);
-      assertIncludes(top, APP, "the top line at rest");
+      // The component's own name is the BOTTOM line's business now (the
+      // top line is the user's mark and word); which SURFACE the strip
+      // is about is unchanged, and that is what this scenario watches.
+      const { bottom } = await stripText(page);
+      assertIncludes(bottom, APP, "the surface-name line at rest");
     });
 
     await act("closing the naming sheet and opening storage IN THE SAME TASK", async () => {
@@ -111,7 +114,7 @@ const scenario: Scenario = {
 
       // Recording starts BEFORE the race so the first wrong value cannot
       // land in a gap.
-      const strip = await recordStripTop(page);
+      const strip = await recordSurfaceLine(page);
 
       await page.evaluate(() => {
         // deno-lint-ignore no-explicit-any
@@ -124,14 +127,14 @@ const scenario: Scenario = {
 
       await waitForPanelSurface(page);
       // From here the panel owns the context: it is mounted, registered
-      // and bound. Everything the top line says from now until the watch
-      // expires is a claim about a live panel surface.
+      // and bound. Everything the surface-name line says from now until
+      // the watch expires is a claim about a live panel surface.
       const afterMount = (await strip.samples()).length;
       await sleep(WATCH_MS);
       const samples = await strip.stop();
 
-      const top = (await stripText(page)).top;
-      assertIncludes(top, PANEL, "the top line once the panel is mounted");
+      const named = (await stripText(page)).bottom;
+      assertIncludes(named, PANEL, "the surface-name line once the panel is mounted");
 
       const late = appLabels(samples.slice(afterMount));
       assert(
@@ -150,7 +153,7 @@ const scenario: Scenario = {
       // not know about. Driving both closes against a live panel session
       // is the reachable form of that: whatever they defer must find the
       // panel in possession and leave the line alone.
-      const strip = await recordStripTop(page);
+      const strip = await recordSurfaceLine(page);
       const before = (await strip.samples()).length;
 
       await page.evaluate(() => {
@@ -173,7 +176,11 @@ const scenario: Scenario = {
           JSON.stringify(late)
         } (full trace: ${JSON.stringify(samples)})`,
       );
-      assertIncludes((await stripText(page)).top, PANEL, "the top line after the late closes");
+      assertIncludes(
+        (await stripText(page)).bottom,
+        PANEL,
+        "the surface-name line after the late closes",
+      );
     });
 
     await act("dismissing the dialog hands the strip back to the app", async () => {
@@ -182,7 +189,7 @@ const scenario: Scenario = {
       // comes back.
       await page.keyboard.press("Escape");
       await page.waitForFunction(
-        () => ((document.querySelector("#visor-context .ctx-top")?.textContent) ?? "")
+        () => ((document.querySelector("#visor-context .ctx-bottom")?.textContent) ?? "")
           .includes("TodoMVC"),
         undefined,
         { timeout: 15_000 },

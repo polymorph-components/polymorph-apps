@@ -138,8 +138,8 @@ const scenario: Scenario = {
       assertEquals(await sheetOpen(page, "naming"), false, "a naming sheet after Cancel");
       assertEquals(await sheetOpen(page, "settings"), false, "a settings sheet after Cancel");
       // The context is back on the app: the strip follows the page.
-      const { top } = await stripText(page);
-      assertIncludes(top, "TodoMVC", "the top line after the dialog closed");
+      const { bottom } = await stripText(page);
+      assertIncludes(bottom, "TodoMVC", "the surface-name line after the dialog closed");
     });
 
     await act("the naming ceremony takes the page back BEFORE opening its sheet", async () => {
@@ -218,8 +218,8 @@ const scenario: Scenario = {
         undefined,
         { timeout: UI_TIMEOUT },
       );
-      const { top } = await stripText(page);
-      assertIncludes(top, "TodoMVC", "the top line after Cancel");
+      const { bottom } = await stripText(page);
+      assertIncludes(bottom, "TodoMVC", "the surface-name line after Cancel");
     });
 
     await act("and the lightweight sheets work again once the drawer is free", async () => {

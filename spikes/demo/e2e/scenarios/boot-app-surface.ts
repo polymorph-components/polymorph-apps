@@ -1,17 +1,18 @@
 // The strip says the right things about the app at first sight.
 //
 // This is the baseline every other visor scenario stands on: with an
-// EMPTY trust table, the visor has never seen the app before, so the strip
-// must show the component's own account of itself upstairs (quoted,
-// foreign) and, in the visor's voice downstairs, the TOFU marker plus the
-// offer to give it a name of the user's own.
+// EMPTY trust table, the visor has never seen the app before, so the
+// strip's USER line (upstairs) must hold the visor's offer to name it —
+// the TOFU marker plus the "name it" control, standing where the user's
+// own mark and word will land — while the component's own account of
+// itself sits downstairs, quoted and plated in app voice.
 
 import type { Scenario } from "../run.ts";
 import { act, appSurface, assert, assertEquals, assertIncludes, frameProbe, stripText } from "../util.ts";
 
 const scenario: Scenario = {
   name: "boot-app-surface",
-  why: "a never-seen app boots to a quoted nickname upstairs and NEW + 'name it' in the visor's voice",
+  why: "a never-seen app boots to NEW + 'name it' on the user's line and its quoted nickname below",
   // No marks seeded: an empty trust table is the whole premise.
   page: {},
 
@@ -27,30 +28,33 @@ const scenario: Scenario = {
       assertEquals(s.isNew, true, "a never-seen app is NEW");
     });
 
-    await act("the top line quotes the component's own nickname, and nothing else", async () => {
-      const { top } = await stripText(page);
-      assertIncludes(top, "TodoMVC", "the top line");
-      // The visor's own words never appear upstairs: that line is the
-      // component's identity and only that.
+    await act("the bottom line quotes the component's own nickname, and nothing else", async () => {
+      const { bottom } = await stripText(page);
+      assertIncludes(bottom, "TodoMVC", "the bottom line");
+      // The visor's own words never join the component's claim: that line
+      // is the component's self-description and only that.
       assert(
-        !top.includes("NEW") && !top.toLowerCase().includes("name it"),
-        `the top line carried the visor's voice: ${JSON.stringify(top)}`,
+        !bottom.includes("NEW") && !bottom.toLowerCase().includes("name it"),
+        `the bottom line carried the visor's voice: ${JSON.stringify(bottom)}`,
       );
     });
 
-    await act("the bottom line carries the visor's TOFU marker and the naming offer", async () => {
-      const { bottom } = await stripText(page);
-      assertIncludes(bottom, "NEW", "the bottom line");
-      assertIncludes(bottom, "first time this component draws here", "the bottom line");
+    await act("the top line carries the visor's TOFU marker and the naming offer", async () => {
+      // The user's own line: before there is a petname or a mark to put
+      // here, it holds the visor's offer to create them, and the reason
+      // to accept — NEW sits beside the offer it motivates.
+      const { top } = await stripText(page);
+      assertIncludes(top, "NEW", "the top line");
+      assertIncludes(top, "first time this component draws here", "the top line");
       const controls = await page.evaluate(() => ({
-        fresh: document.querySelectorAll("#visor-context .ctx-bottom .fresh").length,
-        nameIt: document.querySelectorAll("#visor-context .ctx-bottom #visor-name-it").length,
+        fresh: document.querySelectorAll("#visor-context .ctx-top .fresh").length,
+        nameIt: document.querySelectorAll("#visor-context .ctx-top #visor-name-it").length,
         // The naming control must be the visor's own pixels IN THE STRIP —
         // never something an app rectangle could have drawn.
         nameItInStrip: document.querySelector("#visor-name-it")?.closest("#visor-strip") !== null,
       }));
       assertEquals(controls.fresh, 1, "the .fresh marker");
-      assertEquals(controls.nameIt, 1, "the 'name it' control on .ctx-bottom");
+      assertEquals(controls.nameIt, 1, "the 'name it' control on .ctx-top");
       assertEquals(controls.nameItInStrip, true, "'name it' lives inside the visor strip");
     });
 
