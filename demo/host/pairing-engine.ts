@@ -5,7 +5,7 @@
 // a mock.").
 //
 // Wraps one `Engine.driver` (host/engine.ts, itself a typed view over
-// the composite's `polymorph:engine/driver@0.1.0` export) as the
+// the composite's `polyvisor:engine/driver@0.1.0` export) as the
 // `PairingDriver` shape the visor pairing UI consumes. The TYPE stays
 // imported from visor/ui/pairing-driver.ts (the visor owns the
 // contract); only the implementation lives here.

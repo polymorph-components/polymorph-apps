@@ -34,9 +34,9 @@ mod bindings {
 
 mod pairing_acts;
 
-use bindings::exports::polymorph::engine::driver::{Guest as Driver, S3Config, StoreConfig};
-use bindings::polymorph::engine::store_fetch_types::Response as FetchResponse;
-use bindings::exports::polymorph_data::tasks::tasks::{Guest as Tasks, TodoItem};
+use bindings::exports::polyvisor::engine::driver::{Guest as Driver, S3Config, StoreConfig};
+use bindings::polyvisor::engine::store_fetch_types::Response as FetchResponse;
+use bindings::exports::polyvisor::tasks::tasks::{Guest as Tasks, TodoItem};
 
 struct Ctx {
     wasi: WasiCtx,
@@ -250,7 +250,7 @@ impl bindings::store_owner_fetch::Host for Ctx {}
 impl bindings::store_shared_fetch::Host for Ctx {}
 impl bindings::store_public_fetch::Host for Ctx {}
 impl bindings::store_signer::Host for Ctx {}
-impl bindings::polymorph::engine::store_fetch_types::Host for Ctx {}
+impl bindings::polyvisor::engine::store_fetch_types::Host for Ctx {}
 
 impl bindings::store_owner_fetch::HostWithStore<Ctx> for Ctx {
     async fn request(
@@ -398,7 +398,7 @@ async fn main() -> Result<()> {
     // The three storage-egress imports. Each is a separately NAMED world
     // import satisfied by its own host implementation — the linker is
     // where authority is attached (#7).
-    bindings::polymorph::engine::store_fetch_types::add_to_linker::<Ctx, Ctx>(
+    bindings::polyvisor::engine::store_fetch_types::add_to_linker::<Ctx, Ctx>(
         &mut linker,
         |c| c,
     )?;
@@ -726,17 +726,17 @@ async fn scenario(
     relay: String,
     s3: S3Args,
 ) -> Result<()> {
-    let l: &Driver = laptop.polymorph_engine_driver();
-    let p: &Driver = phone.polymorph_engine_driver();
-    let b: &Driver = bob.polymorph_engine_driver();
-    let tb: &Driver = tablet.polymorph_engine_driver();
-    let l2: &Driver = laptop2.polymorph_engine_driver();
-    let l3: &Driver = laptop3.polymorph_engine_driver();
-    let lt: &Tasks = laptop.polymorph_data_tasks_tasks();
-    let pt: &Tasks = phone.polymorph_data_tasks_tasks();
-    let bt: &Tasks = bob.polymorph_data_tasks_tasks();
-    let tt: &Tasks = tablet.polymorph_data_tasks_tasks();
-    let l2t: &Tasks = laptop2.polymorph_data_tasks_tasks();
+    let l: &Driver = laptop.polyvisor_engine_driver();
+    let p: &Driver = phone.polyvisor_engine_driver();
+    let b: &Driver = bob.polyvisor_engine_driver();
+    let tb: &Driver = tablet.polyvisor_engine_driver();
+    let l2: &Driver = laptop2.polyvisor_engine_driver();
+    let l3: &Driver = laptop3.polyvisor_engine_driver();
+    let lt: &Tasks = laptop.polyvisor_tasks_tasks();
+    let pt: &Tasks = phone.polyvisor_tasks_tasks();
+    let bt: &Tasks = bob.polyvisor_tasks_tasks();
+    let tt: &Tasks = tablet.polyvisor_tasks_tasks();
+    let l2t: &Tasks = laptop2.polyvisor_tasks_tasks();
 
     // 1. Identities; hub topology (laptop is the wire hub). The TABLET
     // never binds, never connects: it will live entirely off the bucket.

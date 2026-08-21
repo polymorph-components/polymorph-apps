@@ -15,8 +15,8 @@ import { websocketImports } from "@polymorph/websocket-deltic";
 import { webrtcImports } from "@polymorph/webrtc-deltic";
 import { socketsImports } from "./stubs.ts";
 
-const DRIVER = "polymorph:engine/driver@0.1.0";
-const TASKS = "polymorph-data:tasks/tasks@0.1.0";
+const DRIVER = "polyvisor:engine/driver@0.1.0";
+const TASKS = "polyvisor:tasks/tasks@0.1.0";
 
 /** `store-config` — a WIT variant; `{tag, val}` per the value-mapping
  * table. ADDRESSING ONLY (#7/#11): no credential crosses this boundary
@@ -302,7 +302,7 @@ export async function newEngine(
     // import key is ignored — the same reason the wasi:http fragment
     // above can stay — whereas a missing one would be fatal if a future
     // translator does surface it.
-    "polymorph:engine/store-fetch-types@0.1.0": {},
+    "polyvisor:engine/store-fetch-types@0.1.0": {},
   };
   const instance = await instantiate(
     artifactsFromEnvelope(artifacts.envelope, artifacts.bytes),

@@ -1,4 +1,4 @@
-package polymorph:fetch@0.1.0;
+package polyvisor:fetch@0.1.0;
 
 /// A minimal buffered HTTP fetch surface: the engine's network capability.
 /// Implemented by a dedicated component wrapping `wasip3`'s async

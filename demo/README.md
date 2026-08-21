@@ -2,7 +2,7 @@
 
 **The #20 target artifact, in a browser**: TodoMVC where the app is a
 wasm component driving a curated DOM surface (the todomvc spike), the
-model is the `polymorph-data:tasks` data service, and the service is
+model is the `polyvisor:tasks` data service, and the service is
 the real engine composite — automerge change-DAG + keyhive (BeeKEM
 epochs) + subduction sync + the SigV4 bucket client + the iroh
 endpoint — running **under deltic in the page**. Three panes, one page:
@@ -178,7 +178,7 @@ per pane (×3, one browser page):
   app component (109 KB)            engine composite (10.8 MB)
   todomvc surface guest             keyhive+automerge+subduction+
   imports: dom/events/shell         bridge+S3/Dropbox client+iroh
-  + polymorph-data:tasks  ────────► exports: tasks + driver
+  + polyvisor:tasks       ────────► exports: tasks + driver
         │  (import wired DIRECTLY to the engine instance's export —
         │   same embedder, same value conventions, same exception brand)
   deltic runtime (jsr @deltic/runtime 0.1.0) + @deltic/wasi (incl. the
@@ -417,7 +417,7 @@ scopes `files.content.*`, `sharing.*`, `account_info.read`) and press
 *Connect Dropbox* for the PKCE flow, or paste a console-generated
 access token. Add `http://127.0.0.1:8600/` as an OAuth redirect URI in
 the app console for the Connect path. Hosted build:
-https://polymorph-components.github.io/polymorph-apps/demo/
+https://polymorph-components.github.io/polyvisor/demo/
 — same story: public relay out of the box, bring your own bucket.
 
 Requires `engine`'s pinned iroh-relay + endpoint wasm

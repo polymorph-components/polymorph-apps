@@ -1,8 +1,8 @@
-package polymorph:engine@0.1.0;
+package polyvisor:engine@0.1.0;
 
 /// The engine spike (#20 G2): the walking skeleton's content spine
 /// generalized from a linear chain to the real automerge change DAG, with
-/// the `polymorph-data:tasks` service served from inside the engine
+/// the `polyvisor:tasks` service served from inside the engine
 /// composite (demo-v1 topology). Chunk identity = automerge ChangeHash;
 /// chunk parents = the change's deps = keyhive predecessor refs =
 /// sedimentree parents — one DAG across all three layers.
@@ -350,5 +350,5 @@ world engine {
     }
 
     export driver;
-    export polymorph-data:tasks/tasks@0.1.0;
+    export polyvisor:tasks/tasks@0.1.0;
 }

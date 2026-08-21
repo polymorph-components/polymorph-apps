@@ -7,7 +7,7 @@
 // Each pane is TWO component instances under deltic: the engine
 // composite (keyhive + automerge + subduction + bridge + SigV4 bucket
 // client + iroh endpoint) and the todomvc app guest. The app's
-// `polymorph-data:tasks` import is wired DIRECTLY to the engine
+// `polyvisor:tasks` import is wired DIRECTLY to the engine
 // instance's export — the framework-links-apps-to-services topology.
 
 import {
@@ -612,14 +612,14 @@ async function authorize(clientId: string): Promise<void> {
 const DROPBOX_DESTINATION = "https://api.dropboxapi.com";
 
 /**
- * `polymorph:fetch/fetch@0.1.0`, scoped to one host. THIS SHIM IS
+ * `polyvisor:fetch/fetch@0.1.0`, scoped to one host. THIS SHIM IS
  * THE PER-DESTINATION NETWORK GRANT: the panel holds no ambient network
  * capability, only this closure, and the closure will not carry a
  * request anywhere but the Dropbox API. The refusal is a WIT err, not a
  * trap — a panel is entitled to observe (and render) a denied egress.
  */
 const dropboxFetchImports = {
-  "polymorph:fetch/fetch@0.1.0": {
+  "polyvisor:fetch/fetch@0.1.0": {
     async request(
       method: string,
       url: string,
@@ -1211,7 +1211,7 @@ async function mountApp(pane: Pane, appArtifacts: EngineArtifacts) {
     // The framework seam: the app's data-service import IS the engine
     // instance's export object (same embedder, same value conventions,
     // same exception brand).
-    "polymorph-data:tasks/tasks@0.1.0": pane.engine.tasks,
+    "polyvisor:tasks/tasks@0.1.0": pane.engine.tasks,
   };
   const instance = await instantiate(
     artifactsFromEnvelope(appArtifacts.envelope, appArtifacts.bytes),
@@ -4026,7 +4026,7 @@ async function boot() {
     },
     // The panel's granted fetch, exposed so the DENIAL side of the
     // per-destination grant is demonstrable and not merely asserted.
-    panelFetch: dropboxFetchImports["polymorph:fetch/fetch@0.1.0"],
+    panelFetch: dropboxFetchImports["polyvisor:fetch/fetch@0.1.0"],
     // The live credential binding, for driving: what the visor believes the
     // held values may be released toward (null = nothing may).
     boundDestination: () => boundDestination,

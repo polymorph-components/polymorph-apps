@@ -23,9 +23,9 @@ mod bindings {
 }
 use bindings::*;
 
-use crate::polymorph::todomvc::dom::{create_element, Element};
-use crate::polymorph::todomvc::events::{listen, EventKind};
-use crate::polymorph::todomvc::shell;
+use crate::polyvisor::todomvc::dom::{create_element, Element};
+use crate::polyvisor::todomvc::events::{listen, EventKind};
+use crate::polyvisor::todomvc::shell;
 
 use serde::{Deserialize, Serialize};
 

@@ -1,5 +1,5 @@
 //! The demo app: the todomvc surface guest with its model swapped from
-//! in-guest memory to the `polymorph-data:tasks` data service. The app
+//! in-guest memory to the `polyvisor:tasks` data service. The app
 //! never touches document surfaces — it renders whatever the service
 //! reports and forwards user intent as service calls. Remote changes
 //! (other devices, other users, the bucket) arrive as revision bumps
@@ -15,10 +15,10 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-use crate::polymorph::todomvc::dom::{create_element, Element};
-use crate::polymorph::todomvc::events::{listen, EventKind};
-use crate::polymorph::todomvc::shell;
-use crate::polymorph_data::tasks::tasks;
+use crate::polyvisor::todomvc::dom::{create_element, Element};
+use crate::polyvisor::todomvc::events::{listen, EventKind};
+use crate::polyvisor::todomvc::shell;
+use crate::polyvisor::tasks::tasks;
 
 const TOK_NEW: u32 = 1;
 const TOK_TOGGLE_ALL: u32 = 2;

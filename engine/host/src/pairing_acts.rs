@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use wasmtime::component::Accessor;
 use wasmtime::{bail, format_err, Result};
 
-use crate::bindings::exports::polymorph::engine::driver::{
+use crate::bindings::exports::polyvisor::engine::driver::{
     Guest as Driver, PairAddState, PairJoinState, UsEvent, UsMark, UsProfile,
 };
 use crate::Ctx;
@@ -272,10 +272,10 @@ pub(crate) async fn positive_acts(
     rejoin: crate::bindings::Engine,
     relay: String,
 ) -> Result<()> {
-    let l: &Driver = laptop.polymorph_engine_driver();
-    let p: &Driver = phone.polymorph_engine_driver();
-    let x: &Driver = stranger.polymorph_engine_driver();
-    let r: &Driver = rejoin.polymorph_engine_driver();
+    let l: &Driver = laptop.polyvisor_engine_driver();
+    let p: &Driver = phone.polyvisor_engine_driver();
+    let x: &Driver = stranger.polyvisor_engine_driver();
+    let r: &Driver = rejoin.polyvisor_engine_driver();
 
     let l_id = l.call_init(acc, false).await?.map_err(|e| format_err!("laptop init: {e}"))?;
     let p_id = p.call_init(acc, false).await?.map_err(|e| format_err!("phone init: {e}"))?;
@@ -817,8 +817,8 @@ pub(crate) async fn commitment_act(
     joiner: crate::bindings::Engine,
     relay: String,
 ) -> Result<()> {
-    let a: &Driver = adder.polymorph_engine_driver();
-    let j: &Driver = joiner.polymorph_engine_driver();
+    let a: &Driver = adder.polyvisor_engine_driver();
+    let j: &Driver = joiner.polyvisor_engine_driver();
     a.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;
     j.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;
     a.call_iroh_bind(acc, relay.clone()).await?.map_err(|e| format_err!("{e}"))?;
@@ -873,7 +873,7 @@ pub(crate) async fn expiry_act(
     relay: String,
     ttl_ms: u64,
 ) -> Result<()> {
-    let j: &Driver = joiner.polymorph_engine_driver();
+    let j: &Driver = joiner.polyvisor_engine_driver();
     j.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;
     j.call_iroh_bind(acc, relay).await?.map_err(|e| format_err!("{e}"))?;
     let offer = j
@@ -923,8 +923,8 @@ pub(crate) async fn post_seal_add_act(
     joiner: crate::bindings::Engine,
     relay: String,
 ) -> Result<()> {
-    let l: &Driver = founder.polymorph_engine_driver();
-    let p: &Driver = joiner.polymorph_engine_driver();
+    let l: &Driver = founder.polyvisor_engine_driver();
+    let p: &Driver = joiner.polyvisor_engine_driver();
 
     let l_id = l.call_init(acc, false).await?.map_err(|e| format_err!("founder init: {e}"))?;
     let p_id = p.call_init(acc, false).await?.map_err(|e| format_err!("joiner init: {e}"))?;
@@ -1118,8 +1118,8 @@ pub(crate) async fn full_history_act(
     relay: String,
     seed: u32,
 ) -> Result<()> {
-    let l: &Driver = founder.polymorph_engine_driver();
-    let p: &Driver = joiner.polymorph_engine_driver();
+    let l: &Driver = founder.polyvisor_engine_driver();
+    let p: &Driver = joiner.polyvisor_engine_driver();
 
     let l_id = l.call_init(acc, false).await?.map_err(|e| format_err!("founder init: {e}"))?;
     let p_id = p.call_init(acc, false).await?.map_err(|e| format_err!("joiner init: {e}"))?;
@@ -1262,9 +1262,9 @@ pub(crate) async fn partitioned_writer_act(
     joiner: crate::bindings::Engine,
     relay: String,
 ) -> Result<()> {
-    let l: &Driver = founder.polymorph_engine_driver();
-    let b: &Driver = second.polymorph_engine_driver();
-    let c: &Driver = joiner.polymorph_engine_driver();
+    let l: &Driver = founder.polyvisor_engine_driver();
+    let b: &Driver = second.polyvisor_engine_driver();
+    let c: &Driver = joiner.polyvisor_engine_driver();
 
     let l_id = l.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;
     let b_id = b.call_init(acc, false).await?.map_err(|e| format_err!("{e}"))?;

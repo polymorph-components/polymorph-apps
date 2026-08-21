@@ -2,7 +2,7 @@
 
 The walking skeleton's content spine generalized from a linear chain to
 the **real automerge change DAG**, with the first data service —
-`polymorph-data:tasks@0.1.0` — served from inside the engine composite
+`polyvisor:tasks@0.1.0` — served from inside the engine composite
 (the demo-v1 topology), synced over **both paths**: realtime
 (component-iroh) and non-realtime (an S3-compatible bucket, the #19 pull
 layer). Quarantined, delete-at-will, wired into no CI.
@@ -34,7 +34,7 @@ and all three replicas converge to the same task list.
 
 ## The tasks data service
 
-`guest/wit/deps/polymorph-data-tasks/tasks.wit` is the draft
+`guest/wit/deps/polyvisor-tasks/tasks.wit` is the draft
 schema-authority contract (NOTES.md, "System services"): apps bind
 `tasks`, never document surfaces. v0.1 is poll-shaped (`revision` probe
 + `items` snapshot; a change-feed stream is the expected v0.2). The

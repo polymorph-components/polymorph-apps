@@ -1,6 +1,6 @@
 //! The engine spike (#20 G2): the walking skeleton's content spine
 //! generalized to the real automerge change DAG, serving the
-//! `polymorph-data:tasks@0.1.0` data service from inside the engine
+//! `polyvisor:tasks@0.1.0` data service from inside the engine
 //! composite.
 //!
 //! One DAG across three layers: chunk identity = automerge `ChangeHash`;
@@ -101,17 +101,17 @@ use subduction_keyhive::protocol::KeyhiveProtocol;
 use subduction_keyhive::signed_message::SignedMessage;
 use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
-use exports::polymorph::engine::driver::{
+use exports::polyvisor::engine::driver::{
     Guest as DriverGuest, PairAddState, PairJoinState, PairOffer, StoreConfig, UsDevice, UsEvent,
     UsMark, UsProfile,
 };
-use exports::polymorph_data::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
+use exports::polyvisor::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
 use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
 use polymorph::iroh::identity_generate;
 use polymorph::iroh::types::{EndpointAddr, TransportAddr};
 
 /// The iroh ALPN for the engine's subduction wire.
-const ALPN: &[u8] = b"engine/0";
+const ALPN: &[u8] = b"polyvisor/0";
 
 // --- types ---
 
