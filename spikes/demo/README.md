@@ -16,7 +16,8 @@ endpoint — running **under deltic in the page**. Three panes, one page:
 **Two storage providers behind one engine surface** (#19): S3-compatible
 (name secrecy + K_p, cooperative revocation) and **Dropbox** (shared
 links as pull capabilities, hard server-side revocation) — chosen on the
-storage page, same beats either way.
+storage page, same beats either way (chosen in the picker sheet above the
+bar, configured on the page below it).
 
 Demo beats, all driven through the real UIs and verified:
 adds/toggles/edits converge across all three replicas; the tablet cold
@@ -41,17 +42,79 @@ visible in UI:
 
 ```
 visor (page JS, trusted)           panel component (sandboxed, per-provider)
-  Storage… button                    guest-panel-s3       — dom/events/shell ONLY
-  storage page + provider tabs         "pure component: cannot reach the network"
-  #panel-region (the grant) ────────►  guest-panel-dropbox — + oauth-broker
-  carries the returned config                                + fetch scoped to
-  to engine.init-store                                         api.dropboxapi.com
+  Storage… button ─► PICKER SHEET    guest-panel-s3       — dom/events/shell ONLY
+    (above the bar: the CHOICE)        "pure component: cannot reach the network"
+  storage page, one provider         guest-panel-dropbox — + oauth-broker
+  #panel-region (the grant) ────────►                      + fetch scoped to
+  page Save writes the record                               api.dropboxapi.com
+  picker BINDS it, then connects
+  to engine.init-store
 ```
 
 - The panel is mounted through the **same curated-DOM surface machinery
   as the app** (`createBackend`/`createSurface`, a `root()` grant that
   is the panel region) — position, not style, marks the boundary; the
   region is visibly inset and labeled "sandboxed panel".
+- **The provider CHOICE happens above the bar** (#22 "the storage picker
+  moves above the bar; commitment never leaves it"). The page used to
+  carry two provider tabs, so the most consequential act in the demo —
+  deciding where the user's data goes — was made in scrollable content
+  beside a component's own rectangle, the most forgeable position on the
+  screen: an app can paint that row of tabs. The choice is a visor
+  drawer sheet now, with two lists on two orthogonal axes: **(a)
+  configured** providers, offered for an ARMED selection (the same
+  `ARM_MS` discipline as the credential sheet, because selection is the
+  act that spends), and **(b) installed but unconfigured** providers,
+  offered for configuration. *Which list* follows CONFIG state; *which
+  voice* follows NAMING state — so a configured-but-unnamed provider
+  sits in (a) wearing app voice and the NEW marker, and naming it later
+  changes its voice in place without changing its list. Consequences:
+  - **Save is demoted to a config write.** The page stores that
+    provider's record and walks back; it binds nothing, releases nothing
+    and opens no sheet. The trust sentence is *configuration happens on
+    the page; commitment only above the bar.*
+  - **The credential sheet follows SELECTION, not save** — and the
+    ordering invariant comes with it: the visor retires the panel and
+    leaves the config page before a secret is on screen, which now holds
+    even when the selection is made from a picker sitting open over that
+    page.
+  - **Commit-time destination refusals moved into the sheet**, in
+    framework voice, leaving it open with nothing bound.
+  - **The opener carries no payload**: the page's *Storage…* button
+    requests the picker and passes nothing — no preselection, no filter
+    — the `requestNaming` shape. App influence must not reach system UI
+    unmarked.
+  - **The config store is plural**: one record per configured provider,
+    keyed by provider, plus which one is `bound`. The pre-existing single
+    record adopts its own provider as its key *and* as the binding on
+    migration, so a returning device stays connected to what it was.
+  - **The picker survives the config detour, COLLAPSED to a band.**
+    Sheets are orthogonal to navigation, so walking to a provider's page
+    does not end the ceremony — but the picker does not sit at full
+    height over the place it just sent the user to either. It
+    shrink-wraps to the chosen entry plus one line of status
+    (*configuring — save on the page below*), which puts the whole visor
+    assembly at about two strip-heights: the strip answers "who is
+    drawing below", the band answers "what step of my own ceremony is
+    this". The band is inert by construction — its entry is not a
+    control, so there is nothing to select, arm or navigate — and keeps
+    exactly one interaction, dismissal, which ends the ceremony. Any
+    return path re-expands it with the lists **rebuilt**, so a
+    just-configured provider is seen to move from (b) to (a), and arming
+    restarts with the new presentation.
+  - **A ceremony started mid-detour swaps the band out rather than
+    stacking on it or destroying it.** Naming is the invited case (the
+    arriving panel is NEW and the strip offers to name it): the band
+    slides out left, the ceremony slides in from the right — the page
+    track's grammar at drawer scale — and the band returns from the left
+    when the ceremony closes. It is *suspended*, not closed: same
+    session, rebuilt on return. "One expanded occupant at a time" stays
+    literally true. While such a ceremony is up the nested place is
+    **bracketed**: the visor's dim goes up and the page goes inert,
+    while **the panel stays live** — inert is not retirement, and the
+    user is coming back to that session. If the page is left mid-
+    ceremony the band waits for the ceremony rather than the page, and
+    re-expands only when the drawer is given back.
 - **The storage configuration is a PAGE, not a modal** (`#page-track` in
   `web/index.html`). It used to be a `<dialog>` opened with
   `showModal()`, and the reason it is not any more is the anchor: a modal
@@ -561,7 +624,7 @@ reports background queue depth and per-timer skip counts.
   frame that is on fire**: the fault channel first hung off the same
   window listener the handshake removed. It gets its own listener now.
 - **Panel teardown is a deltic open question** (same one #22 lists for
-  app kill): switching provider tabs clears the region and drops the
+  app kill): remounting a provider panel clears the region and drops the
   references, but there is no explicit instance-terminate API — the
   panel's engine-side resources are released by GC, not by contract.
 - **Dropbox provider timings in-page**: `store-grant` (seal pickup +

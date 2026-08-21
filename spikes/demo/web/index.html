@@ -123,12 +123,12 @@
                    padding: .7em .9em; border-bottom: 1px solid #2a2a44; }
     .visor-head strong { font-size: 14px; }
     .visor-note { font-size: 11px; color: #8b93b0; }
-    .provider-tabs { display: flex; gap: .4em; padding: .6em .9em 0; }
-    .provider-tabs button { padding: .3em .8em; font-size: 12px; cursor: pointer;
-                            background: #1a1a2e; color: #bbb;
-                            border: 1px solid #2a2a44; border-bottom: none;
-                            border-radius: 3px 3px 0 0; }
-    .provider-tabs button.active { background: #0f1424; color: #fff; border-color: #3d5a99; }
+    /* THE PROVIDER TABS ARE GONE (#22 "the storage picker moves above the
+       bar"). Choosing a provider is a commitment, and a commitment made
+       from a row of buttons inside a scrollable page is made in the most
+       forgeable pixels on screen — an app can paint that row. The choice
+       lives in the picker sheet above the strip now, and this page
+       configures the one provider it was opened for. */
     /* The granted subtree itself: inset, differently lit, and labelled. */
     /* The granted subtree. Its top border carries the COMPONENT's
        assigned colour (derived from the component's own bytes, so the
@@ -180,7 +180,6 @@
          (max-width + auto margins), so all that is left is trimming the
          page padding. */
       #page-storage { padding: .5em; }
-      .provider-tabs { flex-wrap: wrap; }
       .visor-actions { flex-wrap: wrap; }
       .visor-actions .visor-note { max-width: 100%; }
     }
@@ -275,26 +274,27 @@
     <div id="storage-frame">
       <div class="visor-head">
         <strong>Storage</strong>
-        <span class="visor-note">the visor owns this frame; the provider's config panel below is a sandboxed component with its own grants</span>
-      </div>
-      <div class="provider-tabs">
-        <button id="prov-s3">S3-compatible</button>
-        <button id="prov-dropbox">Dropbox</button>
+        <span class="visor-note">the visor owns this frame; the provider's config panel below is a sandboxed component with its own grants. Configuration happens here; connecting happens only above the bar</span>
       </div>
       <div id="panel-region"></div>
       <!-- The visor's own affordances: OUTSIDE the granted region, so committing
            is an act of the shell rather than of the component (#22). -->
       <div class="visor-actions">
         <span class="visor-note">Sign-in opens a browser window showing the provider's address.
-          Secrets are never typed on this page — Save &amp; connect slides back to the
-          main page and opens the visor's own sheet above the coloured bar, which has
-          not moved the whole time.</span>
+          Secrets are never typed on this page, and nothing here connects anything:
+          Save stores this provider's configuration and slides back. Connecting to it
+          is a separate act, made above the coloured bar — in the Storage picker, which
+          is drawn in pixels no page can imitate.</span>
         <span class="spacer"></span>
-        <button id="storage-save"><b>Save &amp; connect</b></button>
+        <button id="storage-save"><b>Save configuration</b></button>
         <button id="storage-cancel">Cancel</button>
       </div>
-      <!-- The visor's refusal line for the commit-time destination checks: they
-           fail while this page is still up, before any sheet exists. -->
+      <!-- The visor's refusal line for this page's own checks. The
+           COMMIT-time destination refusals left with the commitment: they
+           are about a connection the user is making, so they render in
+           the picker sheet above the bar, where the making happens. What
+           can still fail here is the write itself (a panel handing back a
+           configuration for a provider this page is not configuring). -->
       <div id="storage-reason" class="visor-note"
            style="color:#f5c16c; padding:0 .9em .7em; line-height:1.35"></div>
     </div>

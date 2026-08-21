@@ -34,9 +34,7 @@ import {
   waitForBoot,
   recordStorageWrites,
   waitForPaneStatus,
-  waitForPanelSurface,
   waitForSheet,
-  waitForStoragePage,
 } from "../util.ts";
 import type { Page } from "npm:playwright@1.57.0";
 
@@ -92,10 +90,31 @@ function keystoreRecord(page: Page): Promise<
 }
 
 /** The stored config as a plain object, for checking what is NOT in it. */
+/** The BOUND provider's record out of the store. The store is PLURAL
+ * now (#22: one record per configured provider plus which one is in
+ * force), so this reaches through the envelope — and the reach is itself
+ * part of what this scenario asserts: the legacy single record MIGRATED
+ * into it, adopting its own provider as its key and as the binding, so a
+ * returning user's device is connected to exactly what it was connected
+ * to before. */
 function storedConfig(page: Page): Promise<Record<string, unknown> | null> {
   return page.evaluate((key: string) => {
     const raw = localStorage.getItem(key);
-    return raw === null ? null : JSON.parse(raw);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !("providers" in parsed)) return null;
+    const bound = parsed.bound;
+    return bound === null || bound === undefined ? null : parsed.providers[bound] ?? null;
+  }, KEYS.storage);
+}
+
+/** The store envelope itself, for the claims about the BINDING. */
+function storedBinding(page: Page): Promise<string | null> {
+  return page.evaluate((key: string) => {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.bound ?? null;
   }, KEYS.storage);
 }
 
@@ -124,6 +143,12 @@ const scenario: Scenario = {
       const cfg = await storedConfig(page);
       assert(cfg !== null, "the stored config vanished entirely");
       assertEquals(cfg!.secret, undefined, "the secret field after migration");
+      // MIGRATION INTO THE PLURAL STORE, asserted where the migration
+      // already was: the flat record adopted its own provider as its key
+      // AND as the binding. This is stronger than the old claim, which
+      // could only say the record still existed — a device that migrated
+      // without a binding would boot connected to nothing, silently.
+      assertEquals(await storedBinding(page), "s3", "the binding after migrating a flat record");
       // The addressing survives — it was never the secret part.
       assertEquals(cfg!.endpoint, ctx.minioUrl, "the stored endpoint");
       assertEquals(cfg!.bucket, BUCKET, "the stored bucket");
@@ -198,18 +223,31 @@ const scenario: Scenario = {
       );
     });
 
-    await act("the visor's Save leads to a sheet offering the HELD key, not a field", async () => {
-      await hook(page, "openStorage");
-      await waitForStoragePage(page, true);
-      // The panel needs to have mounted and seeded itself from the
-      // (secret-free) stored config before the visor can ask it to commit.
-      await waitForPanelSurface(page);
-      await page.click("#storage-save");
+    await act("SELECTING the provider leads to a sheet offering the HELD key, not a field", async () => {
+      // THE PATH THIS ACT USED TO TAKE was: walk to the storage page,
+      // click its Save, get the credential sheet. Save was the
+      // commitment then. It is a config-write now (#22 "commitment never
+      // leaves the bar"), and the credential sheet follows SELECTION in
+      // the picker — a sheet above the strip, under an arming delay, in
+      // pixels no page can imitate. The claim about the SHEET is
+      // unchanged and asserted identically below; only the door into it
+      // moved, from the most forgeable place on the screen to the least.
+      await hook(page, "picker.open");
+      await waitForSheet(page, "picker", true);
+      // The stored (secret-free) config is what the picker offers: the
+      // record this scenario seeded, migrated into the plural store
+      // under its own provider key.
+      await page.waitForFunction(
+        () => document.querySelector(".picker-sheet")?.classList.contains("armed") === true,
+        undefined,
+        { timeout: UI_TIMEOUT },
+      );
+      await hook(page, "picker.select", "s3");
       await waitForSheet(page, "drawer", true, 30_000);
-      // ORDERING IS THE INVARIANT, and the page slide keeps it: by the
-      // time a secret is on screen the visor has retired the panel AND
-      // walked back to the main page, so there is no component surface
-      // alive anywhere and none on a page the user cannot see.
+      // ORDERING IS THE INVARIANT, and it survives the move: by the time
+      // a secret is on screen there is no component surface alive
+      // anywhere — and now there is not even a config page open, because
+      // the ceremony never went to one.
       assertEquals(
         await onStoragePage(page),
         false,
@@ -298,7 +336,18 @@ const scenario: Scenario = {
       // keystore as a handle and never becomes part of a config object,
       // in memory or in storage (host/demo.ts, `withCredentials`).
       for (const w of committed) {
-        const written = JSON.parse(w.value) as Record<string, unknown>;
+        // THROUGH THE STORE ENVELOPE. What is written to this key is the
+        // plural store now (#22), so the record under test is the one
+        // filed under the provider that was just BOUND — and the write
+        // binding it is itself part of the claim: Confirm is the end of
+        // the commitment the picker started.
+        const store = JSON.parse(w.value) as {
+          bound: string | null;
+          providers: Record<string, Record<string, unknown>>;
+        };
+        assertEquals(store.bound, "s3", "the binding a Confirm persisted");
+        const written = store.providers[store.bound!];
+        assert(written !== undefined, "Confirm persisted a binding with no record behind it");
         assertEquals(written.secret, undefined, "a persisted config carried a readable secret");
         assertEquals(written.endpoint, ctx.minioUrl, "the persisted endpoint");
       }

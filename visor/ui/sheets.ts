@@ -398,6 +398,28 @@ export interface VisorSheetsConfig {
    * visor's own record half-committed; a mirror that fails is the
    * consumer's problem to announce. */
   onIdentityCommitted?: (rec: VisorIdentity, hue: number) => void;
+  /** THE CONSUMER'S NESTED PLACE, if it has one on screen.
+   *
+   * A lightweight ceremony at HOME dims nothing and freezes nothing:
+   * naming a component is not secret entry, and a tax paid where nothing
+   * is spent teaches users to click through delays that mean something
+   * elsewhere. A ceremony over a NESTED PLACE is different — the demo's
+   * provider-config page has a live component surface on it, and a
+   * component soliciting input underneath a visor ceremony is exactly
+   * the interleaving the anchor exists to stop. So while the consumer
+   * says it is showing such a place, the ceremony BRACKETS it: the
+   * visor's own dim goes up (the host, from `dim`) and the consumer
+   * freezes the place itself (`freeze`, undone by `thaw`).
+   *
+   * FREEZE IS NOT RETIREMENT. The component stays live and keeps its
+   * grants; what it loses for the duration is the user's input. A
+   * ceremony is not a reason to destroy a session the user is in the
+   * middle of — they are coming back to it. */
+  nestedPlace?: {
+    active(): boolean;
+    freeze(): void;
+    thaw(): void;
+  };
   /** Consumer-supplied actions on the settings sheet.
    *
    * THE ONE EXTENSION POINT ON A VISOR-OWNED SHEET, and deliberately a
@@ -468,12 +490,30 @@ export interface VisorSheets {
 export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): VisorSheets {
   const marks = createSurfaceMarks(config.marksKey);
 
+  /** The bracket a ceremony puts around a consumer's nested place — see
+   * `nestedPlace`. Shared by both lightweight tenants, because "a
+   * ceremony over a place freezes that place" is a property of
+   * ceremonies, not of which one. */
+  const overNestedPlace = () => config.nestedPlace?.active() === true;
+  const freezePlace = () => {
+    if (overNestedPlace()) config.nestedPlace?.freeze();
+  };
+  // Unconditional, and idempotent on the consumer's side: the place may
+  // have been LEFT while the ceremony was up (the demo's chevron walks
+  // the page out from under an open naming sheet — sheets are orthogonal
+  // to navigation), so "are we still over it?" is the wrong question to
+  // ask when undoing.
+  const thawPlace = () => config.nestedPlace?.thaw();
+
   /** THE NAMING SESSION. The session's `surface` is REASSIGNED after a
    * Save (the sheet may outlive the click, and a re-open is built from
    * this object), so the host holds the object rather than a copy. */
   const namingTenant = visor.drawer.tenant<{ surface: SurfaceIdentity; icon: string }>({
     name: "naming",
     context: (s) => ({ ...s.surface, kind: "naming" }),
+    dim: overNestedPlace,
+    beforeShow: freezePlace,
+    afterCollapse: thawPlace,
   });
 
   /** THE SETTINGS SESSION. `hueAtOpen` is the colour the anchor had when
@@ -486,9 +526,12 @@ export function registerVisorSheets(visor: Visor, config: VisorSheetsConfig): Vi
   const settingsTenant = visor.drawer.tenant<{ hueAtOpen: number }>({
     name: "settings",
     context: () => ({ kind: "settings" }),
+    dim: overNestedPlace,
+    beforeShow: freezePlace,
     beforeCollapse: (s, opts) => {
       if (!opts.commit) visor.applyHue(s.hueAtOpen);
     },
+    afterCollapse: thawPlace,
   });
 
   const closeNaming = (opts: { context?: boolean } = {}) => namingTenant.close(opts);

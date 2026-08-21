@@ -464,6 +464,56 @@
 @media (prefers-reduced-motion: reduce) {
   #visor-drawer-inner { transition: none; }
 }
+/* --- THE DRAWER'S SECOND MOTION: one occupant replacing another ------
+   The page track's grammar, replayed at drawer scale (#22 "the storage
+   picker moves above the bar"): the occupant leaves to the LEFT while
+   the arriving sheet comes in from the RIGHT, and the reverse when the
+   arriving one closes and the suspended occupant returns. A user who
+   has learned "sideways means one step further in, and back out again"
+   from the page track reads the drawer the same way — and all of it
+   happens inside the drawer's own rectangle, so it is not a second
+   region and not a stack. "One expanded occupant at a time" stays
+   literally true.
+
+   The OUTGOING sheet is taken out of flow for the travel, which is what
+   lets the drawer's existing height curve animate to the INCOMING
+   sheet's height while both are on screen. `left/right: 0` rather than
+   a width, so the departing sheet keeps the width it had. It is removed
+   by the host once the travel is done (visor.ts's SWAP_MS). */
+#visor-drawer-inner { position: relative; }
+.visor-swap-out { position: absolute; left: 0; right: 0; bottom: 0;
+                  pointer-events: none; z-index: 0;
+                  transition: transform 420ms cubic-bezier(.2,.8,.2,1),
+                              opacity 420ms linear; opacity: 0; }
+.visor-swap-out.to-left { transform: translateX(-12%); }
+.visor-swap-out.to-right { transform: translateX(12%); }
+/* The arriving sheet paints OVER the departing one — they overlap for
+   the length of the travel, and "the new thing is coming in on top of
+   the old one leaving" is the reading that matches the page track. */
+.visor-swap-in { position: relative; z-index: 1;
+                 transition: transform 420ms cubic-bezier(.2,.8,.2,1),
+                             opacity 420ms linear; transform: translateX(0); opacity: 1; }
+.visor-swap-in.from-right { transform: translateX(12%); opacity: 0; }
+.visor-swap-in.from-left { transform: translateX(-12%); opacity: 0; }
+/* REDUCED MOTION: the swap still HAPPENS — it is a state change, not a
+   decoration — it simply does not travel. The outgoing sheet is still
+   removed on the host's timer; it just never moves or fades on the way.
+   Same discipline as the reveal above: motion drops, timing does not. */
+@media (prefers-reduced-motion: reduce) {
+  /* The DIRECTIONAL rules have to be overridden by name: they are one
+     class more specific than the base, so a bare `.visor-swap-out
+     { transform: none }` loses to `.to-left` and the departing sheet
+     JUMPS its full travel in one frame with no transition to soften it
+     — a bigger movement than the animation it was meant to replace. */
+  .visor-swap-out, .visor-swap-in,
+  .visor-swap-out.to-left, .visor-swap-out.to-right,
+  .visor-swap-in.from-right, .visor-swap-in.from-left {
+    transition: none; transform: none;
+  }
+  .visor-swap-out { opacity: 0; }
+  .visor-swap-in.from-right, .visor-swap-in.from-left { opacity: 1; }
+}
+
 /* The dim layer sits BETWEEN the page and the visor assembly: the
    zone (30) above, every app surface below. */
 #visor-dim { position: fixed; inset: 0; z-index: 20;
@@ -597,6 +647,92 @@
 .cred-sheet.armed .cred-row button { opacity: 1; }
 .cred-sheet .cred-row button:first-child { background: #fff; color: #17182b;
                                            border-color: #fff; font-weight: 600; }
+
+/* --- the storage picker (#22 "the picker moves above the bar") -------
+   The sheet where a provider is CHOSEN and the app is connected to it.
+   It wears the shared `.cred-sheet` shape and adds only its lists.
+
+   TWO GROUPS, ON TWO ORTHOGONAL AXES: which group an entry is in
+   follows CONFIG state (configured -> offered for selection; installed
+   but unconfigured -> offered for configuration); which VOICE its
+   identity wears follows NAMING state. Nothing here styles voice: the
+   user-voice petname and the app-voice plate arrive already marked from
+   the visor's constructors (`petnameSpan`, `nicknameQuote`) and are
+   dressed by the rules at the top of this file. An entry is a row of
+   ALREADY-MARKED tokens plus the visor's own description of the
+   provider, which is unmarked because it is the visor speaking. */
+.picker-sheet .picker-lists { display: flex; flex-direction: column; gap: .7em;
+                              margin: .5em 0 .2em; }
+.picker-sheet .picker-head { font-size: 11px; opacity: .8; margin-bottom: .3em; }
+/* An entry IS a button, so it wears a border: a border is honest on a
+   control (the same rule the naming sheet's icon picker states). It is
+   NOT the app-voice plate — the plate is for tokens, and a plated
+   rectangle offering to be pressed would say "a component wrote this
+   control". */
+.picker-sheet .picker-entry { display: flex; flex-direction: column; gap: .15em;
+                              width: 100%; box-sizing: border-box; text-align: left;
+                              font: inherit; font-size: 13px; cursor: pointer;
+                              padding: .45em .6em; margin-bottom: .35em;
+                              border: 1px solid rgba(255,255,255,.4); border-radius: 5px;
+                              background: transparent; color: inherit;
+                              opacity: .35; transition: opacity 200ms; }
+/* Visible arming, exactly as on the credential sheet: dim until the
+   timer elapses, with the `disabled` attribute as the enforcement and
+   this only its visible form. It applies to the SELECTION entries alone
+   — the ones that connect the app to a provider. The "set it up" entries
+   in the second group and the sheet's Close button are never disabled,
+   because the arming delay defends an act that SPENDS something, and
+   walking to a configuration page spends nothing (the same weight-class
+   judgement that leaves the naming sheet unarmed). */
+.picker-sheet.armed .picker-entry, .picker-sheet #picker-unconfigured .picker-entry,
+.picker-sheet .picker-row button { opacity: 1; }
+.picker-sheet .picker-entry:focus-visible { outline: 2px solid rgba(255,255,255,.7);
+                                            outline-offset: 2px; }
+.picker-sheet .picker-entry-id { display: flex; align-items: baseline; gap: .4em;
+                                 flex-wrap: wrap; min-width: 0; }
+.picker-sheet .picker-entry-what { font-size: 11px; opacity: .8; }
+/* The pet icon and the NEW marker, in the same dress the strip gives
+   them — the entry is a recognition act, so it must look like the one
+   the user already learned on the anchor. */
+.picker-sheet .mark-icon { font-size: 14px; }
+.picker-sheet .fresh { background: #b03030; color: #fff; font-weight: 600;
+                       font-size: 10px; letter-spacing: .03em;
+                       padding: 0 .35em; border-radius: 2px; }
+.picker-sheet .picker-row { justify-content: flex-end; }
+.picker-sheet .picker-row button { flex: 0 0 auto; min-width: 8em; }
+
+/* --- THE BAND: the picker collapsed to a ceremony breadcrumb ---------
+   While the user is off on a provider's configuration page, the picker
+   does not sit there at full height over the place it sent them to. It
+   shrink-wraps to the entry they chose plus a line saying what is
+   happening — two or three strip-heights of TRUSTED CHROME in total,
+   answering "what step of MY ceremony is this" where the strip below it
+   answers "who is drawing down there". The ceremony stays legible and
+   stays out of the way.
+
+   INERT BY CONSTRUCTION, not by styling: the host builds the entry as a
+   non-interactive element in this mode (no selection, no arming, no
+   navigation), and the one control it keeps is the way out — a user's
+   own sheet is always theirs to dismiss. Nothing here disables
+   anything, because there is nothing here to disable. */
+/* Vertical padding is what puts the band in the ruling's budget: with
+   the strip below it, the total trusted chrome lands at roughly two
+   strip-heights — enough to read as a piece of the visor rather than a
+   toast, and nowhere near enough to be the thing on screen. */
+.picker-sheet.picker-band { padding: .85em .9em .9em; }
+.picker-band .band-row { display: flex; align-items: center; gap: .8em;
+                         flex-wrap: wrap; }
+.picker-band .band-entry { display: flex; align-items: baseline; gap: .4em;
+                           min-width: 0; flex-wrap: wrap; }
+/* No border and no button dress: the band's entry is a STATEMENT about
+   what the user picked, not an offer to pick it again. */
+.picker-band .band-status { font-size: 11px; opacity: .8; }
+.picker-band .band-row .band-close { margin-left: auto; flex: 0 0 auto;
+                                     font: inherit; font-size: 12px;
+                                     padding: .3em .7em; border-radius: 5px;
+                                     cursor: pointer; color: inherit;
+                                     border: 1px solid rgba(255,255,255,.4);
+                                     background: transparent; }
 
 /* --- the naming sheet -----------------------------------------------
    The SAME reveal above the strip (that geometry is the unforgeable
