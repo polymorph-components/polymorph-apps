@@ -213,7 +213,7 @@ interface credentials {
 /// spoils: the resulting tokens are deposited into the visor's own
 /// credential fields (see `credentials`), never handed back across the
 /// boundary, so a panel learns only success/failure. (In the framework
-/// this is a powerbox flow: the dialog the visor shows WHAT is being
+/// this is a powerbox flow: the visor's own surface shows WHAT is being
 /// authorized and holds the resulting capability; the panel never sees
 /// the ceremony or its spoils.)
 ///
@@ -239,8 +239,8 @@ interface oauth-broker {
 /// ruling, verbatim: "third-party visor-ish things (a storage backend's
 /// config panel) are APPS — own sandboxed region, own grants, launched
 /// FROM the visor, never rendered AS the visor." So each provider ships a
-/// panel component: the visor owns the dialog frame and mounts the panel in
-/// a granted subtree; the panel renders provider-specific fields and
+/// panel component: the visor owns the storage page's frame and mounts the
+/// panel in a granted subtree; the panel renders provider-specific fields and
 /// returns an opaque config blob which the visor carries to the engine's
 /// init-store. Credentials never touch app code OR visor-rendered
 /// provider code.
@@ -331,7 +331,7 @@ world s3-panel {
 /// not: a fetch import the visor scopes to api.dropboxapi.com (the
 /// per-destination network grant, used by "test connection"). Its
 /// capability profile is visibly non-pure — the #21 egress-badge story
-/// in one dialog.
+/// in one page.
 ///
 /// It does NOT import `oauth-broker`. Sign-in is triggered from the visor's
 /// credential drawer, where the app key is entered; this panel has no

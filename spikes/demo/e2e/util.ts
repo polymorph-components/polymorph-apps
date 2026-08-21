@@ -242,7 +242,55 @@ export async function waitForSheet(
   });
 }
 
-/** Wait until the storage dialog's panel is not merely PRESENT but
+/** WHICH PAGE THE TRACK IS SHOWING. The storage configuration is a
+ * sibling PAGE under the same pinned strip, not a modal (web/index.html's
+ * #page-track), so "is storage up?" is a question about the track's
+ * state class rather than about a <dialog>'s `open` property. */
+export function onStoragePage(page: Page): Promise<boolean> {
+  return page.evaluate(() =>
+    document.getElementById("page-track")?.classList.contains("show-storage") === true
+  );
+}
+
+/** Wait until the track is showing (or has left) the storage page. */
+export function waitForStoragePage(
+  page: Page,
+  want: boolean,
+  timeout = UI_TIMEOUT,
+): Promise<unknown> {
+  return page.waitForFunction(
+    (want: boolean) =>
+      (document.getElementById("page-track")?.classList.contains("show-storage") === true) === want,
+    want,
+    { timeout },
+  ).catch((e) => {
+    throw new Error(`waiting for the storage page to be ${want ? "up" : "left"}: ${e.message}`);
+  });
+}
+
+/** IS THE VISOR STRIP ACTUALLY VISIBLE AND UNOBSCURED? The whole point of
+ * replacing the storage modal with a page slide: a modal paints in the
+ * top layer, above #visor-zone, and dims everything under it, so the
+ * strip's identity flip to an arriving component happened where the user
+ * could not see it.
+ *
+ * The test is a HIT TEST, not a style read: `elementFromPoint` at the
+ * strip's centre returns whatever the user would actually touch there,
+ * which is the only way to catch something painted over it (a top-layer
+ * dialog, a backdrop, a stray overlay). It resolving INSIDE #visor-strip
+ * is the claim. */
+export function stripUnobscured(page: Page): Promise<{ visible: boolean; hitInStrip: boolean }> {
+  return page.evaluate(() => {
+    const strip = document.getElementById("visor-strip");
+    if (!strip) return { visible: false, hitInStrip: false };
+    const r = strip.getBoundingClientRect();
+    const visible = r.height > 0 && r.top >= 0 && r.top < globalThis.innerHeight;
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { visible, hitInStrip: hit !== null && strip.contains(hit) };
+  });
+}
+
+/** Wait until the storage page's panel is not merely PRESENT but
  * REGISTERED: the visor fetches the artifact, mounts it, asks it for its
  * nickname and computes the DESTINATION it is bound to. An iframe in the
  * region appears before all that finishes, so "the iframe is there" is a

@@ -13,7 +13,7 @@
 // The hazard is DEFERRED CONTEXT WRITES. The visor's lightweight sheets
 // (naming, settings) close on an animation, and their close paths put
 // the strip's context back. Whatever is deferred in that restore is
-// racing whatever the user did next — and "open the storage dialog" is
+// racing whatever the user did next — and "walk to the storage page" is
 // one click away from "close the naming sheet". A restore that fires
 // after a panel surface has mounted would put the APP's name back on the
 // top line while the PANEL owns the page.
@@ -23,7 +23,7 @@
 // never.
 //
 // HONEST STATUS OF THIS FILE. Unlike its sibling in
-// dialog-close-retirement.ts, this scenario is a REGRESSION GUARD, not
+// storage-page-navigation.ts, this scenario is a REGRESSION GUARD, not
 // the reproduction of a defect that was found: it passed against the
 // code before the ownership-aware restore went in as well as after. The
 // reason is worth writing down, because it is the thing that could stop
@@ -32,14 +32,20 @@
 // checked `drawerInner.replaceChildren()`, and the one deferred write
 // that does touch the line (the announcement's expiry) reverts by
 // RE-RENDERING the current context rather than by restoring a
-// remembered one. On top of that, every opener retires the panel before
-// it claims the drawer, so no close path has ever yet run while a panel
-// surface was live.
+// remembered one. On top of that, every opener USED TO retire the panel
+// before it claimed the drawer, so no close path had yet run while a
+// panel surface was live.
 //
-// That last clause is an accident of call ordering, not a structural
-// guarantee — it is exactly the kind of invariant that a later "open
-// the sheet without closing the dialog first" quietly repeals. The visor
-// now holds it by construction instead (host/demo.ts's
+// THAT CLAUSE HAS NOW BEEN REPEALED ON PURPOSE, which is the best thing
+// that could have happened to this file. It was always an accident of
+// call ordering rather than a structural guarantee — exactly the kind of
+// invariant a later "open the sheet without leaving the panel's page
+// first" quietly removes — and that is precisely what replacing the
+// storage modal with a sibling page did: a sheet now opens above the
+// strip while a panel surface stays live on the page below (see
+// tenant-precedence.ts). So the ordering this scenario forces is
+// reachable by ordinary use now, not only by driving. The visor holds
+// the property by construction (host/demo.ts's
 // `restoreVisorContext`: no caller says what the context should become,
 // they say only that they are done). This scenario is what notices if
 // either half of that regresses.
@@ -47,11 +53,13 @@
 import type { Scenario } from "../run.ts";
 import {
   act,
+  ANNOUNCE_MS,
   assert,
   assertEquals,
   assertIncludes,
   hook,
   recordSurfaceLine,
+  waitForBottom,
   sheetOpen,
   sleep,
   stripText,
@@ -105,7 +113,7 @@ const scenario: Scenario = {
 
     await act("closing the naming sheet and opening storage IN THE SAME TASK", async () => {
       // THE PROVOCATION. The naming sheet is opened from the strip's own
-      // control, then closed and the storage dialog opened with NO gap:
+      // control, then closed and the storage page entered with NO gap:
       // one page task, so anything the close path defers is scheduled
       // BEFORE the mount begins and fires DURING or AFTER it.
       await hook(page, "naming.openCluster");
@@ -133,8 +141,19 @@ const scenario: Scenario = {
       await sleep(WATCH_MS);
       const samples = await strip.stop();
 
-      const named = (await stripText(page)).bottom;
-      assertIncludes(named, PANEL, "the surface-name line once the panel is mounted");
+      // The arrival is ANNOUNCED (host/demo.ts's loud handoff), and an
+      // announcement owns the bottom line for its window — so the line
+      // is read once it has reverted by re-render, which is the state
+      // the claim is about. Deterministic: the revert is on a timer the
+      // harness knows (ANNOUNCE_MS), not a settle.
+      // (The predicate is stringified and evaluated IN THE PAGE, so it
+      // closes over nothing — PANEL is spelled out rather than captured.)
+      await waitForBottom(
+        page,
+        (t) => t.includes("S3 object storage"),
+        "the surface-name line once the panel is mounted",
+        ANNOUNCE_MS + 5_000,
+      );
 
       const late = appLabels(samples.slice(afterMount));
       assert(
@@ -146,13 +165,13 @@ const scenario: Scenario = {
     });
 
     await act("and the inverse ordering: the sheet is closed AFTER the panel mounts", async () => {
-      // The other way round. The naming sheet cannot be open at the same
-      // time as the storage dialog (the dialog paints in the top layer,
-      // so the openers close each other) — which means the ordering that
-      // matters here is a close path RUNNING LATE, after a mount it did
-      // not know about. Driving both closes against a live panel session
-      // is the reachable form of that: whatever they defer must find the
-      // panel in possession and leave the line alone.
+      // The other way round: a close path RUNNING LATE, after a mount it
+      // did not know about. Firing both closes against a live panel
+      // session is that ordering — and it is an ORDINARY one now that a
+      // sheet and the storage page coexist, where it used to be
+      // reachable only by driving (the modal forced the openers to close
+      // each other). Whatever the closes defer must find the panel in
+      // possession and leave the line alone.
       const strip = await recordSurfaceLine(page);
       const before = (await strip.samples()).length;
 
@@ -183,18 +202,20 @@ const scenario: Scenario = {
       );
     });
 
-    await act("dismissing the dialog hands the strip back to the app", async () => {
+    await act("leaving the storage page hands the strip back to the app", async () => {
       // The inverse claim, so the one above cannot pass by the strip
       // being stuck: when the panel really is retired, the app's name
-      // comes back.
-      await page.keyboard.press("Escape");
+      // comes back. Driven through the browser's own Back button — the
+      // close path that is not the visor's own code, which is the role
+      // ESC played while this was a modal.
+      await page.goBack();
       await page.waitForFunction(
         () => ((document.querySelector("#visor-context .ctx-bottom")?.textContent) ?? "")
           .includes("TodoMVC"),
         undefined,
         { timeout: 15_000 },
       ).catch(() => {
-        throw new Error("the strip never returned to the app after the dialog was dismissed");
+        throw new Error("the strip never returned to the app after leaving the storage page");
       });
     });
   },

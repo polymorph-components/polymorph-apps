@@ -11,12 +11,12 @@ endpoint — running **under deltic in the page**. Three panes, one page:
 |---|---|---|
 | Alice — laptop | wire hub, bucket owner | live (n0's public relay by default) + bucket |
 | Bob | collaborator | live (n0's public relay by default) + bucket (link tier) |
-| Alice — tablet | second device, **zero connections ever** | your bucket (Storage… dialog) |
+| Alice — tablet | second device, **zero connections ever** | your bucket (Storage… page) |
 
 **Two storage providers behind one engine surface** (#19): S3-compatible
 (name secrecy + K_p, cooperative revocation) and **Dropbox** (shared
-links as pull capabilities, hard server-side revocation) — chosen in a
-dialog, same beats either way.
+links as pull capabilities, hard server-side revocation) — chosen on the
+storage page, same beats either way.
 
 Demo beats, all driven through the real UIs and verified:
 adds/toggles/edits converge across all three replicas; the tablet cold
@@ -42,7 +42,7 @@ visible in UI:
 ```
 visor (page JS, trusted)           panel component (sandboxed, per-provider)
   Storage… button                    guest-panel-s3       — dom/events/shell ONLY
-  dialog frame + provider tabs         "pure component: cannot reach the network"
+  storage page + provider tabs         "pure component: cannot reach the network"
   #panel-region (the grant) ────────►  guest-panel-dropbox — + oauth-broker
   carries the returned config                                + fetch scoped to
   to engine.init-store                                         api.dropboxapi.com
@@ -50,8 +50,23 @@ visor (page JS, trusted)           panel component (sandboxed, per-provider)
 
 - The panel is mounted through the **same curated-DOM surface machinery
   as the app** (`createBackend`/`createSurface`, a `root()` grant that
-  is the dialog region) — position, not style, marks the boundary; the
+  is the panel region) — position, not style, marks the boundary; the
   region is visibly inset and labeled "sandboxed panel".
+- **The storage configuration is a PAGE, not a modal** (`#page-track` in
+  `web/index.html`). It used to be a `<dialog>` opened with
+  `showModal()`, and the reason it is not any more is the anchor: a modal
+  paints in the TOP LAYER — above `#visor-zone` — and its `::backdrop`
+  dims everything under it, so the strip's identity flip to the arriving
+  panel (its NEW marker, the offer to name it: the entire TOFU beat this
+  demo is built around) happened in the one place the user was being
+  pushed away from. **Nothing may paint over or dim a component
+  surface's anchor except the visor itself.** As a sibling page the panel
+  becomes a PLACE: the whole page slides sideways while the strip stays
+  exactly where it is, so the motion points AT the anchor instead of
+  covering it, the browser's Back button becomes an honest way out, and
+  the arrival is ANNOUNCED on the visor's own line. It also deleted
+  machinery rather than adding it — see the `<dialog>` findings below,
+  every one of which is now moot by construction.
 - **The visor brokers OAuth.** Navigation, popups and redirect handling are
   visor capabilities a sandboxed panel must not have, so the Dropbox
   panel calls `oauth-broker.authorize(app-key)` and the visor runs the
@@ -62,7 +77,7 @@ visor (page JS, trusted)           panel component (sandboxed, per-provider)
   the visor's shim refuses any host but `api.dropboxapi.com` with a WIT err
   (`__demo.panelFetch` exposes it so the refusal is demonstrable, not
   merely asserted). Its S3 sibling gets no fetch import at all — the
-  #21 pure-vs-egress capability-profile contrast, in one dialog.
+  #21 pure-vs-egress capability-profile contrast, on one page.
 
 ## Architecture
 
@@ -302,7 +317,7 @@ just serve    # build engine+app, translate, bundle, serve on :8600
 
 Open http://127.0.0.1:8600/. The live path rides n0's public relay
 (`?relay=…` overrides, e.g. a local `iroh-relay --dev`); the bucket
-pane activates through the **Storage…** dialog — either an
+pane activates through the **Storage…** page — either an
 S3-compatible endpoint whose CORS admits the page origin (`just infra`
 runs a local MinIO with open CORS, plus a local relay), or **Dropbox**:
 paste an app key + secret from a Dropbox app (App folder access;
@@ -465,12 +480,15 @@ reports background queue depth and per-timer skip counts.
   family — a surface's lifetime and its measurements stop being things
   the shell can observe directly:
   1. **A component frame outlived its dialog.** Mounting is async
-     (artifact fetch + frame handshake) and `<dialog>` closes natively on
+     (artifact fetch + frame handshake) and `<dialog>` closed natively on
      ESC, so a late mount, or any close path other than the buttons,
      left a LIVE component holding a granted rectangle nobody could see.
      Fixed with a generation counter checked after every await, plus
      retirement hung off the dialog's `close` event — the one place that
-     sees every path.
+     saw every path. The generation counter is still load-bearing (mounts
+     are still async); the close-event half is gone with the dialog, and
+     leaving the storage page is now a function call with nothing to
+     race.
   2. **Height reporting raced the render-blocking stylesheet.** The
      frame's first (and only) height report was taken before layout
      existed, so it truthfully said 0, the shell clamped to its floor,
@@ -488,12 +506,24 @@ reports background queue depth and per-timer skip counts.
 - **The paseo webview does not deliver `<dialog>` close events.** Native
   `close()` flips `.open`, manual `dispatchEvent` delivers fine, but the
   engine-queued close event never arrives — and modals also close
-  spuriously without any event. Retirement therefore triggers on the
+  spuriously without any event. Retirement therefore triggered on the
   **state change** (a MutationObserver on the `open` attribute) with the
   close event kept as belt-and-braces. Same lesson as the memory-leak
   hunt: the automation webview is not a reference environment — the
-  companion CDP probe confirms real Chromium delivers the event and
+  companion CDP probe confirmed real Chromium delivers the event and
   tears down correctly.
+
+  **This finding is why the demo no longer uses a dialog at all.** Two
+  mechanisms and four ordering guards existed to reconcile one engine's
+  close semantics with another's; none of them was making the product
+  better, and the modal was simultaneously hiding the anchor at the
+  moment the anchor mattered most. A sibling page has no close event, no
+  top layer and no engine-specific behaviour to reconcile — the bug class
+  was deleted rather than defended against. The claim the machinery
+  protected is still gated, by `e2e/scenarios/storage-page-navigation.ts`
+  (formerly `dialog-close-retirement.ts`): no path out of the storage
+  page — Cancel, browser Back, or the Save handoff — may leave a live
+  panel session off-screen.
 - **Isolation costs the old verification path**: the visor (and any test
   driver) can no longer read into surfaces, and `browser_snapshot` stops
   at the iframe. Driving is now engine-level assertions plus frame

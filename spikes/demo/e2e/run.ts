@@ -10,8 +10,9 @@
 // reference environment — it eats `<dialog>` close events, forces
 // prefers-reduced-motion and cannot see into sandboxed frames, so
 // several claims about this visor were literally unverifiable there
-// (see scenarios/dialog-close-retirement.ts, which is exactly one of
-// them).
+// (scenarios/storage-page-navigation.ts carries the history: it began as
+// `dialog-close-retirement`, whose whole subject was a `<dialog>` close
+// event that webview never delivered).
 //
 // So: Playwright driving a real headless Chromium, as a LIBRARY from
 // Deno — no @playwright/test, no package.json, no second toolchain. The
@@ -36,7 +37,7 @@ import stripGeometry from "./scenarios/strip-geometry.ts";
 import credentialFlow from "./scenarios/credential-flow.ts";
 import transportRefusal from "./scenarios/transport-refusal.ts";
 import tenantPrecedence from "./scenarios/tenant-precedence.ts";
-import dialogCloseRetirement from "./scenarios/dialog-close-retirement.ts";
+import storagePageNavigation from "./scenarios/storage-page-navigation.ts";
 import stripOwnership from "./scenarios/strip-ownership.ts";
 import devicePairing from "./scenarios/device-pairing.ts";
 
@@ -71,7 +72,7 @@ const SCENARIOS: Scenario[] = [
   credentialFlow,
   transportRefusal,
   tenantPrecedence,
-  dialogCloseRetirement,
+  storagePageNavigation,
   // The two pairing ceremonies. It runs against the in-page mock driver
   // (see the scenario's own header for why, and PAIRING.md §6), so it
   // needs no relay and no store.

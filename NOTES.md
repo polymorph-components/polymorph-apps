@@ -1483,6 +1483,32 @@ the cluster that is theirs. The vetting (single BMP scalar,
 text-presentation, confusability classes) is unchanged; only the
 CHOICE widened.
 
+**Storage config is a page, not a modal** (2026-08-21, #22, executed
+same day). The provider-config `<dialog>` is gone: a modal paints in
+the top layer ABOVE the visor zone and its backdrop dims the page, so
+the strip's identity flip — the panel's NEW + "name it", the TOFU
+moment — happened exactly where the user could not see it. The rule
+made explicit: NOTHING may paint over or dim the anchor except the
+visor itself. The config panel is now a sibling PAGE under the same
+pinned strip (a 200%-wide track sliding horizontally; the strip is
+the one element not moving, so the motion itself points at the
+anchor), with the arrival ANNOUNCED on the visor's line and the
+off-screen page `inert`. Browser Back is a close path (pushState on
+entry; every exit — cancel, save, popstate — tears the panel down; no
+path leaves a live panel session off-screen, e2e-gated). The
+`<dialog>` contortions died by construction: no close-event
+unreliability (the retirement machinery's findings stay in the README
+as history), no "take the page back" hook — a naming sheet now opens
+ABOVE the storage page without disturbing it, which is strictly
+better. NEW WINDOW/TAB was considered and rejected: a fresh window
+has no visor — neither the position anchor nor the colour — and the
+arrival gesture is forgeable (any app can window.open something that
+paints a convincing strip). The discriminator: a popup is right
+exactly when browser chrome IS the authority (the foreign-origin
+OAuth ceremony keeps its window); never for same-origin component
+surfaces whose anchor is the visor. Multi-window visors would need
+their own design pass; parked.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
