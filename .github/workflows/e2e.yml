@@ -64,10 +64,14 @@ jobs:
             spikes/demo/guest-panel-dropbox
           cache-all-crates: true
           cache-bin: false
-          key: ${{ hashFiles('scripts/setup.sh', '**/rust-toolchain.toml') }}
-          # Restore only on PRs; main owns the saved entry. The Pages
-          # workflow builds the same workspaces, so this job does not
-          # need to write the cache at all — it shares one.
+          # The SAME entry the Pages build job saves — the expression must
+          # match pages.yml exactly. shared-key replaces rust-cache's
+          # default job-id key component (and the `key` input): without
+          # it this job looked up "...-e2e-..." while Pages saved
+          # "...-build-...", so every E2E run was a cold cargo build.
+          shared-key: demo-${{ hashFiles('scripts/setup.sh', '**/rust-toolchain.toml') }}
+          # Never saves: the Pages workflow builds the same workspaces on
+          # main and owns the entry; this job only restores it.
           save-if: false
 
       - name: Set up tools and the endpoint component
