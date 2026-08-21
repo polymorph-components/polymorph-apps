@@ -10,6 +10,15 @@
 // then asserts every demo-owned key AND the signing keystore are gone —
 // followed by a second pass through the ceremony on the now-unnamed
 // identity, to prove the fixed-word ("erase") fallback path.
+//
+// SUSPENSION (PR #67): entering the ceremony from the settings sheet no
+// longer CLOSES settings, it SUSPENDS it — settings slides out left,
+// the reset sheet slides in from the right, and Cancel resumes settings
+// (rebuilt) sliding back from the left. This scenario also checks the
+// suspension's two direct consequences: an uncommitted hue preview is
+// reverted on entry (suspension bypasses the settings tenant's own
+// cancel-revert), and Cancel actually returns to a live settings session
+// rather than to nothing.
 
 import type { Scenario } from "../run.ts";
 import {
@@ -23,6 +32,7 @@ import {
   KEYS,
   sheetText,
   stripText,
+  SWAP_MS,
   UI_TIMEOUT,
   waitForBoot,
   waitForSheet,
@@ -49,6 +59,50 @@ function resetRoot(page: Page): Promise<{ present: boolean; armed: boolean }> {
   return page.evaluate(() => {
     const root = document.querySelector(".reset-sheet");
     return { present: root !== null, armed: root?.classList.contains("armed") === true };
+  });
+}
+
+/** The live anchor colour, read off the STRIP ELEMENT — same probe
+ * settings-identity.ts uses, cribbed here for the entry act's
+ * preview-is-reverted check (see `resetBtn.onclick`'s comment,
+ * visor/ui/sheets.ts:1157-1186). */
+function anchorHue(page: Page): Promise<string> {
+  return page.evaluate(() =>
+    getComputedStyle(document.getElementById("visor-strip")!)
+      .getPropertyValue("--visor-bg").trim()
+  );
+}
+
+/** Wait out the settings→reset swap (or the reverse, reset→settings on
+ * Cancel): the outgoing sheet travels for `SWAP_MS` before the host
+ * removes it from the drawer (visor/ui/visor.ts's `SWAP_MS`), so a
+ * `.reset-sheet` (or `.settings-sheet`) present/absent pair is only
+ * trustworthy once that travel has actually finished — polled here
+ * rather than slept, matching storage-picker.ts's `.visor-swap-out`
+ * wait for the same machinery. */
+async function waitForSwap(
+  page: Page,
+  present: string,
+  absent: string,
+  timeout = SWAP_MS + 2_000,
+): Promise<void> {
+  await page.waitForFunction(
+    ([p, a]) =>
+      document.querySelector(p as string) !== null &&
+      document.querySelector(a as string) === null,
+    [present, absent],
+    { timeout },
+  ).catch(async (e) => {
+    const state = await page.evaluate(
+      ([p, a]) => ({
+        present: document.querySelector(p as string) !== null,
+        absent: document.querySelector(a as string) !== null,
+      }),
+      [present, absent],
+    );
+    throw new Error(
+      `waiting for the ${present}/${absent} swap: ${JSON.stringify(state)} (${e.message})`,
+    );
   });
 }
 
@@ -157,17 +211,72 @@ const scenario: Scenario = {
     await act("the settings sheet offers 'erase this visor…', which opens the reset ceremony", async () => {
       await hook(page, "settings.openSheet");
       await waitForSheet(page, "settings", true);
+      // Now a header-row button (the `.settings-head` corner, upper-right,
+      // beside the heading) rather than a row below Save/Cancel — but the
+      // id/class/label the driving hook and this scenario key off of are
+      // unchanged, so this assertion holds regardless of where in the
+      // sheet the button is drawn.
       const hasResetBtn = await page.evaluate(() =>
         document.getElementById("visor-settings-reset") !== null
       );
       assert(hasResetBtn, "no #visor-settings-reset button on the settings sheet");
+
+      // An uncommitted hue preview must not survive into the erase
+      // ceremony's frame: entering reset SUSPENDS settings rather than
+      // closing it, and suspension deliberately bypasses the settings
+      // tenant's beforeCollapse revert (visor/ui/sheets.ts:1157-1186), so
+      // the reset entry reverts the preview explicitly, by hand, instead.
+      // Proven here directly: pick a hue that is certainly not the
+      // committed one, then confirm the ANCHOR is back to the committed
+      // hue once the reset sheet is up.
+      const committedHue = await anchorHue(page);
+      await hook(page, "settings.pickHue", 35);
+      const previewed = await anchorHue(page);
+      assert(
+        previewed !== committedHue,
+        `the hue pick did not preview (before ${JSON.stringify(committedHue)}, after ${
+          JSON.stringify(previewed)
+        })`,
+      );
+
       await hook(page, "reset.openFromSettings");
-      // Opening the reset ceremony closes settings (visor/ui/sheets.ts's
-      // resetBtn.onclick: a plain close, then requestReset) — both halves
-      // of that one gesture are checked here.
-      await waitForSheet(page, "settings", false);
+      // Opening the reset ceremony now SUSPENDS settings rather than
+      // closing it (visor/ui/sheets.ts's resetBtn.onclick, PR #67's
+      // drawer-suspension machinery): `__demo.settings.open()` stays TRUE
+      // while the reset sheet is up, so the old
+      // `waitForSheet(page, "settings", false)` no longer holds — it
+      // would hang here. The DOM-level swap is the real claim: the
+      // outgoing `.settings-sheet` travels for SWAP_MS before the host
+      // removes it, so its absence is polled rather than asserted (or
+      // slept for) immediately.
+      await waitForSwap(page, ".reset-sheet", ".settings-sheet");
       const r = await resetRoot(page);
       assert(r.present, "the .reset-sheet root did not appear");
+      assertEquals(await hook(page, "settings.open"), true, "the settings session, suspended under reset");
+
+      const applied = await anchorHue(page);
+      assertEquals(applied, committedHue, "the anchor hue on entering the reset ceremony — the live preview must be reverted, not carried in");
+    });
+
+    await act("Cancel returns to the settings sheet, resumed and rebuilt", async () => {
+      // Cancel is deliberately not armed-gated (visor/ui/sheets.ts), so
+      // no wait for the arming delay is needed before clicking it.
+      await hook(page, "reset.cancel");
+      // The reverse swap: settings slides back in from the left, rebuilt
+      // (see resetBtn.onclick's comment — unsaved edits from before the
+      // suspension do not survive the rebuild, which is the host's
+      // ruling, not a regression), and the reset sheet is what travels
+      // out and gets removed this time.
+      await waitForSwap(page, ".settings-sheet", ".reset-sheet");
+      assertEquals(await hook(page, "reset.open"), false, "the reset session after Cancel");
+      assertEquals(await hook(page, "settings.open"), true, "the settings session after Cancel resumes it");
+    });
+
+    await act("re-entering the reset ceremony from the resumed settings sheet", async () => {
+      await hook(page, "reset.openFromSettings");
+      await waitForSwap(page, ".reset-sheet", ".settings-sheet");
+      const r = await resetRoot(page);
+      assert(r.present, "the .reset-sheet root did not reappear on re-entry");
     });
 
     await act("the erase button and the confirm input are disabled before the arming delay elapses", async () => {
@@ -233,7 +342,11 @@ const scenario: Scenario = {
       await hook(page, "settings.openSheet");
       await waitForSheet(page, "settings", true);
       await hook(page, "reset.openFromSettings");
-      await waitForSheet(page, "settings", false);
+      // Suspension, not close — same swap as the entry act above, and
+      // the same reason `waitForSheet(page, "settings", false)` would
+      // hang here: `__demo.settings.open()` stays true while reset holds
+      // the drawer.
+      await waitForSwap(page, ".reset-sheet", ".settings-sheet");
       const text = await sheetText(page);
       assertIncludes(text, "type erase to confirm", "the fixed-word challenge label");
 
