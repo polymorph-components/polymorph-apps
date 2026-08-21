@@ -152,7 +152,11 @@ class Minio {
     }).spawn();
     for (let i = 0; i < 120; i++) {
       try {
-        const r = await fetch(`${this.url}/minio/health/live`);
+        // Bounded: a fetch that SYN-hangs would otherwise wedge start()
+        // forever — every harness wait must have a deadline.
+        const r = await fetch(`${this.url}/minio/health/live`, {
+          signal: AbortSignal.timeout(2_000),
+        });
         await r.body?.cancel();
         if (r.ok) return;
       } catch { /* not up yet */ }
@@ -173,9 +177,16 @@ class Minio {
     // asserts on a transport failure — otherwise it races the socket.
     for (let i = 0; i < 80; i++) {
       try {
-        const r = await fetch(`${this.url}/minio/health/live`);
+        const r = await fetch(`${this.url}/minio/health/live`, {
+          signal: AbortSignal.timeout(2_000),
+        });
         await r.body?.cancel();
-      } catch {
+      } catch (e) {
+        // Connection refused is the state this loop exists to reach. A
+        // TIMEOUT is not refusal — the port answered nothing either way,
+        // and a scenario asserting on transport refusal must not be told
+        // the socket is closed while a slow server still holds it.
+        if (e instanceof DOMException && e.name === "TimeoutError") continue;
         return;
       }
       await new Promise((r) => setTimeout(r, 100));
@@ -225,6 +236,16 @@ async function main() {
   let browser: Browser = await launchBrowser();
 
   const openPages: Page[] = [];
+  // Phase tracing for the deadline diagnostics: every await between a
+  // scenario banner and its first act sets the phase it is entering, so
+  // a deadline failure can NAME the wedged call instead of leaving a
+  // silent banner (the two observed CI wedges both died namelessly).
+  let phase = "idle";
+  let phaseAt = performance.now();
+  const setPhase = (p: string) => {
+    phase = p;
+    phaseAt = performance.now();
+  };
   const ctx: Ctx = {
     baseUrl,
     // A getter, not a copy: the runner replaces a wedged browser (see the
@@ -239,7 +260,9 @@ async function main() {
     stopMinio: () => minio.stop(),
     startMinio: () => minio.start(),
     fresh: async (opts: FreshOptions = {}) => {
+      setPhase("newContext");
       const bctx = await newContext(browser, opts);
+      setPhase("newPage");
       const page = await bctx.newPage();
       openPages.push(page);
       // Console noise is kept, not printed: a failing act dumps it, a
@@ -248,8 +271,12 @@ async function main() {
       page.on("console", (m) => lines.push(`[${m.type()}] ${m.text()}`));
       page.on("pageerror", (e) => lines.push(`[pageerror] ${e.message}`));
       (page as unknown as { __log: string[] }).__log = lines;
+      setPhase("goto");
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-      if (!opts.noWait) await waitForBoot(page);
+      if (!opts.noWait) {
+        setPhase("waitForBoot");
+        await waitForBoot(page);
+      }
       return page;
     },
   };
@@ -316,12 +343,15 @@ async function main() {
     let page: Page | null = null;
     try {
       await withDeadline((async () => {
+        setPhase("minio");
         if (scenario.minio === "down") await minio.stop();
         else await minio.start();
         page = await ctx.fresh(
           typeof scenario.page === "function" ? scenario.page(ctx) : scenario.page,
         );
+        setPhase("scenario");
         await scenario.run(page, ctx);
+        setPhase("idle");
       })());
       results.push({
         name: scenario.name,
@@ -346,6 +376,21 @@ async function main() {
         error: e instanceof Error ? e.message : String(e),
       });
       if (e instanceof Error && e.message.startsWith(DEADLINE_MARK)) {
+        // The diagnostics the two silent CI wedges lacked: WHERE it was
+        // stuck, whether the protocol was alive at all, and whether the
+        // runner was starved for memory (an OOM-killed browser child
+        // manifests as exactly this kind of silence).
+        const stuck = ((performance.now() - phaseAt) / 1000).toFixed(1);
+        console.log(`         wedged in phase '${phase}' for ${stuck}s`);
+        console.log(`         browser.isConnected(): ${browser.isConnected()}`);
+        if (Deno.build.os === "linux") {
+          try {
+            const mem = new TextDecoder().decode(
+              (await new Deno.Command("free", { args: ["-m"] }).output()).stdout,
+            );
+            for (const l of mem.trim().split("\n")) console.log(`         ${l}`);
+          } catch { /* diagnostics are best-effort */ }
+        }
         await recoverBrowser();
       }
     } finally {

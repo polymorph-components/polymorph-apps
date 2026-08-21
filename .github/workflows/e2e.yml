@@ -112,6 +112,14 @@ jobs:
       - name: Run the scenarios
         working-directory: spikes/demo
         run: just e2e
+        env:
+          # Browser-process lifecycle into the job log (launch args, child
+          # process exits, crash/OOM messages) — two runs wedged silently
+          # at a scenario banner (2026-08-21) and left nothing to diagnose;
+          # this plus the harness's own scenario deadline is what makes a
+          # third occurrence legible. Low noise: pw:browser logs process
+          # events only, not protocol traffic.
+          DEBUG: pw:browser
 
       - name: Source-level invariants (#22 ruling table)
         # Cheap, and it fails for reasons the scenarios cannot see: these
