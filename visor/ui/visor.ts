@@ -886,10 +886,27 @@ export function initVisor(config: VisorConfig): Visor {
     }, ms);
   };
 
+  /** Same strip subject? A context MOVE preempts a live announcement; a
+   * repaint that does NOT move the context must let it finish. The
+   * distinction earns its keep on the close paths: teardown restores are
+   * DEFERRED (a dialog retirement waits a macrotask for in-flight frame
+   * messages), so a restore from an EARLIER gesture can land milliseconds
+   * after a LATER gesture's announcement — observed with the forget
+   * announcement, clobbered after 4ms by the storage dialog's retirement
+   * restoring the same app context it was announced over. Contexts are
+   * recomputed objects, so compare by subject (kind + surface name), not
+   * identity. */
+  const sameContext = (a: VisorContext, b: VisorContext): boolean => {
+    if (a === b) return true;
+    if (a === null || b === null) return false;
+    if ((a.kind ?? "panel") !== (b.kind ?? "panel")) return false;
+    return (a as { name?: string }).name === (b as { name?: string }).name;
+  };
+
   const setContext = (ctx: VisorContext) => {
+    const moved = !sameContext(current, ctx);
     current = ctx;
-    // A context MOVE preempts any live announcement (see `announcing`).
-    renderContext();
+    renderContext({ keepAnnouncement: !moved });
   };
   setContext(null);
 

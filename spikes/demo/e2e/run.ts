@@ -270,12 +270,29 @@ async function main() {
       const lines: string[] = [];
       page.on("console", (m) => lines.push(`[${m.type()}] ${m.text()}`));
       page.on("pageerror", (e) => lines.push(`[pageerror] ${e.message}`));
+      // CI run 32442122042 caught the wedge red-handed: the RENDERER took
+      // SIGSEGV (SEGV_ACCERR, mid-boot at the alice⇄bob wire step) and then
+      // hung in its own crash handler — no crash event reached the driver,
+      // and waitForFunction's in-page timeout died with the page. When the
+      // event DOES fire, this fails the boot wait in seconds with a name;
+      // when it doesn't, the scenario deadline still catches it.
+      let crashed = false;
+      page.on("crash", () => {
+        crashed = true;
+        lines.push("[crash] the renderer crashed (pw:browser stderr has the signal)");
+      });
       (page as unknown as { __log: string[] }).__log = lines;
+      (page as unknown as { __crashed: () => boolean }).__crashed = () => crashed;
       setPhase("goto");
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
       if (!opts.noWait) {
         setPhase("waitForBoot");
-        await waitForBoot(page);
+        await Promise.race([
+          waitForBoot(page),
+          new Promise<never>((_, reject) => {
+            page.on("crash", () => reject(new Error("renderer crashed during boot")));
+          }),
+        ]);
       }
       return page;
     },
@@ -480,6 +497,10 @@ async function main() {
         const stuck = ((performance.now() - phaseAt) / 1000).toFixed(1);
         console.log(`         wedged in phase '${phase}' for ${stuck}s`);
         console.log(`         browser.isConnected(): ${browser.isConnected()}`);
+        const crashedPages = openPages.filter((p) =>
+          (p as unknown as { __crashed?: () => boolean }).__crashed?.()
+        ).length;
+        console.log(`         pages with a delivered crash event: ${crashedPages}/${openPages.length}`);
         // The sampled history answers the question a post-mortem snapshot
         // cannot: was memory CLIMBING before the stall, or flat?
         recordSample();
