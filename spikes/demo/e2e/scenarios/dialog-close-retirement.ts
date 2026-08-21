@@ -123,8 +123,8 @@ const scenario: Scenario = {
     });
 
     await act("the strip's context returns to the app surface", async () => {
-      const { top } = await stripText(page);
-      assertIncludes(top, "TodoMVC", "the top line after the dialog was dismissed");
+      const { bottom } = await stripText(page);
+      assertIncludes(bottom, "TodoMVC", "the surface-name line after the dialog was dismissed");
       assertEquals(await sheetOpen(page, "drawer"), false, "a credential sheet after ESC");
       assertEquals(await sheetOpen(page, "naming"), false, "a naming sheet after ESC");
       assertEquals(await sheetOpen(page, "settings"), false, "a settings sheet after ESC");

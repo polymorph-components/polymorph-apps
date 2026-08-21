@@ -101,17 +101,28 @@
 #visor-strip .bar-inner { display: flex; align-items: stretch;
                             justify-content: space-between; gap: .8em;
                             padding: 0 .9em; box-sizing: border-box; }
-/* LEFT CLUSTER — two lines, and the split between them is the whole
-   point of the restructure:
-     .ctx-top    the COMPONENT's identity: its mark and what it calls
-                 itself. Static after install; nothing the visor does to
-                 its own sheets rewrites it.
-     .ctx-bottom THE VISOR'S line: the user's petname (or the offer to
-                 assign one), the first-sight marker, the name of
-                 whichever visor sheet is open, and timed
-                 announcements.
-   One voice per line: what the component said above, what the visor and
-   the user say below. */
+/* LEFT CLUSTER — two lines, ordered by WHOSE QUESTION THEY ANSWER:
+     .ctx-top    THE USER'S RECOGNITION PAIR: the mark they picked and
+                 the word they chose, side by side — or, before those
+                 exist, the visor's offer to create them (the NEW marker
+                 and "name it", which sit exactly where the answer will
+                 land).
+     .ctx-bottom CLAIMS AND STATUS: what the component calls itself
+                 (quoted, monospaced, plated — app voice), the name of
+                 whichever visor sheet is open, and timed announcements,
+                 which replace the whole line for their window.
+   "What is this, to me?" is answered above "what does it call itself?",
+   which is the demotion of the component's self-description made
+   structural. An app that declares no nickname leaves the bottom line
+   empty outside sheets and announcements — deliberately: an empty row
+   beats a filler sentence, and it leaves the user's own line clean.
+
+   THE LINES ARE FREE TO BE REORDERED BECAUSE THE VOICES ARE MARKED. See
+   the three-voices table at the top of this file: provenance rides the
+   TOKEN (the plate and the monospace say "a component said this", the
+   600 weight says "you said this"), not the row it sits in. When the row
+   was the only marking, moving a token between lines would have changed
+   what it claimed. */
 #visor-context { display: flex; flex-direction: column;
                   justify-content: center; gap: .15em;
                   min-width: 0; max-width: 45%; }
@@ -254,11 +265,17 @@
    the bar (it is the only control here that opens the visor's own
    settings), and it gives the gesture a target that clears the 44px
    touch minimum at the strip's 12px type — hence the px floor beside
-   the em sizing: at 12px, 2.4em is only ~29px. */
+   the em sizing: at 12px, 2.4em is only ~29px.
+
+   IT IS A CIRCLE, and that shape means "me": the avatar convention, the
+   same one every account menu on the platform uses. The visor spends it
+   on the one control that is about the USER rather than about a
+   component — see the rectangular pet-icon picker in .name-icons, which
+   is about an "it". */
 #visor-settings { font: inherit; color: inherit; cursor: pointer;
                    background: rgba(255,255,255,.12);
                    border: 1px solid rgba(255,255,255,.3);
-                   border-radius: 4px; padding: 0;
+                   border-radius: 50%; padding: 0;
                    align-self: center; flex: none;
                    display: inline-flex; align-items: center;
                    justify-content: center;
@@ -469,6 +486,9 @@
    and the attribution line above it speak one vocabulary. */
 .name-sheet .name-icons { display: flex; gap: .4em; flex-wrap: wrap;
                           margin: .1em 0 .6em; }
+/* RECTANGULAR ON PURPOSE: a pet icon is a mark for an "it" — the round
+   shape is reserved for the user's own glyph (see #visor-settings and
+   the settings sheet's picker), because a circle reads as "me". */
 .name-sheet .name-icons button { font: inherit; font-size: 16px;
                                  width: 2em; height: 2em; padding: 0;
                                  cursor: pointer; border-radius: 3px;
@@ -518,9 +538,13 @@
 .settings-sheet .settings-icons,
 .settings-sheet .settings-hues { display: flex; gap: .35em; flex-wrap: wrap;
                                  margin: .1em 0 .6em; }
+/* THE USER'S OWN GLYPH, so the offers are ROUND: choosing "me" wears the
+   me-shape, and the button that will carry the choice (#visor-settings)
+   is a circle too. The component pet-icon picker (.name-icons) stays
+   rectangular — that one is an "it". */
 .settings-sheet .settings-icons button { font: inherit; font-size: 14px;
                                          width: 1.9em; height: 1.9em; padding: 0;
-                                         cursor: pointer; border-radius: 3px;
+                                         cursor: pointer; border-radius: 50%;
                                          color: inherit; line-height: 1;
                                          background: rgba(255,255,255,.1);
                                          border: 1px solid rgba(255,255,255,.35); }

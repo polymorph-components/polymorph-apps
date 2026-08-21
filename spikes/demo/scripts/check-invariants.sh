@@ -198,10 +198,22 @@ fi
 #        tick or a warning sign beside a component's name is the visor
 #        appearing to VOUCH for that component — a claim made in the
 #        anchor's pixels, on the user's own authority, that the visor is
-#        in no position to make. The denylist also covers the USER's own
-#        vocabulary (VISOR_ICONS): a component mark that could be
-#        mistaken for the visor's own button glyph is an impersonation
-#        aid, so the two sets must not overlap.
+#        in no position to make.
+#
+#        THE RULE IS ONE-WAY, and only this direction is checked. The
+#        USER'S own set (visor.ts's VISOR_ICONS) is now a SUPERSET of
+#        APP_MARK_ICONS by decision, so the two overlap on purpose and a
+#        disjointness check would be false. It may also hold
+#        security-semantic glyphs — ⛨ is its default — because a user
+#        awarding themselves a shield speaks on their own authority in
+#        their own cluster, while an app wearing one is a claim about the
+#        app made in the visor's pixels. "Me" versus "it" is carried by
+#        POSITION (identity cluster vs context cluster, neither of them
+#        drawable by a component) and by the circular "me" shape, not by
+#        set membership. What survives here is the app half: the denylist
+#        still covers the ten glyphs the visor's own BUTTON shipped with
+#        (VISOR_ICON_CORE), because a component mark confusable with the
+#        button's own face is an impersonation aid.
 #
 #   (g2) A NOMINATED GLYPH IS VALIDATED AT THE CROSSING. A component may
 #        ASK to wear a mark (`mark-nomination`), which makes it the one
@@ -223,7 +235,7 @@ if [ -z "$set_literal" ]; then
   bad "APP_MARK_ICONS not found as an array literal in $ICONS_FILE"
 else
   # Locks, shields, keys, warning signs, ticks and crosses — plus every
-  # glyph of the user's own set (visor.ts's VISOR_ICONS).
+  # glyph of the visor button's own core (visor.ts's VISOR_ICON_CORE).
   denied=""
   for glyph in '⛨' '🛡' '⚠' '✓' '✔' '✗' '✘' '✖' '❌' '🔒' '🔐' '🔓' '🔑' '⚿' '⛊' '⛉' '☑' '☒' '⌘' \
                '✶' '✦' '◆' '▲' '☘' '⚑' '✿' '☾' '⚙'; do
@@ -232,9 +244,9 @@ else
     esac
   done
   if [ -n "$denied" ]; then
-    bad "APP_MARK_ICONS contains a denied glyph (security semantics, or the user's own set):$denied"
+    bad "APP_MARK_ICONS contains a denied glyph (security semantics, or the visor button's own core):$denied"
   else
-    ok "APP_MARK_ICONS spells no lock/shield/key/warning/tick/cross, and no VISOR_ICONS glyph"
+    ok "APP_MARK_ICONS spells no lock/shield/key/warning/tick/cross, and no VISOR_ICON_CORE glyph"
   fi
 fi
 # The seam: every read of a component's nomination goes through ONE

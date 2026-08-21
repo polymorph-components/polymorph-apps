@@ -72,15 +72,17 @@ const scenario: Scenario = {
       assertEquals(foreign, 0, "foreign-quoted text on the settings sheet");
     });
 
-    await act("the strip names the visor's own sheet, and still names the APP upstairs", async () => {
+    await act("the strip names the visor's own sheet, and still names the APP", async () => {
       const strip = await page.evaluate(() => ({
         top: document.querySelector("#visor-context .ctx-top")?.textContent ?? "",
         bottom: document.querySelector("#visor-context .ctx-bottom")?.textContent ?? "",
       }));
+      // Both live on the claims-and-status line now: the sheet's name
+      // first, then the component's own quoted account of itself.
       assertIncludes(strip.bottom, "visor settings", "the bottom line");
       // Component identity is a property of what is INSTALLED, not of
       // which visor sheet is open (host/demo.ts `topSurface`).
-      assertIncludes(strip.top, "TodoMVC", "the top line while the visor's own sheet is open");
+      assertIncludes(strip.bottom, "TodoMVC", "the component's nickname while the sheet is open");
     });
 
     let previewed = "";

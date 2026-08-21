@@ -1457,6 +1457,32 @@ app voice never — a component is referred to by the user's word for
 it (the petname, resolved per drained batch) or described without
 naming; its provenance key and nickname never ride an announcement.
 
+**The strip reorganized around the user's pair; "me" is a circle; the
+user's vocabulary opens wide** (2026-08-21, #22, executed same day).
+Three rulings. (1) The context cluster's lines SWAP: the top line is
+now the user's recognition pair — pet icon beside petname, one
+recognition act read as one unit — or, before they exist, the visor's
+offer to create them (NEW + "name it" sit exactly where the answer
+will land); the bottom line is claims-and-status (the component's
+plated quote, the open sheet's name, timed announcements). "What is
+this, to me?" answers above "what does it call itself?" — the
+demotion of self-description made structural. The swap is SAFE ONLY
+BECAUSE of the three-voices marking: provenance rides the token
+(plate/weight), not the row, so lines are free to reorganize — before
+that, the row WAS the marking. (2) The user's identity glyph renders
+in a CIRCLE (`#visor-settings` and the settings picker) — the avatar
+convention; pet-icon pickers stay rectangular. "Me" vs "it" is now
+carried by position and shape. (3) Which retired the disjointness
+rule: `VISOR_ICONS` (the user's own choices) is now the full vetted
+vocabulary — the ten core glyphs plus all 28 pet icons, 38 total —
+CORRECTING the entry above: the app-nominable set keeps every
+curation rule including no-security-semantics (an app never wears
+authority), but the user may wear anything vetted, shields included —
+a user awarding themselves ⛨ is a statement on their own authority in
+the cluster that is theirs. The vetting (single BMP scalar,
+text-presentation, confusability classes) is unchanged; only the
+CHOICE widened.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic

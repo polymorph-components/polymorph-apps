@@ -123,15 +123,13 @@ export function applyVisorHue(hue: number) {
 // authority-lending mistake the petname/nickname split exists to
 // prevent.
 
-/** The button face is THE VISOR'S VOCABULARY, not free text. The record
- * lives in localStorage, so it is hand-editable; if the face were an
- * arbitrary string, a record edited to say "Verified" or "polymorph"
- * would put attacker- (or accident-) chosen WORDS into the anchor, in
- * the visor's own voice, at the one position that is supposed to be
- * unspoofable. A fixed glyph set has no such reading: anything outside
- * it falls back to the default shield. */
-export const VISOR_ICONS = ["⛨", "✶", "✦", "◆", "▲", "☘", "⚑", "✿", "☾", "⚙"];
-export const DEFAULT_ICON = VISOR_ICONS[0];
+/** THE CORE of the user's own vocabulary, and the source of the default.
+ * `VISOR_ICONS` — the set actually offered and validated against — is
+ * this followed by the whole pet-icon vocabulary, and is declared below
+ * `APP_MARK_ICONS` because it is built from it. Order matters here: the
+ * shield is [0] and therefore `DEFAULT_ICON`. */
+const VISOR_ICON_CORE = ["⛨", "✶", "✦", "◆", "▲", "☘", "⚑", "✿", "☾", "⚙"];
+export const DEFAULT_ICON = VISOR_ICON_CORE[0];
 
 // --- the pet icons: the user's recognition mark for a COMPONENT ---------------
 //
@@ -173,22 +171,42 @@ export const DEFAULT_ICON = VISOR_ICONS[0];
 //       components then wear the same empty rectangle.
 //
 //   (4) ONE GLYPH PER VISUAL-CONFUSABILITY CLASS, and NO class overlap
-//       with VISOR_ICONS (the USER's own set, above). Marks exist to be
-//       told apart at 14px in peripheral vision, so near-duplicates are
-//       worse than useless — and a component mark that could be mistaken
-//       for the visor's own button glyph is an impersonation aid. Since
-//       VISOR_ICONS spans shields, stars, diamonds, triangles, clovers,
-//       flags, flowers, moons and gears, there are NO stars, shields,
-//       diamonds, triangles, clovers/clubs, flags, flowers, moons or
-//       gears here AT ALL — which is why the obvious ☀ ❄ ☄ ⚜ ♠ are
-//       absent (sun/snowflake/comet read as stars; fleur-de-lis as a
+//       with VISOR_ICON_CORE (the ten glyphs the visor's own button
+//       shipped with). Marks exist to be told apart at 14px in
+//       peripheral vision, so near-duplicates are worse than useless.
+//       Since that core spans shields, stars, diamonds, triangles,
+//       clovers, flags, flowers, moons and gears, there are NO stars,
+//       shields, diamonds, triangles, clovers/clubs, flags, flowers,
+//       moons or gears here AT ALL — which is why the obvious ☀ ❄ ☄ ⚜ ♠
+//       are absent (sun/snowflake/comet read as stars; fleur-de-lis as a
 //       flower; the spade as a clover).
+//
+//       WHAT THIS RULE IS NO LONGER DOING: it used to be half of a
+//       claim that the user's set and the app-nominable set were
+//       DISJOINT, so that a component could never wear a glyph the visor
+//       wears. That claim is gone by decision — the user may now pick
+//       their own glyph from this whole vocabulary as well (see
+//       `VISOR_ICONS` below), so the two sets deliberately overlap. What
+//       distinguishes "me" from "it" is POSITION — the identity cluster
+//       on the strip's right versus the context cluster on its left,
+//       and no component can draw in either — and SHAPE: the user's
+//       glyph is rendered in a CIRCLE (the avatar convention), a
+//       component's mark never is. Set membership was never doing that
+//       work as well as position does, and it cost the user nine tenths
+//       of the vetted vocabulary.
 //
 //   (5) NO SECURITY OR UI SEMANTICS: no locks, keys, chains, warning
 //       signs, check or cross marks, arrows. The visor must never appear
 //       to be VOUCHING for a component, and a padlock beside a name is
 //       exactly that claim — made in the visor's pixels, about a
-//       component, on the user's own authority. (Also no religious or
+//       component, on the user's own authority. THIS RULE IS ASYMMETRIC
+//       and stays that way: it binds the APP-nominable set only. The
+//       user's own set may hold security-semantic glyphs — ⛨ always did
+//       — because a user awarding themselves a shield is a statement
+//       about themselves, on their own authority, in the cluster that is
+//       theirs. An app wearing one would be a claim about the app, made
+//       by the app, in the visor's pixels. Invariant (g)/[7/8] in
+//       spikes/demo/scripts/check-invariants.sh pins the app half. (Also no religious or
 //       political symbols: a mark is a label, and the visor does not put
 //       words in the user's mouth. ☯ went out on this rule.)
 //
@@ -233,6 +251,39 @@ export const APP_MARK_ICONS: readonly string[] = [
   "✎", // U+270E LOWER RIGHT PENCIL
 ];
 
+/** THE USER'S OWN VOCABULARY — the glyph on the visor's own button.
+ *
+ * The button face is THE VISOR'S VOCABULARY, not free text. The record
+ * lives in localStorage, so it is hand-editable; if the face were an
+ * arbitrary string, a record edited to say "Verified" or "polymorph"
+ * would put attacker- (or accident-) chosen WORDS into the anchor, in
+ * the visor's own voice, at the one position that is supposed to be
+ * unspoofable. A fixed glyph set has no such reading: anything outside
+ * it falls back to the default shield.
+ *
+ * IT IS THE WIDE SET: the ten the button shipped with, in their original
+ * order (so ⛨ is still [0] and still `DEFAULT_ICON`), followed by every
+ * pet icon not already among them. The vetting is not loosened by this —
+ * every added glyph already passed the six criteria above, which are
+ * strictly stronger than anything the button needs. What is loosened is
+ * the CHOICE: the user picks from the whole vetted vocabulary rather
+ * than from ten.
+ *
+ * A SUPERSET IS BACKWARD-COMPATIBLE BY CONSTRUCTION. `loadIdentity`,
+ * `saveIdentity` and `identityIcon` all validate by membership here, so
+ * every record valid under the old ten is still valid, and nothing
+ * stored can be invalidated by growing the set.
+ *
+ * The reverse direction is NOT symmetric: this set may contain
+ * security-semantic glyphs (⛨ does), and `APP_MARK_ICONS` may not — see
+ * criterion (5). "Me" and "it" are told apart by position (identity
+ * cluster vs context cluster) and by shape (the user's glyph is drawn in
+ * a circle), not by set membership. */
+export const VISOR_ICONS: readonly string[] = [
+  ...VISOR_ICON_CORE,
+  ...APP_MARK_ICONS.filter((g) => !VISOR_ICON_CORE.includes(g)),
+];
+
 /** THE VALIDATION GATE for every pet icon that did not come out of
  * `APP_MARK_ICONS` itself — and that is every interesting one.
  *
@@ -253,8 +304,12 @@ export const APP_MARK_ICONS: readonly string[] = [
  *     codepoints into one rendered picture — including a colour emoji
  *     the curation rules exclude, arrived at by composition;
  *   - combining marks, which stack arbitrary ink onto a neighbour;
- *   - homoglyphs of the VISOR's own icons (VISOR_ICONS), which is the
- *     component impersonating the visor's button;
+ *   - homoglyphs of the visor's own button core (`VISOR_ICON_CORE`),
+ *     which is the component impersonating the visor's button. (The
+ *     user's full vocabulary is a SUPERSET of this list now, so a
+ *     nominated glyph may legitimately be one the user could also wear
+ *     — what a component still cannot do is reach the identity cluster,
+ *     or be drawn in the round "me" shape.)
  *   - anything long enough to stretch the strip.
  *
  * Trying to enumerate those is a losing game. Membership in a fixed,
@@ -777,11 +832,11 @@ export function initVisor(config: VisorConfig): Visor {
    * the "new visor colour" announcement. */
   let announcing = false;
 
-  /** The surface the TOP line is about. The visor's own settings sheet has
-   * no component behind it, so the top line keeps naming the app: the
-   * component identity is a property of what is INSTALLED, not of which
-   * visor sheet happens to be open — that is what "static after
-   * install" means here. */
+  /** WHICH SURFACE THE CLUSTER IS ABOUT — both its lines, since the
+   * split between them is by VOICE and not by subject. The visor's own
+   * settings sheet has no component behind it, so the cluster keeps
+   * naming the app: which component the strip is about is a property of
+   * what is INSTALLED, not of which visor sheet happens to be open. */
   const topSurface = (ctx: VisorContext): SurfaceIdentity | null => {
     if (ctx === null) return appSurface();
     if (ctx.kind === "settings") return appSurface();
@@ -799,11 +854,32 @@ export function initVisor(config: VisorConfig): Visor {
     const surface = topSurface(ctx);
     ctxTop.replaceChildren();
     if (!holdBottom) ctxBottom.replaceChildren();
+    // WHICH VISOR SHEET IS OPEN, if any. Computed before either line is
+    // built because BOTH consult it now: the top line withholds its
+    // controls while a sheet owns the drawer (a control whose ceremony is
+    // already on screen must not offer to open it again), and the bottom
+    // line names the sheet.
+    const kind = ctx === null ? "app" : (ctx.kind ?? "panel");
+    const sheet = kind === "credentials" || kind === "naming" || kind === "settings";
 
-    // --- the TOP line: the COMPONENT's identity, and only that -------
-    // Component-said words only: its assigned mark and what it calls
-    // itself, quoted/monospaced/clamped as ever. Nothing the visor does to
-    // its own sheets rewrites this line.
+    // --- the TOP line: THE USER'S RECOGNITION PAIR ---------------------
+    // The mark the user picked and the word the user chose, side by side,
+    // on the strip's first line — or, when they do not exist yet, the
+    // visor's offer to create them. Two reasons the pair belongs together
+    // and belongs first: a glyph and a name are ONE recognition act, and
+    // reading them apart is the user doing a join the visor could have
+    // done for them; and THE OFFER SITS WHERE THE ANSWER WILL LIVE — the
+    // "name it" button occupies the position the petname will occupy, so
+    // the ceremony's result appears where the invitation was, rather than
+    // somewhere else on the strip.
+    //
+    // WHY THE LINES ARE FREE TO BE REORGANIZED AT ALL: the three voices
+    // (see `foreignToken`) mark provenance ON THE TOKEN — the plate and
+    // the monospace say "a component said this", the 600 weight says "you
+    // said this" — so provenance travels with the word and not with the
+    // row it happens to sit in. Before that marking existed, the row WAS
+    // the marking, and moving a token between lines would have moved what
+    // it claimed. It no longer does.
     if (surface) {
       // THE PET ICON, or nothing. A marked surface wears the glyph the
       // USER picked for it, in plain text inheriting --visor-fg — not a
@@ -814,41 +890,6 @@ export function initVisor(config: VisorConfig): Visor {
       // would be the visor speaking first.
       const icon = markIcon(surface.icon);
       if (icon) ctxTop.append(icon);
-      // A component that declares nothing gets nothing quoted: an empty
-      // app-voice token would render as a bare plate with quote marks —
-      // punctuation in the visor's pixels standing for a claim nobody
-      // made.
-      if (surface.nickname !== "") ctxTop.append(nicknameQuote(surface.nickname));
-    }
-
-    // --- the BOTTOM line: THE VISOR'S voice ----------------------------
-    // What is NOT here any more: the sentence "— provider configuration
-    // panel · drawn by the component, not by the visor". It was a standing
-    // description competing for a line that now has to hold the
-    // petname, the first-sight marker and the open sheet's name in one
-    // ellipsizing row; and the claim it made is made better by the
-    // sheets themselves, at the moment they open.
-    const kind = ctx === null ? "app" : (ctx.kind ?? "panel");
-    const sheet = kind === "credentials" || kind === "naming" || kind === "settings";
-    if (sheet && !holdBottom) {
-      // While a visor sheet is open the strip NAMES it: the anchor and
-      // the surface hanging off it say the same thing, so "which pixels
-      // am I typing into" has a visor-side answer. This is the part of
-      // the deleted standing-rule line that was worth keeping.
-      const lead = document.createElement("span");
-      lead.className = "said";
-      lead.textContent = kind === "credentials"
-        ? "storage credentials"
-        : kind === "naming"
-        ? "naming"
-        : "visor settings";
-      ctxBottom.append(lead);
-    }
-    if (surface && !holdBottom) {
-      // THE DEMOTION. With a petname, the name the visor SAYS is the user's
-      // own, in the visor's voice, on the visor's line — and the component's
-      // self-description stays upstairs where it belongs, as a quote.
-      // Without one, the visor offers to fix that.
       const petname = (surface.petname ?? "").trim();
       if (petname !== "") {
         const named = petnameSpan(petname);
@@ -877,16 +918,23 @@ export function initVisor(config: VisorConfig): Visor {
             requestNaming(surface);
           };
         }
-        ctxBottom.append(named);
+        ctxTop.append(named);
       }
+      // CONTRACT: each of these keeps the exact condition it had before
+      // the lines were swapped — `.fresh` on `isNew && !sheet`, "name it"
+      // on `petname === "" && !sheet` — so the swap moves elements and
+      // changes nothing about WHEN they appear. In practice the two are
+      // the unnamed case together: naming a component clears `isNew`.
       if (surface.isNew && !sheet) {
         // The TOFU moment is the one worth interrupting for: recognition
         // marks mean nothing the first time, and the first time is when
-        // impersonation would land.
+        // impersonation would land. NEW sits beside the offer it
+        // motivates: the reason to name this component is that the visor
+        // has never seen it before, and the two read as one sentence.
         const freshEl = document.createElement("span");
         freshEl.className = "fresh";
         freshEl.textContent = "NEW — first time this component draws here";
-        ctxBottom.append(freshEl);
+        ctxTop.append(freshEl);
       }
       if (petname === "" && !sheet) {
         // The visor's own control, in the visor's own pixels: the offer to stop
@@ -900,12 +948,53 @@ export function initVisor(config: VisorConfig): Visor {
           ev.stopPropagation();
           requestNaming(surface);
         };
-        ctxBottom.append(nameIt);
+        ctxTop.append(nameIt);
       }
     }
 
+    // --- the BOTTOM line: CLAIMS AND STATUS ----------------------------
+    // What the component says about itself, plus what the visor has to
+    // say about right now: which of its own sheets is open, and any timed
+    // announcement, which replaces this whole line for its window.
+    //
+    // The component's claim is DOWNSTAIRS from the user's own words, and
+    // that is the demotion made structural: the strip answers "what is
+    // this, to me?" before it answers "what does it call itself?". A
+    // component that declares no nickname simply leaves this line empty
+    // outside sheets and announcements — an empty second row is a better
+    // outcome than a filler sentence, and it leaves the user's line above
+    // reading clean and alone.
+    //
+    // What is NOT here any more: the sentence "— provider configuration
+    // panel · drawn by the component, not by the visor". It was a standing
+    // description competing for a line that had to hold the petname, the
+    // first-sight marker and the open sheet's name in one ellipsizing
+    // row; and the claim it made is made better by the sheets
+    // themselves, at the moment they open.
+    if (sheet && !holdBottom) {
+      // While a visor sheet is open the strip NAMES it: the anchor and
+      // the surface hanging off it say the same thing, so "which pixels
+      // am I typing into" has a visor-side answer. This is the part of
+      // the deleted standing-rule line that was worth keeping.
+      const lead = document.createElement("span");
+      lead.className = "said";
+      lead.textContent = kind === "credentials"
+        ? "storage credentials"
+        : kind === "naming"
+        ? "naming"
+        : "visor settings";
+      ctxBottom.append(lead);
+    }
+    if (surface && !holdBottom) {
+      // A component that declares nothing gets nothing quoted: an empty
+      // app-voice token would render as a bare plate with quote marks —
+      // punctuation in the visor's pixels standing for a claim nobody
+      // made.
+      if (surface.nickname !== "") ctxBottom.append(nicknameQuote(surface.nickname));
+    }
+
     // THE CLUSTER IS ONE TAP TARGET, opening the visor's App settings sheet
-    // for the surface the top line names. Offered only when there is a
+    // for the surface both its lines are about. Offered only when there is a
     // surface and no credential/naming sheet already owns the drawer —
     // a control that would be a no-op must not announce itself as a
     // button to assistive tech.

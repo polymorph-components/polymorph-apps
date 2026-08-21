@@ -203,12 +203,12 @@ const scenario: Scenario = {
       const m = await checkAt(narrow, "390", 390);
       // The petname really is on the line being measured — otherwise
       // the geometry above would be trivially satisfied.
-      const bottom = await narrow.evaluate(() =>
-        document.querySelector("#visor-context .ctx-bottom")?.textContent ?? ""
+      const top = await narrow.evaluate(() =>
+        document.querySelector("#visor-context .ctx-top")?.textContent ?? ""
       );
       assert(
-        bottom.includes("quarterly planning"),
-        `the long petname was not on the strip at 390: ${JSON.stringify(bottom)}`,
+        top.includes("quarterly planning"),
+        `the long petname was not on the strip at 390: ${JSON.stringify(top)}`,
       );
       assert(m.identity.w > 0, "the identity cluster vanished at 390");
     });
