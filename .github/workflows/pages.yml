@@ -75,10 +75,18 @@ jobs:
           # Tools are binstalled in seconds; a cached bin/ would roll
           # pinned tools back to whatever versions the cache holds.
           cache-bin: false
+          # One cache entry shared with the E2E workflow: shared-key
+          # REPLACES rust-cache's default job-id key component (and the
+          # `key` input, which is ignored when shared-key is set — the
+          # rotation hash lives here instead). Without it, rust-cache
+          # baked the JOB id into the key ("build" here, "e2e" there), so
+          # E2E could never restore the entry this job saves and ran a
+          # cold cargo build every time.
+          #
           # Sibling pins and tool versions live in setup.sh, the pinned
           # compilers in rust-toolchain.toml; bumping either must rotate
           # the key or stale target dirs get restored forever.
-          key: ${{ hashFiles('scripts/setup.sh', '**/rust-toolchain.toml') }}
+          shared-key: demo-${{ hashFiles('scripts/setup.sh', '**/rust-toolchain.toml') }}
           # Save only on main: PR jobs restore but never save, so PR
           # branches don't churn the cache entries every run depends on.
           save-if: ${{ github.ref == 'refs/heads/main' }}

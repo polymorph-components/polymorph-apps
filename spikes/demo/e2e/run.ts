@@ -152,7 +152,11 @@ class Minio {
     }).spawn();
     for (let i = 0; i < 120; i++) {
       try {
-        const r = await fetch(`${this.url}/minio/health/live`);
+        // Bounded: a fetch that SYN-hangs would otherwise wedge start()
+        // forever — every harness wait must have a deadline.
+        const r = await fetch(`${this.url}/minio/health/live`, {
+          signal: AbortSignal.timeout(2_000),
+        });
         await r.body?.cancel();
         if (r.ok) return;
       } catch { /* not up yet */ }
@@ -173,9 +177,16 @@ class Minio {
     // asserts on a transport failure — otherwise it races the socket.
     for (let i = 0; i < 80; i++) {
       try {
-        const r = await fetch(`${this.url}/minio/health/live`);
+        const r = await fetch(`${this.url}/minio/health/live`, {
+          signal: AbortSignal.timeout(2_000),
+        });
         await r.body?.cancel();
-      } catch {
+      } catch (e) {
+        // Connection refused is the state this loop exists to reach. A
+        // TIMEOUT is not refusal — the port answered nothing either way,
+        // and a scenario asserting on transport refusal must not be told
+        // the socket is closed while a slow server still holds it.
+        if (e instanceof DOMException && e.name === "TimeoutError") continue;
         return;
       }
       await new Promise((r) => setTimeout(r, 100));
@@ -225,6 +236,16 @@ async function main() {
   let browser: Browser = await launchBrowser();
 
   const openPages: Page[] = [];
+  // Phase tracing for the deadline diagnostics: every await between a
+  // scenario banner and its first act sets the phase it is entering, so
+  // a deadline failure can NAME the wedged call instead of leaving a
+  // silent banner (the two observed CI wedges both died namelessly).
+  let phase = "idle";
+  let phaseAt = performance.now();
+  const setPhase = (p: string) => {
+    phase = p;
+    phaseAt = performance.now();
+  };
   const ctx: Ctx = {
     baseUrl,
     // A getter, not a copy: the runner replaces a wedged browser (see the
@@ -239,7 +260,9 @@ async function main() {
     stopMinio: () => minio.stop(),
     startMinio: () => minio.start(),
     fresh: async (opts: FreshOptions = {}) => {
+      setPhase("newContext");
       const bctx = await newContext(browser, opts);
+      setPhase("newPage");
       const page = await bctx.newPage();
       openPages.push(page);
       // Console noise is kept, not printed: a failing act dumps it, a
@@ -247,9 +270,30 @@ async function main() {
       const lines: string[] = [];
       page.on("console", (m) => lines.push(`[${m.type()}] ${m.text()}`));
       page.on("pageerror", (e) => lines.push(`[pageerror] ${e.message}`));
+      // CI run 32442122042 caught the wedge red-handed: the RENDERER took
+      // SIGSEGV (SEGV_ACCERR, mid-boot at the alice⇄bob wire step) and then
+      // hung in its own crash handler — no crash event reached the driver,
+      // and waitForFunction's in-page timeout died with the page. When the
+      // event DOES fire, this fails the boot wait in seconds with a name;
+      // when it doesn't, the scenario deadline still catches it.
+      let crashed = false;
+      page.on("crash", () => {
+        crashed = true;
+        lines.push("[crash] the renderer crashed (pw:browser stderr has the signal)");
+      });
       (page as unknown as { __log: string[] }).__log = lines;
+      (page as unknown as { __crashed: () => boolean }).__crashed = () => crashed;
+      setPhase("goto");
       await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-      if (!opts.noWait) await waitForBoot(page);
+      if (!opts.noWait) {
+        setPhase("waitForBoot");
+        await Promise.race([
+          waitForBoot(page),
+          new Promise<never>((_, reject) => {
+            page.on("crash", () => reject(new Error("renderer crashed during boot")));
+          }),
+        ]);
+      }
       return page;
     },
   };
@@ -309,19 +353,119 @@ async function main() {
     console.log("         (browser relaunched after a deadline failure)");
   };
 
+  // --- memory watch -------------------------------------------------------
+  //
+  // A wedge from memory pressure looks exactly like the observed protocol
+  // wedges — a renderer stalls and no crash event ever reaches the driver —
+  // so the harness watches the browser's whole process tree, not just the
+  // aftermath: /proc-walked RSS grouped into the LIVE chrome tree (our
+  // descendants), ORPHANED chrome (abandoned by recoverBrowser, reparented
+  // to init, still eating memory — matched by playwright-cache cmdline so a
+  // developer's own desktop Chrome is never counted), minio, and the
+  // harness itself, plus the kernel's MemAvailable. RSS summed over a
+  // process tree OVERCOUNTS shared pages (every renderer maps the same
+  // binary); the trend is what matters here, not the absolute number.
+  // One line per scenario; the full recent history on a deadline failure.
+  type MemSample = {
+    t: number;
+    chromeMb: number;
+    orphanMb: number;
+    minioMb: number;
+    otherMb: number;
+    harnessMb: number;
+    availMb: number;
+  };
+  const pwCachePath = Deno.env.get("PLAYWRIGHT_BROWSERS_PATH") ?? "ms-playwright";
+  const sampleMem = (): MemSample | null => {
+    if (Deno.build.os !== "linux") return null;
+    try {
+      const table = new Map<number, { ppid: number; rssMb: number; comm: string }>();
+      for (const ent of Deno.readDirSync("/proc")) {
+        if (!/^\d+$/.test(ent.name)) continue;
+        const pid = Number(ent.name);
+        try {
+          const stat = Deno.readTextFileSync(`/proc/${pid}/stat`);
+          // comm may contain spaces/parens: parse around the LAST ')'.
+          const close = stat.lastIndexOf(")");
+          const comm = stat.slice(stat.indexOf("(") + 1, close);
+          const ppid = Number(stat.slice(close + 2).split(" ")[1]);
+          const pages = Number(Deno.readTextFileSync(`/proc/${pid}/statm`).split(" ")[1]);
+          table.set(pid, { ppid, rssMb: (pages * 4096) / 1048576, comm });
+        } catch { /* pid raced away */ }
+      }
+      const isOurs = (pid: number): boolean => {
+        for (let cur = pid, guard = 0; guard < 64; guard++) {
+          const p = table.get(cur);
+          if (!p) return false;
+          if (p.ppid === Deno.pid) return true;
+          if (p.ppid <= 1) return false;
+          cur = p.ppid;
+        }
+        return false;
+      };
+      const s: MemSample = {
+        t: performance.now(),
+        chromeMb: 0,
+        orphanMb: 0,
+        minioMb: 0,
+        otherMb: 0,
+        harnessMb: Deno.memoryUsage().rss / 1048576,
+        availMb: Number(
+          Deno.readTextFileSync("/proc/meminfo").match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0,
+        ) / 1024,
+      };
+      for (const [pid, p] of table) {
+        if (pid === Deno.pid) continue;
+        const chromeish = /chrom|headless/i.test(p.comm);
+        if (isOurs(pid)) {
+          if (chromeish) s.chromeMb += p.rssMb;
+          else if (/minio/i.test(p.comm)) s.minioMb += p.rssMb;
+          else s.otherMb += p.rssMb;
+        } else if (chromeish) {
+          try {
+            if (Deno.readTextFileSync(`/proc/${pid}/cmdline`).includes(pwCachePath)) {
+              s.orphanMb += p.rssMb;
+            }
+          } catch { /* not ours to read */ }
+        }
+      }
+      return s;
+    } catch {
+      return null; // diagnostics are best-effort
+    }
+  };
+  const memHistory: MemSample[] = [];
+  let scenarioPeakMb = 0;
+  const recordSample = (): MemSample | null => {
+    const s = sampleMem();
+    if (!s) return null;
+    memHistory.push(s);
+    if (memHistory.length > 40) memHistory.shift();
+    scenarioPeakMb = Math.max(scenarioPeakMb, s.chromeMb + s.orphanMb);
+    return s;
+  };
+  const fmtMb = (mb: number) => `${Math.round(mb)}MB`;
+  const memTimer = setInterval(recordSample, 5_000);
+  Deno.unrefTimer(memTimer);
+
   for (const scenario of runList) {
     console.log(`  ── ${scenario.name}: ${scenario.why}`);
     resetActs();
+    scenarioPeakMb = 0;
+    recordSample();
     const t0 = performance.now();
     let page: Page | null = null;
     try {
       await withDeadline((async () => {
+        setPhase("minio");
         if (scenario.minio === "down") await minio.stop();
         else await minio.start();
         page = await ctx.fresh(
           typeof scenario.page === "function" ? scenario.page(ctx) : scenario.page,
         );
+        setPhase("scenario");
         await scenario.run(page, ctx);
+        setPhase("idle");
       })());
       results.push({
         name: scenario.name,
@@ -346,6 +490,40 @@ async function main() {
         error: e instanceof Error ? e.message : String(e),
       });
       if (e instanceof Error && e.message.startsWith(DEADLINE_MARK)) {
+        // The diagnostics the two silent CI wedges lacked: WHERE it was
+        // stuck, whether the protocol was alive at all, and whether the
+        // runner was starved for memory (an OOM-killed browser child
+        // manifests as exactly this kind of silence).
+        const stuck = ((performance.now() - phaseAt) / 1000).toFixed(1);
+        console.log(`         wedged in phase '${phase}' for ${stuck}s`);
+        console.log(`         browser.isConnected(): ${browser.isConnected()}`);
+        const crashedPages = openPages.filter((p) =>
+          (p as unknown as { __crashed?: () => boolean }).__crashed?.()
+        ).length;
+        console.log(`         pages with a delivered crash event: ${crashedPages}/${openPages.length}`);
+        // The sampled history answers the question a post-mortem snapshot
+        // cannot: was memory CLIMBING before the stall, or flat?
+        recordSample();
+        if (memHistory.length > 0) {
+          console.log("         --- mem history (5s cadence, oldest first) ---");
+          const now = performance.now();
+          for (const s of memHistory.slice(-12)) {
+            console.log(
+              `         t-${((now - s.t) / 1000).toFixed(0).padStart(3)}s  ` +
+                `chrome ${fmtMb(s.chromeMb)}  orphans ${fmtMb(s.orphanMb)}  ` +
+                `minio ${fmtMb(s.minioMb)}  other ${fmtMb(s.otherMb)}  ` +
+                `harness ${fmtMb(s.harnessMb)}  avail ${fmtMb(s.availMb)}`,
+            );
+          }
+        }
+        if (Deno.build.os === "linux") {
+          try {
+            const mem = new TextDecoder().decode(
+              (await new Deno.Command("free", { args: ["-m"] }).output()).stdout,
+            );
+            for (const l of mem.trim().split("\n")) console.log(`         ${l}`);
+          } catch { /* diagnostics are best-effort */ }
+        }
         await recoverBrowser();
       }
     } finally {
@@ -358,6 +536,14 @@ async function main() {
           new Promise((r) => setTimeout(r, 5_000)),
         ]);
       }
+    }
+    const memEnd = recordSample();
+    if (memEnd) {
+      console.log(
+        `         mem: chrome ${fmtMb(memEnd.chromeMb)} (scenario peak ${fmtMb(scenarioPeakMb)})` +
+          `${memEnd.orphanMb > 1 ? `, orphans ${fmtMb(memEnd.orphanMb)}` : ""}` +
+          `, avail ${fmtMb(memEnd.availMb)}`,
+      );
     }
     console.log("");
   }

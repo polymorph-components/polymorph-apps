@@ -354,13 +354,21 @@ const scenario: Scenario = {
       // page back from the storage dialog on the way.)
       await hook(page, "naming.openFor", "app");
       await waitForSheet(page, "naming", true);
-      await hook(page, "naming.forget");
-      await waitForSheet(page, "naming", false);
-      const said = await waitForBottom(
+      // Arm the announcement watcher BEFORE triggering the forget — the
+      // honest observation order, and the one that caught a real bug: the
+      // storage dialog this act just took the page back from retires on a
+      // DEFERRED restore, which used to land milliseconds after the forget
+      // announcement and clobber it (CI run 32442122042; visor.ts's
+      // sameContext is the fix). Armed-late only ever passed by winning
+      // that race.
+      const announced = waitForBottom(
         page,
         (t) => t.includes("forgotten"),
         "the forget announcement",
       );
+      await hook(page, "naming.forget");
+      await waitForSheet(page, "naming", false);
+      const said = await announced;
       assertIncludes(said, "announced as NEW next time", "the forget announcement");
       const table = await marks(page) as Record<string, unknown>;
       assertEquals(table["app"], undefined, "the app's record after forgetting");
