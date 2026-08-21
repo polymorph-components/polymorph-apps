@@ -1,6 +1,6 @@
 // The visor's device-pairing + user-system UI (PAIRING.md §5, #22
 // rulings). This is THE module that may render a pairing code or a SAS
-// — spikes/demo/scripts/check-invariants.sh (f) greps for that
+// — demo/scripts/check-invariants.sh (f) greps for that
 // property, so a refactor that moves this rendering elsewhere must move
 // the grep marker too (documented at the marker, below).
 //
@@ -15,8 +15,8 @@
 //
 // WHAT IS NOT HERE: any backend. The UI is written against
 // `./pairing-driver.ts`'s `PairingDriver` and nothing wider; the demo
-// supplies either a mock (spikes/demo/host/pairing-mock.ts) or an
-// engine adapter (spikes/demo/host/pairing-engine.ts). Nor does it own
+// supplies either a mock (demo/host/pairing-mock.ts) or an
+// engine adapter (demo/host/pairing-engine.ts). Nor does it own
 // any pane's own chrome: a consumer passes in the container, the
 // announcement sink, and the storage keys, exactly as the rest of
 // visor/ui/ takes its consumer's keys.

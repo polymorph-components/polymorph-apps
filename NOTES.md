@@ -1650,6 +1650,30 @@ sits in (a) wearing app voice + NEW. Rulings:
   visually adjacent-equal to lists (a)/(b): a recommender's words for
   a provider are still not the user's words.
 
+**Spike-to-alpha: the repo restructures; spikes/ becomes a pure
+archive** (2026-08-21). The layout stops pretending the live code is
+provisional. The engine composite graduates wholesale —
+`spikes/tasks-engine` → [engine/](engine/) (guest + fetcher + the
+G1–G5 host harness; pins and toolchain untouched). The demo splits
+into its three owners: the browser shell, e2e suite and local infra
+stay one buildable unit at [demo/](demo/) (the framework's reference
+embedding and its behavioral gate); the TodoMVC app guest moves to
+[examples/todomvc/](examples/todomvc/) (its CSS copied from the
+todomvc spike so the archive stays intact); the provider config
+panels move to `providers/{s3,dropbox}/panel`; the shared WIT package
+moves to [wit/todomvc/](wit/todomvc/) (package ids unchanged at this
+step). `spikes/` is now a pure archive of the executed validation
+record — nothing outside it consumes anything inside it, so
+delete-at-will is finally literal. CI, setup.sh and the Pages build
+follow the moved paths (`docs/spike-demo` → `docs/demo`); the
+definition of "identical" was the visor extraction's: every invariant
+grep still fires and the demo e2e suite passed unchanged, 12/12. Two
+known debts ride the same round as follow-up PRs: the LIVE provider
+protocol code still sits inside the engine guest (extraction to
+`providers/*/store` is next), and the spike-era names
+(`polymorph:engine-spike`, `polymorph:todomvc-spike`,
+`polymorph-fetchspike`, the `spike-*` crate names) rename after that.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic

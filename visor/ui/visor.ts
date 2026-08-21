@@ -2,7 +2,7 @@
 // cluster, and the drawer that unfolds above the strip.
 //
 // This is the framework layer, extracted whole out of the demo spike
-// (spikes/demo/host/demo.ts) so a second spike can consume the same
+// (demo/host/demo.ts) so a second spike can consume the same
 // anchor rather than reimplement one. What lives here is everything a
 // visor IS — the anchor colour, the identity record, the two-line
 // context, the announce discipline, and the drawer host with its
@@ -14,7 +14,7 @@
 // nothing here is ever written to the document root, handed to a guest,
 // or put on the frame seam. The anchor colour is set on the visor's own
 // ELEMENTS; the identity record is rendered only into visor pixels. See
-// spikes/demo/scripts/check-invariants.sh checks (b), (c) and (e), which
+// demo/scripts/check-invariants.sh checks (b), (c) and (e), which
 // grep this file for exactly that.
 //
 // PER-INSTANCE STATE. Every mutable value below lives on the object
@@ -110,7 +110,7 @@ export function applyVisorHue(hue: number) {
 // strip and the sheets that hang off it), never written to a :root
 // custom property, never passed to a panel, an engine, or across the
 // frame seam. Nothing in the surface API can carry them, and the
-// invariant check (e) in spikes/demo/scripts/check-invariants.sh keeps
+// invariant check (e) in demo/scripts/check-invariants.sh keeps
 // it that way by grepping the seam files.
 //
 // Why this is worth anything: it gives the anchor a second thing an
@@ -206,7 +206,7 @@ export const DEFAULT_ICON = VISOR_ICON_CORE[0];
 //       about themselves, on their own authority, in the cluster that is
 //       theirs. An app wearing one would be a claim about the app, made
 //       by the app, in the visor's pixels. Invariant (g)/[7/8] in
-//       spikes/demo/scripts/check-invariants.sh pins the app half. (Also no religious or
+//       demo/scripts/check-invariants.sh pins the app half. (Also no religious or
 //       political symbols: a mark is a label, and the visor does not put
 //       words in the user's mouth. ☯ went out on this rule.)
 //
@@ -322,8 +322,8 @@ export const VISOR_ICONS: readonly string[] = [
  *
  * CALL IT AT THE SEAM, not at the render site. A consumer reading a
  * component's nomination validates it the moment it crosses (see
- * spikes/demo/host/demo.ts's `mark-nomination` read, and invariant (g)
- * in spikes/demo/scripts/check-invariants.sh, which greps for exactly
+ * demo/host/demo.ts's `mark-nomination` read, and invariant (g)
+ * in demo/scripts/check-invariants.sh, which greps for exactly
  * that adjacency): an invalid string must never reach a render path at
  * all, not even the picker's. */
 export function isAppMarkIcon(s: string): boolean {
@@ -512,7 +512,7 @@ export function petnameSpan(petname: string): HTMLElement {
  * (visor text accidentally styled as a plate) is ugly but not dangerous.
  * That asymmetry is why the enforcement is a construction funnel rather
  * than a style audit, and why invariant (h) in
- * spikes/demo/scripts/check-invariants.sh pins the `foreign`
+ * demo/scripts/check-invariants.sh pins the `foreign`
  * class-assignment count in this file at exactly one.
  *
  * `maxLen` clamps at the render site (defaults to 40, the petname cap);

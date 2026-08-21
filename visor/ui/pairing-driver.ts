@@ -8,10 +8,10 @@
 // happens to be plugged in today.
 //
 // Implementations live with their consumers, deliberately:
-//   - spikes/demo/host/pairing-mock.ts — a demo test double (in-page
+//   - demo/host/pairing-mock.ts — a demo test double (in-page
 //     "network", SHA-256 transcript hash) for developing and gating the
 //     visor without the engine;
-//   - spikes/demo/host/pairing-engine.ts — demo glue adapting a real
+//   - demo/host/pairing-engine.ts — demo glue adapting a real
 //     engine instance (host/engine.ts's typed `Driver`) to this shape.
 // Neither is visor code, and this file imports neither. Nothing here
 // touches the DOM.

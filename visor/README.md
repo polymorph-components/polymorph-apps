@@ -3,9 +3,10 @@
 The visor is the framework-owned trusted UI and the isolation seams
 around sandboxed apps (#22's rulings; #16's per-surface frames; #5's
 disclosure model). It began life inside the spikes — the DOM-op seam in
-`spikes/todomvc/host/`, the frame isolation and system UI in
-`spikes/demo/` — and both spikes now consume it from here instead of
-reaching into each other's directories.
+`spikes/todomvc/host/`, the frame isolation and system UI in what is
+now `demo/` — and both consumers (the demo and the archived todomvc
+spike) now take it from here instead of reaching into each other's
+directories.
 
 Three layers, one trust story:
 
@@ -51,12 +52,12 @@ Three layers, one trust story:
   twice (a mock, an engine adapter); the announcement sink and the
   storage keys are the consumer's, as everywhere else here.
 
-Consumers: `spikes/demo` (full flows: petnames, credentials, storage
+Consumers: `demo` (full flows: petnames, credentials, storage
 dialog, pairing) and `spikes/todomvc` (consent/kill tenants, frame
 backend by default). Source-level invariants for all of it are
-enforced by `spikes/demo/scripts/check-invariants.sh`, whose greps
+enforced by `demo/scripts/check-invariants.sh`, whose greps
 follow the code here (each check names its files); the demo's
-Playwright e2e suite (`spikes/demo/e2e/`) is the behavioral gate.
+Playwright e2e suite (`demo/e2e/`) is the behavioral gate.
 
 ## Three voices
 
@@ -88,7 +89,7 @@ That asymmetry is why app voice is enforced by CONSTRUCTION rather than
 by style review. `foreignToken()` in `ui/visor.ts` is the only door: the
 single site in the codebase that assigns the `foreign` class (its thin
 wrapper `nicknameQuote()` goes through it too). Invariant (h) of
-`spikes/demo/scripts/check-invariants.sh` pins both halves — zero
+`demo/scripts/check-invariants.sh` pins both halves — zero
 hand-written `foreign` class assignments in consumer host code and in
 the rest of `visor/ui/`, and exactly one inside `ui/visor.ts`.
 

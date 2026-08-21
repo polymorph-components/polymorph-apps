@@ -29,20 +29,20 @@ JUST_VERSION="${JUST_VERSION:-1.54.0}"
 
 # Pinned to the revisions the demo was last verified against. Bumping one
 # is a deliberate act: the deltic ports carry embedder conventions that
-# have already broken this demo once (see spikes/demo/README.md).
+# have already broken this demo once (see demo/README.md).
 #
 # polymorph-iroh is NOT checked out here (jsr-pins branch): the tasks-engine
 # spike's default `compose` target consumes the endpoint from
-# jsr:@polymorph/iroh (spikes/tasks-engine/justfile's PINS block), so no
+# jsr:@polymorph/iroh (engine/justfile's PINS block), so no
 # sibling clone/cargo-build of it is needed by any default-path target.
 #
 # polymorph-webcrypto is likewise NOT checked out here (jsr-pins branch):
 # the demo's deno.json now resolves it from jsr:@polymorph/webcrypto@0.2.0
-# (see spikes/demo/README.md's "deltic ports ... JSR pins now, no sibling
+# (see demo/README.md's "deltic ports ... JSR pins now, no sibling
 # checkout" note), and every Rust consumer (dropbox/keyhive/storage/
 # skeleton/subduction/tasks-engine) pulls it as a `git = "...", rev = "..."`
 # Cargo dependency, not a sibling path. polymorph-webrtc-datachannels is
-# still a live sibling consumer (spikes/demo/deno.json maps it there) and
+# still a live sibling consumer (demo/deno.json maps it there) and
 # stays checked out below.
 WEBRTC_REPO=https://github.com/polymorph-components/polymorph-webrtc-datachannels.git
 WEBRTC_PIN=8a8347766df9035747fb87f85f13eee16c14c1f4
@@ -72,7 +72,7 @@ fi
 
 if [ "${SKIP_TOOLS:-0}" != "1" ]; then
     log "Installing pinned Rust toolchain (rust-toolchain.toml) and wasm targets"
-    (cd "$REPO_ROOT/spikes/tasks-engine" && (rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install))
+    (cd "$REPO_ROOT/engine" && (rustup show active-toolchain >/dev/null 2>&1 || rustup toolchain install))
     # The engine + fetcher are wasip2 (pinned by rust-toolchain.toml); the
     # app and panel guests are plain wasm32-unknown-unknown and carry no
     # toolchain file, so that target is added explicitly.

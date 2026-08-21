@@ -1,7 +1,7 @@
 /* The visor's SYSTEM UI stylesheet: the strip, the identity cluster, the
    context cluster, and the drawer that unfolds above the strip — the
    CSS half of visor/ui/visor.ts. Extracted whole out of the demo spike
-   (spikes/demo/web/index.html), the same way visor.ts was, so a second
+   (demo/web/index.html), the same way visor.ts was, so a second
    consumer (spikes/todomvc) can share the exact chrome rather than
    reimplement it.
 
@@ -44,7 +44,7 @@
    (visor text accidentally styled as a plate) is ugly but not dangerous.
    Hence the enforcement is a CONSTRUCTION funnel — visor/ui/visor.ts's
    `foreignToken`, the single site that assigns `.foreign`, pinned by
-   invariant (h) of spikes/demo/scripts/check-invariants.sh — and not a
+   invariant (h) of demo/scripts/check-invariants.sh — and not a
    style audit. This stylesheet only has to dress what that door emits. */
 
 /* THE PLATE: the app-voice token's own surface. ALPHA-based on purpose —
@@ -537,7 +537,7 @@
 
 /* --- THE SHEETS' OWN STYLING -------------------------------------------
    The three visor sheets' content rules, moved here VERBATIM out of
-   spikes/demo/web/index.html alongside visor/ui/sheets.ts. They were
+   demo/web/index.html alongside visor/ui/sheets.ts. They were
    left page-side by the first extraction under a "who creates the
    elements" tie-break; that tie-break points the other way now that the
    framework creates the naming and settings sheets itself, and a second

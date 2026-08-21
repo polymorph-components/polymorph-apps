@@ -1,0 +1,208 @@
+# End-to-end TodoMVC demo (#20 G6+G7): the tasks engine under deltic in
+# the browser, integrated with the todomvc surface spike.
+#
+# jsr-pins branch: relay is the SAME pinned binary the tasks-engine
+# spike installs (`engine`'s `just relay-bin`,
+# iroh-relay@1.0.3, repo-local, no sibling checkout); the deltic ports
+# (webcrypto/websocket) are jsr:@polymorph/*@0.2.0 per deno.json
+# (webrtc-datachannels stays on a sibling checkout, see deno.json's
+# MODULE-IDENTITY comment). The endpoint wasm comes from `../engine`'s
+# default `compose` target, which is JSR-sourced
+# (jsr:@polymorph/iroh@0.1.0, see that spike's justfile PINS block) —
+# no IROH_CHECKOUT is needed by this justfile's default path.
+
+# Build the engine composite (delegates to the tasks-engine spike).
+engine:
+    cd ../engine && just compose
+
+# Translate the composite for deltic (build-time; the browser never
+# ships the translator).
+translate: engine
+    mkdir -p build
+    deno run --allow-read --allow-write tools/translate.ts \
+        ../engine/target/composed.wasm build/engine.plan.json
+
+# Local infra: iroh relay (ws on 3340) + MinIO (9000) with CORS open.
+infra:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    relay="../engine/.deps/relay/bin/iroh-relay"
+    [ -x "$relay" ] || { echo "iroh-relay not installed at $relay (run: cd ../engine && just relay-bin)" >&2; exit 1; }
+    minio="../engine/.deps/minio"
+    [ -x "$minio" ] || { echo "minio not fetched; run engine once" >&2; exit 1; }
+    data="$(mktemp -d /tmp/pm-demo-minio.XXXXXX)"
+    "$relay" --dev &
+    MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+    MINIO_API_CORS_ALLOW_ORIGIN='*' \
+        "$minio" server "$data" --address 127.0.0.1:9000 --quiet &
+    trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$data"' EXIT
+    echo "infra up: relay :3340, minio :9000 — ctrl-c to stop"
+    wait
+
+# Bring-up phases (Deno; needs `just infra` running for wire/bucket).
+bringup PHASE="solo": translate
+    deno run -A host/bringup.ts {{PHASE}}
+
+# Headless pairing + user-system smoke over the real engine composite,
+# through the pairing-engine.ts adapter (Track A -> Track B). Needs
+# `just infra` running (relay only; no bucket use).
+pairing-bringup: translate
+    deno check host/pairing-bringup.ts
+    deno run -A host/pairing-bringup.ts
+
+# Build the app guest and translate both components.
+app:
+    cd ../examples/todomvc/guest && cargo build --release --target wasm32-unknown-unknown
+    wasm-tools component new \
+        ../examples/todomvc/guest/target/wasm32-unknown-unknown/release/demo_app_guest.wasm \
+        -o build/app.component.wasm
+    deno run --allow-read --allow-write tools/translate.ts \
+        build/app.component.wasm build/app.plan.json
+
+# Build the storage-provider config panels (#19 × #22: provider config
+# UI as sandboxed components, launched from the visor).
+panels:
+    cd ../providers/s3/panel && cargo build --release --target wasm32-unknown-unknown
+    cd ../providers/dropbox/panel && cargo build --release --target wasm32-unknown-unknown
+    wasm-tools component new \
+        ../providers/s3/panel/target/wasm32-unknown-unknown/release/demo_panel_s3_guest.wasm \
+        -o build/panel-s3.component.wasm
+    wasm-tools component new \
+        ../providers/dropbox/panel/target/wasm32-unknown-unknown/release/demo_panel_dropbox_guest.wasm \
+        -o build/panel-dropbox.component.wasm
+    deno run --allow-read --allow-write tools/translate.ts \
+        build/panel-s3.component.wasm build/panel-s3.plan.json
+    deno run --allow-read --allow-write tools/translate.ts \
+        build/panel-dropbox.component.wasm build/panel-dropbox.plan.json
+
+# Build + serve the device-pairing visor demo (Track B, PAIRING.md):
+# join+add flows against the mock driver, NO engine/wasm/relay/bucket
+# dependency — this is the fast, independent gate for the visor side
+# while the real engine composite (Track A) lands separately.
+pairing-site:
+    mkdir -p serve
+    deno check host/pairing-demo.ts host/pairing-mock.ts \
+        ../visor/ui/pairing.ts ../visor/ui/pairing-driver.ts
+    deno bundle --platform browser --minify -o serve/pairing-demo.js host/pairing-demo.ts
+    cp web/pairing-demo.html serve/
+
+pairing-serve: pairing-site
+    deno run --allow-net --allow-read jsr:@std/http/file-server serve --port 8601
+
+# Source-level invariant checks (#22 ruling table): the petname never
+# crosses the frame seam, the visor never renders the word "password", and
+# the anchor colour is never made ambient. Cheap tripwires on properties
+# whose loss is otherwise invisible until it is a security bug.
+check:
+    bash scripts/check-invariants.sh
+
+# Assemble the servable demo directory.
+site: translate app panels check
+    mkdir -p serve
+    deno check host/demo.ts ../visor/frame/frame.ts ../visor/frame/frame-backend.ts
+    deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/demo.js host/demo.ts
+    # The sandboxed surface frame (#16): its own entry, its own document.
+    # No --external flags needed — the frame imports only the applier and
+    # never touches a node backend.
+    deno bundle --platform browser --minify -o serve/frame.js ../visor/frame/frame.ts
+    cp ../visor/frame/frame.html serve/
+    cp build/app.component.wasm build/app.plan.json serve/
+    cp build/panel-s3.component.wasm build/panel-s3.plan.json serve/
+    cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json serve/
+    cp ../engine/target/composed.wasm serve/engine.component.wasm
+    cp build/engine.plan.json serve/engine.plan.json
+    sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > serve/index.html
+    cp ../examples/todomvc/todomvc-app.css serve/
+    cp ../visor/ui/visor.css serve/
+
+# Serve the demo (needs `just infra` in another terminal).
+serve: site
+    deno run --allow-net --allow-read jsr:@std/http/file-server serve --port 8600
+
+# Build the demo into the repo's Pages root (same pattern as the
+# todomvc spike: docs/ is served by GitHub Pages, the build is
+# committed). The page still needs LOCAL infra (relay + MinIO) or
+# ?relay=&s3= overrides — Pages hosts the artifact, not the network.
+pages: translate app panels check
+    mkdir -p ../docs/demo
+    deno check host/demo.ts ../visor/frame/frame.ts ../visor/frame/frame-backend.ts
+    deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o ../docs/demo/demo.js host/demo.ts
+    deno bundle --platform browser --minify -o ../docs/demo/frame.js ../visor/frame/frame.ts
+    cp ../visor/frame/frame.html ../docs/demo/
+    cp build/app.component.wasm build/app.plan.json ../docs/demo/
+    cp build/panel-s3.component.wasm build/panel-s3.plan.json ../docs/demo/
+    cp build/panel-dropbox.component.wasm build/panel-dropbox.plan.json ../docs/demo/
+    cp ../engine/target/composed.wasm ../docs/demo/engine.component.wasm
+    cp build/engine.plan.json ../docs/demo/
+    sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > ../docs/demo/index.html
+    cp ../examples/todomvc/todomvc-app.css ../docs/demo/
+    cp ../visor/ui/visor.css ../docs/demo/
+
+# --- end-to-end scenarios in a real Chromium (demo/e2e) -------------
+#
+# Playwright driving a REAL headless Chromium, as a library from Deno —
+# no @playwright/test, no package.json, no second toolchain. Every visor
+# and storage flow here used to be hand-driven once per session in an
+# embedded webview that could not deliver `<dialog>` close events; this
+# is the same set of scenarios, repeatable, with a non-zero exit.
+#
+# Pinned in ONE place: the version below is both what `e2e-deps` installs
+# a browser for and what e2e/run.ts imports. A mismatch downloads a
+# browser revision the library will not launch.
+PLAYWRIGHT := "npm:playwright@1.57.0"
+
+# Browser + store binaries the suite needs. PROBE-THEN-INSTALL: a launch
+# that already works is left alone (a developer machine usually has the
+# browser cached from some other project), so this is a no-op after the
+# first run and CI only pays the download once per cache key.
+e2e-deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if deno eval "import { chromium } from '{{PLAYWRIGHT}}';
+                  const b = await chromium.launch({ args: ['--no-sandbox'] });
+                  await b.close();" >/dev/null 2>&1; then
+        echo "playwright chromium: already launchable"
+    else
+        echo "playwright chromium: installing…"
+        # install-deps needs root and is a CI concern (a workstation
+        # already has the system libraries); it is skipped when it fails.
+        #
+        # The DOWNLOAD deliberately goes through npx, not `deno run
+        # npm:playwright install`: the deno-wrapped installer wedged the
+        # download twice on one day (locally at 1.5 MB of ~170, then a
+        # CI job pinned >25 min on the same step), while the node
+        # installer is the battle-tested path and node/npx ship on both
+        # this workstation and the CI runners. The VERSION is the same
+        # pin, so the installed revision cannot drift from the library.
+        pwver="{{PLAYWRIGHT}}"; pwver="${pwver#npm:playwright@}"
+        if command -v npx >/dev/null 2>&1; then
+            if [ -n "${CI:-}" ]; then
+                npx --yes "playwright@${pwver}" install --with-deps chromium
+            else
+                npx --yes "playwright@${pwver}" install chromium
+            fi
+        else
+            # No node on this machine: fall back to the deno wrapper and
+            # hope; the launch probe above means this path only runs when
+            # there is no usable browser at all.
+            if [ -n "${CI:-}" ]; then
+                deno run -A {{PLAYWRIGHT}} install-deps chromium || true
+            fi
+            deno run -A {{PLAYWRIGHT}} install chromium
+        fi
+    fi
+    # The store the credential scenarios talk to (and that one of them
+    # deliberately stops): same binary the tasks-engine spike fetches.
+    cd ../engine && just minio
+
+# Run the scenarios against a freshly built site. The harness owns the
+# world: a static server for serve/, a MinIO with CORS open on an
+# ephemeral port, and one browser with a fresh context per scenario.
+# Pass names to run a subset: `just e2e boot-app-surface`.
+e2e *SCENARIOS: site
+    deno run -A e2e/run.ts {{SCENARIOS}}
+
+# Type-check the harness on its own (the scenarios are not part of the
+# site graph, so `just site`'s deno check does not reach them).
+e2e-check:
+    deno check e2e/run.ts e2e/util.ts e2e/scenarios/*.ts
