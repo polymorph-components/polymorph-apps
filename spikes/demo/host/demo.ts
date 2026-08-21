@@ -2653,6 +2653,12 @@ async function boot() {
   const closeStorage = () => {
     teardownPanel();
     showPage("main");
+    // THE CHEVRON GOES WITH THE PLACE. Cleared here rather than in each
+    // caller, so every exit — Cancel, the Save handoff, browser Back —
+    // leaves the strip saying the truth about where the user is. An exit
+    // affordance that outlived the place it exits would be the anchor
+    // making a false statement, which is the one thing it may not do.
+    visor.setBack(null);
     if ((history.state as { page?: string } | null)?.page === "storage") {
       history.replaceState({ page: "main" }, "");
     }
@@ -2700,6 +2706,24 @@ async function boot() {
     // page changes underneath it.
     storageNote("");
     showPage("storage");
+    // THE STRIP'S OWN WAY OUT, for as long as the user is here. The
+    // frame's Cancel button is visor pixels too, but it sits in
+    // scrollable content that an app can imitate; this one is in the bar,
+    // where nothing but the visor can draw. Every exit runs the SAME
+    // `closeStorage`, so there is one teardown path and three doors into
+    // it rather than three teardowns to keep in agreement.
+    //
+    // The label names the RETURN, and it may say the user's own word for
+    // the app when they have given it one — user voice is admissible in
+    // the visor's own sentence, here exactly as in an announcement. What
+    // it never carries is the component's nickname: an attribute cannot
+    // be plated, so an app-influenced string in it would be the visor
+    // appearing to speak a component's words.
+    const home = (appSurface?.petname ?? "").trim().slice(0, 40);
+    visor.setBack({
+      onBack: () => closeStorage(),
+      label: home !== "" ? `back to ${home}` : "back to the app",
+    });
     // A PLACE THE USER CAN WALK BACK FROM. See the popstate handler.
     history.pushState({ page: "storage" }, "");
     mountPanel(loadStorage()?.provider ?? "s3").catch((e) => {

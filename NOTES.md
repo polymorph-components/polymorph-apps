@@ -1509,9 +1509,30 @@ OAuth ceremony keeps its window); never for same-origin component
 surfaces whose anchor is the visor. Multi-window visors would need
 their own design pass; parked.
 
+**The strip's own back chevron** (2026-08-21, #22, executed same
+day; addendum to the entry above). Nested places get a visor-owned
+back control at the strip's leading edge — "‹" (U+2039: single BMP
+scalar, text-presentation, Latin-1-era coverage; ← reads as
+"previous item", not "up and out"). Two jobs: a STRUCTURALLY
+UNFORGEABLE EXIT (the page's own Cancel is visor pixels by
+construction but sits in scrollable content an app can counterfeit;
+browser Back is outside the visor's vocabulary; strip pixels are the
+one region no component can draw) and the strip's only PERSISTENT
+nesting signal (the arrival cue is timed). Scope rulings:
+PAGES ONLY, never sheets (the credential sheet's exclusive/armed
+semantics must not gain a second cancel path); sheets are orthogonal
+— back navigates the page under an open sheet without touching it
+(names outlive visits); null-or-one API (`setBack`), not a stack,
+until a second nesting level exists. Rectangular on purpose: round
+means "me" in this visor and back is a place verb. All exits — Cancel,
+Save, popstate, chevron — share the one `closeStorage` teardown, and
+the affordance is cleared there: an exit control that outlived its
+place would be the anchor making a false statement.
+
 **The arrival cue is a pulse, not a sentence** (2026-08-21, #22,
-executed same day). Correcting the entry above: the storage page's
-arrival is no longer announced on the visor's line. The announcement
+executed same day, in parallel with the chevron). Correcting the
+storage-page entry above: the arrival is no longer announced on the
+visor's line. The announcement
 paraphrased the strip while covering it — "the strip above says NEW"
 owned the bottom line for 8 seconds, and the bottom line is where the
 arriving panel's plated nickname had just landed, so the design
@@ -1533,6 +1554,9 @@ region on the strip (`#visor-live`, created by the visor, never
 `display:none`) speaks the arrival to assistive tech — closing a gap
 that predates this change, in which no strip announcement had EVER
 reached a screen reader; `announce()` now mirrors its text there too.
+The division of labour after both same-day changes: the PULSE marks
+the moment of arrival, the CHEVRON marks the state of being away —
+timed cue and persistent signal, neither doing the other's job.
 
 ## Parked and candidate non-goals
 
