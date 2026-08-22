@@ -1,69 +1,69 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@deltic/protocol@0.2": "0.2.0",
-    "jsr:@deltic/runtime@0.1": "0.1.0",
-    "jsr:@deltic/translator@0.1": "0.1.0",
-    "jsr:@deltic/wasi@0.1": "0.1.0",
-    "jsr:@polymorph/iroh@0.1.0": "0.1.0",
-    "jsr:@polymorph/webcrypto@0.1": "0.1.0",
-    "jsr:@polymorph/webrtc-datachannels@0.1": "0.1.0",
-    "jsr:@polymorph/websocket@0.1": "0.1.0",
+    "jsr:@polyengine/protocol@0.1": "0.1.0",
+    "jsr:@polyengine/runtime@0.3": "0.3.0",
+    "jsr:@polyengine/translator@0.3": "0.3.0",
+    "jsr:@polyengine/wasi@0.3": "0.3.0",
+    "jsr:@polymorph/iroh@0.3.0": "0.3.0",
+    "jsr:@polymorph/webcrypto@0.3": "0.3.0",
+    "jsr:@polymorph/webrtc-datachannels@0.3": "0.3.0",
+    "jsr:@polymorph/websocket@0.3": "0.3.0",
     "npm:node-datachannel@0.32.3": "0.32.3",
     "npm:werift@0.22.2": "0.22.2"
   },
   "jsr": {
-    "@deltic/protocol@0.2.0": {
-      "integrity": "028be6a3623c5e910598aa7a199209b85e8931ae484ac7f6638d610ddb0e19fa"
+    "@polyengine/protocol@0.1.0": {
+      "integrity": "0c97f34166f22ba55e7b084148df96e47aebe47cd9dd13930057759c9161bb1c"
     },
-    "@deltic/runtime@0.1.0": {
-      "integrity": "8d3f52f1a336a2dd9aed28a5c34fd281612a2f55a1582b159be614dd678593b3",
+    "@polyengine/runtime@0.3.0": {
+      "integrity": "97d7648c104dd0f08b4d10e1ed0117ab0cb5243db68c139f1f3df25755ed4e60",
       "dependencies": [
-        "jsr:@deltic/protocol"
+        "jsr:@polyengine/protocol"
       ]
     },
-    "@deltic/translator@0.1.0": {
-      "integrity": "c447f27a90d7637dd3d5709f3f25378ded0f4b985bedc890c3f6a8cb9ff1eb9f",
+    "@polyengine/translator@0.3.0": {
+      "integrity": "1d9fcd09d360850bc08927ed1cf8124d50a0fed09ed8c80f354a6d3aedfcad25",
       "dependencies": [
-        "jsr:@deltic/runtime"
+        "jsr:@polyengine/runtime"
       ]
     },
-    "@deltic/wasi@0.1.0": {
-      "integrity": "c35a19d139d684dafeca8ba200230a3eb1154627c80db298ae1393e3af938d68",
+    "@polyengine/wasi@0.3.0": {
+      "integrity": "991adfdd39f795f94bba91a523322b88d45ff42800669b5b472356676e3c97e7",
       "dependencies": [
-        "jsr:@deltic/protocol",
-        "jsr:@deltic/runtime"
+        "jsr:@polyengine/protocol",
+        "jsr:@polyengine/runtime"
       ]
     },
-    "@polymorph/iroh@0.1.0": {
-      "integrity": "38cb3722080517676f24fcba930d31b5ec641384e2201026c2e093a6998b05cf",
+    "@polymorph/iroh@0.3.0": {
+      "integrity": "ee9c9d4cbc3b4448859d7c42a4de846c3ccdcc5ec6bf605a533d10a3847286ea",
       "dependencies": [
-        "jsr:@deltic/runtime",
-        "jsr:@deltic/translator",
-        "jsr:@deltic/wasi",
+        "jsr:@polyengine/runtime",
+        "jsr:@polyengine/translator",
+        "jsr:@polyengine/wasi",
         "jsr:@polymorph/webcrypto",
         "jsr:@polymorph/webrtc-datachannels",
         "jsr:@polymorph/websocket"
       ]
     },
-    "@polymorph/webcrypto@0.1.0": {
-      "integrity": "3829ada3d3e1401f050f91d7a5faf51e0d4795271345cd1688791b083acf475e",
+    "@polymorph/webcrypto@0.3.0": {
+      "integrity": "0708409c1f36c091da7c60ee62db6416f8968c92acc92f8a192e9e9ee55f2569",
       "dependencies": [
-        "jsr:@deltic/runtime"
+        "jsr:@polyengine/runtime"
       ]
     },
-    "@polymorph/webrtc-datachannels@0.1.0": {
-      "integrity": "ac1d1cff5bcff5bb71973ebe60d069a4132fc0918c7d44fe182d3560a7d7fb36",
+    "@polymorph/webrtc-datachannels@0.3.0": {
+      "integrity": "576bcbe4b1053e7d27ac9f8b2d2f61e979987a749b226cc09db328f837b32675",
       "dependencies": [
-        "jsr:@deltic/runtime",
+        "jsr:@polyengine/runtime",
         "npm:node-datachannel",
         "npm:werift"
       ]
     },
-    "@polymorph/websocket@0.1.0": {
-      "integrity": "7799d6de4d722b0a4b85cac0d6d6d62c64d71c7c36f889223a9baf47fe08b4f3",
+    "@polymorph/websocket@0.3.0": {
+      "integrity": "23c92ed2ccda31ca66cad1ac9cbcf87473ccac7ae9a2b82fcb3486d5af97bbcd",
       "dependencies": [
-        "jsr:@deltic/runtime"
+        "jsr:@polyengine/runtime"
       ]
     }
   },
@@ -93,8 +93,8 @@
     "@noble/hashes@1.8.0": {
       "integrity": "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="
     },
-    "@peculiar/asn1-cms@2.8.0": {
-      "integrity": "sha512-NgekZOrSJFSBFLFoLfwePguAWAx7z1+f2TEsWFUMyiqqfntZ4+S/S5hzqME3q4pCA0iOsFKdwiQ35dwY24eVqA==",
+    "@peculiar/asn1-cms@2.9.4": {
+      "integrity": "sha512-cben7oxmQsUGZqotus7yt0srYdncOT6RNWcTQ77T2RFOXejYVYkXadrfePdRcrVpO9K95IRLKKglG2k38jKXuw==",
       "dependencies": [
         "@peculiar/asn1-schema",
         "@peculiar/asn1-x509",
@@ -103,8 +103,8 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-csr@2.8.0": {
-      "integrity": "sha512-akbF8+uvleHs8sejNPQxwmVFuInAg6FMNHOwMILXfP518YfFJwdR3jr6oNUPOaEJfuEhn/vkNOCIT6ASUd4mbg==",
+    "@peculiar/asn1-csr@2.9.4": {
+      "integrity": "sha512-xd4YN4vpRjkDAQWVfZZkeu12IEND7DOpkqaHSIHxZl1uggUNa9Ju0QxY2jHvDAS9pP0zhRBytg8ifsnGo3V0jw==",
       "dependencies": [
         "@peculiar/asn1-schema",
         "@peculiar/asn1-x509",
@@ -112,8 +112,8 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-ecc@2.8.0": {
-      "integrity": "sha512-ohwlk+u9Rv2NOAY1c6MfHj45ATVF8R1DUN/WCgABiRtLi2ZftlZWZX7KvpAbU8v9xPcmoILfELeEABj/rn18AQ==",
+    "@peculiar/asn1-ecc@2.9.4": {
+      "integrity": "sha512-JJXefFshRAuVAjWQo/39bkg1ywc1VaiO44S8RRC+Ykvf/u2KDmYffoDb0ZBPCR5uJy4AGKQhl8mX+Q8ShcWaXQ==",
       "dependencies": [
         "@peculiar/asn1-schema",
         "@peculiar/asn1-x509",
@@ -121,8 +121,8 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-pfx@2.8.0": {
-      "integrity": "sha512-5yof1ytoB++RQtaFbqSUJ8pxDJtZT6vbVqZ8XoJ61ph7UjNVvfFwAilnCodqkNsAodpy13gDhoxZXw00pghnyg==",
+    "@peculiar/asn1-pfx@2.9.4": {
+      "integrity": "sha512-khuGzHTzNzk4GDlIBEILyIs6Lce0yn0ZBdoI9v93kmNncfZRhD+AQ5ODFqdhvoE8cMJF/JMTQ8yA+t1D14kqCw==",
       "dependencies": [
         "@peculiar/asn1-cms",
         "@peculiar/asn1-pkcs8",
@@ -132,8 +132,8 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-pkcs8@2.8.0": {
-      "integrity": "sha512-qAKXtLpBEw9LqhKpjw3ajZSXlBur+ipW+y2ivVBQAG6F6qRx94yO+1ZR4mvw+YaCfKSaOzLeYEzsPaBp4SJELA==",
+    "@peculiar/asn1-pkcs8@2.9.4": {
+      "integrity": "sha512-duRdotlUx9eDZe6QrQpQKl61RbWykCHBCkKayP8V8XdEFwlKHZ8qGGDMyS6Pye7OX7nLFttTTpRkJeet78ckwQ==",
       "dependencies": [
         "@peculiar/asn1-schema",
         "@peculiar/asn1-x509",
@@ -141,8 +141,8 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-pkcs9@2.8.0": {
-      "integrity": "sha512-b5nDWCnkV60+cQ141D6sVVwK9nz64R5n3zSVnklGd+ECdkW2Ol3U1a6yYFlalpSOaD557yuJB64A+q42jG7lUQ==",
+    "@peculiar/asn1-pkcs9@2.9.4": {
+      "integrity": "sha512-kaL4cNxBpdQE2dKlyZBqz4ygCrwffO+8wfoxTEqM1Z8RadvCeELBRzcv0dzM8aY9azHMwODO5nxU65zXmhToOQ==",
       "dependencies": [
         "@peculiar/asn1-cms",
         "@peculiar/asn1-pfx",
@@ -154,8 +154,8 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-rsa@2.8.0": {
-      "integrity": "sha512-zHEUlCqB2mk7x2lxDwHHJy7hWZOPdGHVlsmITWKB5/PbQo61atbu9PJ/0r9dQNMwFzbKPXZ8uK8/91eUhRznSg==",
+    "@peculiar/asn1-rsa@2.9.4": {
+      "integrity": "sha512-pZ96eD1PptovcWQ/GSmuNFXd/7EQJNlKfDaNCyE2rx3W0v6QFelkzquVqRSRyyDXXCYD69ZXJDzZ8GhIiQzKoA==",
       "dependencies": [
         "@peculiar/asn1-schema",
         "@peculiar/asn1-x509",
@@ -163,16 +163,16 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-schema@2.8.0": {
-      "integrity": "sha512-7YT0U/ze0tF2QOBbE15gKZwy5tvgGyLRiRHLzhlbOpf7BT032oBSd0haZqXn5W6l26WLlu3dyxzjM+2638/z2Q==",
+    "@peculiar/asn1-schema@2.9.4": {
+      "integrity": "sha512-GjzePcT9Iw8NzeOPf73iNS9xM+TBhd/FilAfP+RQGkTMQJTVWtytN3JHJACCjf/ABNau5S7mS3g+DcuxmRgYEg==",
       "dependencies": [
         "@peculiar/utils",
         "asn1js",
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-x509-attr@2.8.0": {
-      "integrity": "sha512-tHjkfS/qhMnmrlB2J9NhflQlQ7In3khO3CfmVrriOlpTeErY9ZIKOso1hQ5JQiyrJ7ShvqVPk7E5fQmbclkSKA==",
+    "@peculiar/asn1-x509-attr@2.9.4": {
+      "integrity": "sha512-ehQXbpQaQYycgu8OrvigwSPTFfVRcu0ECNYCWw+yzBp02Lw5paRqzzhUpfOgO2K38+WfFZuEz/0RPtam5g0OMg==",
       "dependencies": [
         "@peculiar/asn1-schema",
         "@peculiar/asn1-x509",
@@ -180,8 +180,8 @@
         "tslib@2.8.1"
       ]
     },
-    "@peculiar/asn1-x509@2.8.0": {
-      "integrity": "sha512-N0CMuhWUzsWEVq6F1q9X6+VKUnWzSW+cSVg+aPaGGwDdbFoFWTYgin5MHwXgpWd6y9COMBxnfy/Qc+Xc7F0Zwg==",
+    "@peculiar/asn1-x509@2.9.4": {
+      "integrity": "sha512-CxhBo/RdEbMMob7T31ZdQjGuoyRFLVwrDzTn25bihzBasRg9kRm/0IxIPvhgQtcK/9dNcO1XQL2fuPugwELL0Q==",
       "dependencies": [
         "@peculiar/asn1-schema",
         "@peculiar/utils",
@@ -353,8 +353,8 @@
     "lodash@4.18.1": {
       "integrity": "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q=="
     },
-    "mediabunny@1.53.0": {
-      "integrity": "sha512-RjWe9yJr9MPvb6kX4gSu54fZD2w1yf6RyCS0Jmgaml+fFSqEr7+XuASXoRxSqJxgc+wIe+7TujXWcyj3evJ3Bg==",
+    "mediabunny@1.55.2": {
+      "integrity": "sha512-EEx4O6qYddAdCyWPMZNDwI7uc5hewNHrPAf9jLcVhIbXoPsiqNQ+D9i1pfadmGkjN2V318jSrZljkpoziYm6Lg==",
       "dependencies": [
         "@types/dom-mediacapture-transform",
         "@types/dom-webcodecs"
@@ -411,9 +411,6 @@
         "wrappy"
       ]
     },
-    "p-cancelable@2.1.1": {
-      "integrity": "sha512-BZOr3nRQHOntUjTrH8+Lh54smKHoHyur8We1V8DSMVrl5A2malOOwuJRnKRDjSnkoeBh4at6BwEnb5I7Jl31wg=="
-    },
     "prebuild-install@7.1.3": {
       "integrity": "sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==",
       "dependencies": [
@@ -469,9 +466,6 @@
     },
     "reflect-metadata@0.2.2": {
       "integrity": "sha512-urBwgfrvVP/eAyXx4hluJivBKzuEbSQs9rKWCrCkbSxNv8mxPcUZKeuoF3Uy4mJl3Lwprp6yy5/39VWigZ4K6Q=="
-    },
-    "rx.mini@1.4.0": {
-      "integrity": "sha512-8w5cSc1mwNja7fl465DXOkVvIOkpvh2GW4jo31nAIvX4WTXCsRnKJGUfiDBzWtYRInEcHAUYIZfzusjIrea8gA=="
     },
     "safe-buffer@5.2.1": {
       "integrity": "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ=="
@@ -571,18 +565,11 @@
         "tweetnacl"
       ]
     },
-    "werift-ice@0.2.2": {
-      "integrity": "sha512-td52pHp+JmFnUn5jfDr/SSNO0dMCbknhuPdN1tFp9cfRj5jaktN63qnAdUuZC20QCC3ETWdsOthcm+RalHpFCQ==",
+    "werift-ice@0.2.3": {
+      "integrity": "sha512-k000fIaw8w2D4Xv5EvW6b5h4faJx8p4D8HPuDzRiGTx6UrLv2BuvUkC60LNqxlDf9o3zh90Hx1WZoHbhuw9keA==",
       "dependencies": [
-        "@shinyoshiaki/jspack",
-        "buffer-crc32",
         "debug",
-        "int64-buffer",
-        "ip",
-        "lodash",
-        "multicast-dns",
-        "p-cancelable",
-        "rx.mini"
+        "multicast-dns"
       ]
     },
     "werift-rtp@0.8.9": {
@@ -635,7 +622,7 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@polymorph/iroh@0.1.0"
+      "jsr:@polymorph/iroh@0.3.0"
     ]
   }
 }

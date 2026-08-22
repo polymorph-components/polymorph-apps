@@ -439,8 +439,11 @@ The `IROH_CHECKOUT` sibling-checkout convention above is being replaced
 by two independently-versioned, recorded artifacts (justfile header
 block is the source of truth; this is the narrative account):
 
-- **Endpoint wasm** from `jsr:@polymorph/iroh@0.1.0` — published from
-  `polymorph-iroh @ f3d8990`. `just fetch-endpoint-wasm` extracts the
+- **Endpoint wasm** from `jsr:@polymorph/iroh@0.3.0` — published from
+  `polymorph-iroh @ 97c9cd4` (the polyengine 0.3.0 rename; WIT and
+  endpoint bytes unchanged since the `f3d8990`-era 0.1.0 publish this
+  section originally documented — see the recon/rebase paragraphs
+  below, still accurate as history). `just fetch-endpoint-wasm` extracts the
   component bytes the package embeds (`tools/fetch-endpoint-wasm.ts`
   calls the package's own `loadArtifacts()`, which is also how the
   package's browser consumers reach the wasm — no ad-hoc parsing of

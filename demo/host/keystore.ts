@@ -26,7 +26,7 @@
 // whole chain inside the platform (a webcrypto SigV4 primitive), which
 // does not exist.
 
-import { ComponentException } from "@deltic/runtime/embedder";
+import { ComponentException } from "@polyengine/runtime/embedder";
 
 const DB_NAME = "pm-demo-keystore";
 const DB_VERSION = 1;
@@ -165,7 +165,7 @@ export function eraseKeystore(): Promise<void> {
 
 // --- the `store-signer` seam ---------------------------------------------------
 
-/** The WIT `result<_, string>` err side: the branded exception the deltic
+/** The WIT `result<_, string>` err side: the branded exception the polyengine
  * embedder maps back to an error string, so the guest can OBSERVE a
  * refusal instead of trapping (same convention as demo.ts's `witErr`). */
 function refuse(message: string): never {

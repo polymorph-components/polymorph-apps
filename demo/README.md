@@ -5,7 +5,7 @@ wasm component driving a curated DOM surface (the todomvc spike), the
 model is the `polyvisor:tasks` data service, and the service is
 the real engine composite — automerge change-DAG + keyhive (BeeKEM
 epochs) + subduction sync + the SigV4 bucket client + the iroh
-endpoint — running **under deltic in the page**. Three panes, one page:
+endpoint — running **under polyengine in the page**. Three panes, one page:
 
 | pane | role | sync path |
 |---|---|---|
@@ -181,9 +181,9 @@ per pane (×3, one browser page):
   + polyvisor:tasks       ────────► exports: tasks + driver
         │  (import wired DIRECTLY to the engine instance's export —
         │   same embedder, same value conventions, same exception brand)
-  deltic runtime (jsr @deltic/runtime 0.1.0) + @deltic/wasi (incl. the
-  fetch-backed wasi:http fragment) + deltic ports from JSR
-  (webcrypto / websocket / webrtc, all `jsr:@polymorph/*@0.1.0`) + sockets stub
+  polyengine runtime (jsr @polyengine/runtime 0.3.0) + @polyengine/wasi (incl. the
+  fetch-backed wasi:http fragment) + polyengine ports from JSR
+  (webcrypto / websocket / webrtc, all `jsr:@polymorph/*@0.3.0`) + sockets stub
 ```
 
 - The engine composite is byte-identical to `engine`'s
@@ -423,7 +423,7 @@ https://polymorph-components.github.io/polyvisor/demo/
 Requires `engine`'s pinned iroh-relay + endpoint wasm
 (`just -f ../engine/justfile relay-bin`; endpoint wasm still via
 `IROH_CHECKOUT` — see that spike's README "JSR pins" section for why)
-and its MinIO fetch (run that spike once). The deltic ports
+and its MinIO fetch (run that spike once). The polyengine ports
 (webcrypto/websocket/webrtc-datachannels) are JSR pins now, no sibling
 checkout (see `deno.json`'s header comment).
 
@@ -554,7 +554,7 @@ reports background queue depth and per-timer skip counts.
   ~300 MB**, and a real headless **Chromium via CDP** (`cdp-heap.ts`)
   runs the identical page for 150 s — heap sawtooths normally and
   **returns to 7.5 MB after a forced GC, net -1.5 MB**. So there is no
-  leak in the engine, in subduction, or in the deltic browser ports; the
+  leak in the engine, in subduction, or in the polyengine browser ports; the
   unbounded growth was (a) the queue divergence above, which retains one
   closure per queued job, and (b) the paseo webview's own instrumentation
   retaining objects (and/or never idling long enough to GC). **Measure
@@ -623,7 +623,7 @@ reports background queue depth and per-timer skip counts.
 - **A diagnostic that dies with the handshake reports "no faults" for a
   frame that is on fire**: the fault channel first hung off the same
   window listener the handshake removed. It gets its own listener now.
-- **Panel teardown is a deltic open question** (same one #22 lists for
+- **Panel teardown is a polyengine open question** (same one #22 lists for
   app kill): remounting a provider panel clears the region and drops the
   references, but there is no explicit instance-terminate API — the
   panel's engine-side resources are released by GC, not by contract.

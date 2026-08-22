@@ -1,4 +1,4 @@
-// Deno bring-up of the engine composite under deltic — retire the
+// Deno bring-up of the engine composite under polyengine — retire the
 // platform risks (translation, CM-async task wakeups, wasi p2+p3 track
 // serving, webcrypto port coverage, iroh-over-websocket, wasi:http
 // against MinIO) before any browser work.
@@ -113,7 +113,7 @@ async function wire() {
     await bob.driver.adoptPartition(part);
     step("partition: create → member(edit) → seal → adopt");
 
-    // Deltic divergence probe (recorded): a subscribe=true FIRST sync
+    // Polyengine divergence probe (recorded): a subscribe=true FIRST sync
     // reports commits received but does not store them; a plain pull
     // stores fine. Order: pull first, then subscribe.
     const pull = async (who: string, e: typeof bob, from: Uint8Array) => {

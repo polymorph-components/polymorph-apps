@@ -74,7 +74,7 @@ friction is what killed the closest prior system (Sandstorm).
 
 The polymorph family already de-risks the bottom of the stack:
 
-- [deltic](https://github.com/lann/deltic) runs components
+- [polyengine](https://github.com/polymorph-components/polyengine) runs components
   runtime-linked on stock browsers and Deno — no transpile step, no
   engine flags.
 - [component-iroh](https://github.com/polymorph-components/polymorph-iroh)
@@ -297,7 +297,7 @@ Mechanics:
   consequences.
 - The app UI frame gets **zero direct network**; assets arrive via
   RPC/blob injection from the component's embedded bundle.
-- App logic runs in workers on the framework side (deltic,
+- App logic runs in workers on the framework side (polyengine,
   runtime-linked); UI ↔ shell ↔ component is a two-hop RPC path,
   acceptable for UI latencies.
 
@@ -797,7 +797,7 @@ declared otherwise (see the status note at the top).
   tablet accepts (8 tasks end state). **G6+G7 executed 2026-08-17 and
   passed** ([spikes/demo/](spikes/demo/README.md)): the end-to-end
   TodoMVC demo — the SAME engine composite translated (~200 ms) and
-  instantiated (~30–50 ms) under deltic **in the browser**, three panes
+  instantiated (~30–50 ms) under polyengine **in the browser**, three panes
   (alice laptop, bob live over the iroh websocket relay, alice tablet
   bucket-only with zero connections), the todomvc surface guest's model
   swapped to `polymorph-data:tasks` with the app's import wired

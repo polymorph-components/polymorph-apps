@@ -3,7 +3,7 @@
 # single source of truth shared by local developers and CI (the same
 # shape as polymorph-iroh's scripts/setup.sh).
 #
-# The demo's deno.json resolves the deltic ports through SIBLING paths
+# The demo's deno.json resolves the polyengine ports through SIBLING paths
 # (../../../polymorph-*), so the checkouts must sit next to this repo.
 # Idempotent: existing checkouts are fetched and pinned, never clobbered.
 #
@@ -28,7 +28,7 @@ WAC_VERSION="${WAC_VERSION:-0.10.1}"
 JUST_VERSION="${JUST_VERSION:-1.54.0}"
 
 # Pinned to the revisions the demo was last verified against. Bumping one
-# is a deliberate act: the deltic ports carry embedder conventions that
+# is a deliberate act: the polyengine ports carry embedder conventions that
 # have already broken this demo once (see demo/README.md).
 #
 # polymorph-iroh is NOT checked out here (jsr-pins branch): the tasks-engine
@@ -37,15 +37,15 @@ JUST_VERSION="${JUST_VERSION:-1.54.0}"
 # sibling clone/cargo-build of it is needed by any default-path target.
 #
 # polymorph-webcrypto is likewise NOT checked out here (jsr-pins branch):
-# the demo's deno.json now resolves it from jsr:@polymorph/webcrypto@0.2.0
-# (see demo/README.md's "deltic ports ... JSR pins now, no sibling
+# the demo's deno.json now resolves it from jsr:@polymorph/webcrypto@0.3.0
+# (see demo/README.md's "polyengine ports ... JSR pins now, no sibling
 # checkout" note), and every Rust consumer (dropbox/keyhive/storage/
 # skeleton/subduction/tasks-engine) pulls it as a `git = "...", rev = "..."`
 # Cargo dependency, not a sibling path. polymorph-webrtc-datachannels is
 # still a live sibling consumer (demo/deno.json maps it there) and
 # stays checked out below.
 WEBRTC_REPO=https://github.com/polymorph-components/polymorph-webrtc-datachannels.git
-WEBRTC_PIN=8a8347766df9035747fb87f85f13eee16c14c1f4
+WEBRTC_PIN=42f76c988c3356e62abf33af6a04f1daf8f0839c
 
 log() { printf '\n==> %s\n' "$1"; }
 
