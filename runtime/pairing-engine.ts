@@ -138,51 +138,63 @@ function toMockDevice(d: {
   };
 }
 
+// engine.ts's PairJoinState/PairAddState/UsEvent types now state the
+// true wire convention (`{kind, value}`, per embedder/values.ts —
+// engine.ts:132-140) directly, so these functions switch on `.kind`/
+// `.value` with no cast. The `{tag, ...}` shapes below are the VISOR's
+// own PairingDriver contract (visor/ui/pairing-driver.ts) being
+// converted TO — unrelated to engine.ts's wire shape and not a mismatch.
+
 function toMockJoinState(s: PairJoinState): MockPairJoinState {
-  switch (s.tag) {
+  switch (s.kind) {
     case "waiting":
     case "confirmed-waiting":
     case "expired":
-      return { tag: s.tag };
+      return { tag: s.kind };
     case "claimed":
-      return { tag: "claimed", sas: s.val };
+      return { tag: "claimed", sas: s.value };
     case "failed":
-      return { tag: "failed", message: s.val };
+      return { tag: "failed", message: s.value };
     case "enrolled": {
       const enrollment: MockPairEnrollment = {
-        userGroupId: hex(s.val.userGroupId),
-        partitionId: hex(s.val.partitionId),
+        userGroupId: hex(s.value.userGroupId),
+        partitionId: hex(s.value.partitionId),
       };
       return { tag: "enrolled", enrollment };
     }
+    default:
+      throw new Error(`pair-join-state: unknown variant case '${(s as { kind: string }).kind}'`);
   }
 }
 
 function toMockAddState(s: PairAddState): MockPairAddState {
-  switch (s.tag) {
+  switch (s.kind) {
     case "connecting":
     case "waiting-peer":
     case "enrolled":
-      return { tag: s.tag };
+      return { tag: s.kind };
     case "sas-ready":
-      return { tag: "sas-ready", sas: s.val };
+      return { tag: "sas-ready", sas: s.value };
     case "failed":
-      return { tag: "failed", message: s.val };
+      return { tag: "failed", message: s.value };
+    default:
+      throw new Error(`pair-add-state: unknown variant case '${(s as { kind: string }).kind}'`);
   }
 }
 
 function toMockEvent(e: UsEvent): MockUsEvent {
-  switch (e.tag) {
+  switch (e.kind) {
     case "profile-changed":
       return { tag: "profile-changed" };
     case "mark-added":
-      return { tag: "mark-added", provenance: e.val };
+      return { tag: "mark-added", provenance: e.value };
     case "mark-changed":
-      return { tag: "mark-changed", provenance: e.val };
-    case "mark-conflict-repaired":
+      return { tag: "mark-changed", provenance: e.value };
+    case "mark-conflict-repaired": {
+      const val = e.value;
       return {
         tag: "mark-conflict-repaired",
-        provenance: e.val[0],
+        provenance: val[0],
         // CONTRACT: engine.wit ~254 types the field name as a bare
         // `string` (tuple<string,string>), not an enum restricted to
         // "petname"|"icon" — the contract's stricter TS union
@@ -193,12 +205,15 @@ function toMockEvent(e: UsEvent): MockUsEvent {
         // only ever send these two literal strings (usdoc.rs's own
         // repair logic), so this is a narrowing assertion, not a lossy
         // conversion.
-        field: e.val[1] as "petname" | "icon",
+        field: val[1] as "petname" | "icon",
       };
+    }
     case "device-added":
-      return { tag: "device-added", name: e.val };
+      return { tag: "device-added", name: e.value };
     case "device-revoked":
-      return { tag: "device-revoked", name: e.val };
+      return { tag: "device-revoked", name: e.value };
+    default:
+      throw new Error(`us-event: unknown variant case '${(e as { kind: string }).kind}'`);
   }
 }
 

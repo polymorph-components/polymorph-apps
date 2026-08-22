@@ -15,7 +15,7 @@
 // Crypto-adjacent content-filter hygiene (per dispatch): SAS/ids are
 // reported by LENGTH/prefix only, never printed in full.
 
-import { type Engine, newEngine, until } from "../../runtime/engine.ts";
+import { type Engine, newEngine, unhex, until } from "../../runtime/engine.ts";
 import { createEnginePairingDriver } from "../../runtime/pairing-engine.ts";
 import { probeNoNet } from "./probe-net.ts";
 import type { PairAddState, PairJoinState } from "../../visor/ui/pairing-driver.ts";
@@ -59,8 +59,8 @@ async function main() {
   const add = await newEngine("add", artifacts, probeNoNet);
   step("instantiated join + add");
   try {
-    await join.driver.init(false);
-    await add.driver.init(false);
+    const joinId = unhex(await join.driver.init(false));
+    const addId = unhex(await add.driver.init(false));
     step("init ×2");
 
     // Pairing rides the real iroh transport (guest/src/pairing.rs:433
@@ -68,7 +68,7 @@ async function main() {
     // pair-add-start refuse), so both instances must bind to the relay
     // before either side of the ceremony can proceed.
     await join.driver.irohBind(RELAY);
-    await add.driver.irohBind(RELAY);
+    const addEp = unhex(await add.driver.irohBind(RELAY));
     step("iroh-bind ×2");
 
     const joinDriver = createEnginePairingDriver(join.driver);
@@ -123,6 +123,30 @@ async function main() {
       return s.tag === "enrolled" || false;
     });
     step("add side confirms enrolled");
+
+    // Pairing grants membership; it does not by itself wire subduction
+    // between the two devices. PAIRING.md §2 step 7 ends the ceremony
+    // with "sync", and the engine leaves that to the embedder: the
+    // native act battery does exactly this (engine/host/src/
+    // pairing_acts.rs:187 `wire_us` — connect, then sync-start with
+    // `subscribe` both ways), so the headless smoke does too. Without
+    // it the joiner has a membership and an empty doc, and nothing the
+    // adder writes can reach it.
+    const ca = await add.driver.irohStart(false, new Uint8Array(), RELAY, new Uint8Array());
+    const cb = await join.driver.irohStart(true, addEp, RELAY, addId);
+    await until(
+      "subduction handshake",
+      async () => (await join.driver.connStatus(cb)) && (await add.driver.connStatus(ca)),
+    );
+    const partition = unhex(enrollment.partitionId);
+    for (const [who, e, peer] of [
+      ["join", join, addId] as const,
+      ["add", add, joinId] as const,
+    ]) {
+      const h = await e.driver.syncStart(peer, partition, true);
+      await until(`${who} subscribes to the user-system doc`, () => e.driver.syncStatus(h));
+    }
+    step("subduction wired + both sides subscribed");
 
     // us-profile-set on one side + us-events drain on the other.
     unwrap(await addDriver.usProfileSet({ displayName: "Renamed", hue: 3 }));

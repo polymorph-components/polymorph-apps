@@ -18,12 +18,12 @@ import { socketsImports } from "./stubs.ts";
 const DRIVER = "polyvisor:engine/driver@0.1.0";
 const TASKS = "polyvisor:tasks/tasks@0.1.0";
 
-/** `store-config` — a WIT variant; `{tag, val}` per the value-mapping
- * table. ADDRESSING ONLY (#7/#11): no credential crosses this boundary
- * any more. Whether an instance can write, whose account it acts as, and
- * whether it can sign at all are properties of what its three storage
- * imports were WIRED to below — which config cannot see and must not
- * second-guess. The S3 access key stays because it is a public
+/** `store-config` — a WIT variant; `{kind, value}` per the value-mapping
+ * convention below. ADDRESSING ONLY (#7/#11): no credential crosses this
+ * boundary any more. Whether an instance can write, whose account it acts
+ * as, and whether it can sign at all are properties of what its three
+ * storage imports were WIRED to below — which config cannot see and must
+ * not second-guess. The S3 access key stays because it is a public
  * identifier that travels in the Authorization header in clear. */
 export type StoreConfig =
   | {
@@ -131,8 +131,12 @@ export interface Driver {
 // --- device-pairing + user-system WIT record/variant mirrors
 // (engine.wit ~214-280). `option<T>` lowers to `T | undefined`, `list<u8>`
 // to Uint8Array, `u64` to bigint, `u16`/`u32` to number, `tuple<A, B>` to
-// `[A, B]`, and a no-payload variant case to `{ tag: "case-name" }` — same
-// conventions the existing Driver/Tasks types above already use.
+// `[A, B]`, and a WIT variant/result case lowers to `{ kind: "case-name";
+// value?: payload }` (no `value` key when the case has no payload) — the
+// @deltic/runtime value-mapping convention (embedder/values.ts, the
+// authority; verified empirically against this composite, e.g.
+// `driver.pairJoinStatus()` resolving `{"kind":"waiting"}`) — same
+// convention the existing `StoreConfig` type above already uses.
 
 export interface PairOffer {
   code: string;
@@ -145,19 +149,19 @@ export interface PairEnrollment {
 }
 
 export type PairJoinState =
-  | { tag: "waiting" }
-  | { tag: "claimed"; val: string } // SAS — display, await pairJoinConfirm
-  | { tag: "confirmed-waiting" }
-  | { tag: "enrolled"; val: PairEnrollment }
-  | { tag: "expired" }
-  | { tag: "failed"; val: string };
+  | { kind: "waiting" }
+  | { kind: "claimed"; value: string } // SAS — display, await pairJoinConfirm
+  | { kind: "confirmed-waiting" }
+  | { kind: "enrolled"; value: PairEnrollment }
+  | { kind: "expired" }
+  | { kind: "failed"; value: string };
 
 export type PairAddState =
-  | { tag: "connecting" }
-  | { tag: "sas-ready"; val: string } // SAS — display, await pairAddConfirm
-  | { tag: "waiting-peer" }
-  | { tag: "enrolled" }
-  | { tag: "failed"; val: string };
+  | { kind: "connecting" }
+  | { kind: "sas-ready"; value: string } // SAS — display, await pairAddConfirm
+  | { kind: "waiting-peer" }
+  | { kind: "enrolled" }
+  | { kind: "failed"; value: string };
 
 export interface UsProfile {
   displayName: string;
@@ -186,12 +190,12 @@ export interface UsDevice {
 }
 
 export type UsEvent =
-  | { tag: "profile-changed" }
-  | { tag: "mark-added"; val: string } // provenance
-  | { tag: "mark-changed"; val: string }
-  | { tag: "mark-conflict-repaired"; val: [string, string] } // (provenance, "petname"|"icon")
-  | { tag: "device-added"; val: string } // name
-  | { tag: "device-revoked"; val: string };
+  | { kind: "profile-changed" }
+  | { kind: "mark-added"; value: string } // provenance
+  | { kind: "mark-changed"; value: string }
+  | { kind: "mark-conflict-repaired"; value: [string, string] } // (provenance, "petname"|"icon")
+  | { kind: "device-added"; value: string } // name
+  | { kind: "device-revoked"; value: string };
 
 export interface TodoItem {
   id: string;
