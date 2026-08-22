@@ -58,7 +58,7 @@ import { VISOR_HUES } from "../../visor/ui/visor.ts";
 import type { PairingDriver } from "../../visor/ui/pairing-driver.ts";
 // The two PairingDriver implementations. Which one this page uses is a
 // URL choice — see PAIRING_BACKEND below for why the default is the
-// mock and what is blocking the engine path.
+// real engine and what the mock is still for.
 import { createEnginePairingDriver } from "../../runtime/pairing-engine.ts";
 import { createMockDriver, MockPairingNetwork } from "./pairing-mock.ts";
 import type { UiEvent } from "../../visor/surface/events.ts";
@@ -91,35 +91,33 @@ const RELAY = params.get("relay") ?? "https://use1-1.relay.n0.iroh.link";
 
 // --- which pairing backend this page drives (PAIRING.md §5/§6) ---------------
 //
-// `?pairing=engine` runs the ceremony against the REAL engine composite
-// (../../runtime/pairing-engine.ts over each pane's own instance); the default
-// runs it against the in-page mock (host/pairing-mock.ts). The UI, the
-// wiring, the announcements and the write-through below are IDENTICAL
-// either way — the only difference is which object implements
-// `PairingDriver`.
+// THE DEFAULT IS THE REAL ENGINE. Each pane's ceremony runs against its
+// own engine instance through ../../runtime/pairing-engine.ts, over the
+// real iroh transport; `?pairing=mock` selects the in-page mock
+// (host/pairing-mock.ts) instead. The UI, the wiring, the
+// announcements and the write-through below are IDENTICAL either way —
+// the only difference is which object implements `PairingDriver`.
 //
-// WHY THE DEFAULT IS THE MOCK (measured 2026-08-20, real headless
-// Chromium, and recorded in PAIRING.md §6):
-//   - `pair-join-start` (79-char code), `us-events` and the WIT error
-//     path all work against the real engine in the browser;
-//   - `user-create` TRAPS the guest deterministically — a panic inside
-//     wit-bindgen's async support (`async_support.rs:578: assertion
-//     failed: !state.is_null()`), reproduced on an otherwise IDLE pane
-//     with a single sequential call, so it is engine-internal and not a
-//     host-concurrency artefact of this file's queueing;
-//   - without `user-create` there is no user group, so the ENROLL step
-//     (PAIRING.md §2 step 6) cannot complete at all.
-// The same call also traps under Deno (host/pairing-bringup.ts), where
-// the BASELINE `just bringup wire` — no pairing in it — reproduces the
-// identical host trap, which is what places that fault outside this
-// track too.
+// The mock used to be the default because the real path could not
+// finish a ceremony at all. Both blockers are closed (PAIRING.md §6):
+//   - the `user-create` guest trap was a SCHEDULER MISATTRIBUTION in the
+//     runtime's async support (polyengine#213), fixed in
+//     @polyengine/runtime 0.3.1, which this tree pins;
+//   - the add side's post-grant linger was a yield-spin that never let
+//     the joiner's ingest run; it is a real await now (this tree).
+// So a live ceremony — code, SAS, grant, ENROLL — completes in a real
+// headless Chromium, and the e2e suite drives it that way.
 //
-// This is a DESCOPE, recorded rather than hidden: the demo must not
-// claim a ceremony it did not perform. The pane's status line and the
-// PAIRING.md §6 status note both say which backend is live.
-const PAIRING_BACKEND: "mock" | "engine" = params.get("pairing") === "engine"
-  ? "engine"
-  : "mock";
+// The mock is KEPT, and is not a fallback: it is the visor-only
+// regression harness. It needs no relay, no wasm and no wall-clock
+// convergence, so scenarios/device-pairing-mock.ts can assert the UI's
+// own behaviour without the transport in the picture.
+//
+// The pane's status line still says which backend is live: the demo must
+// never claim a ceremony it did not perform.
+const PAIRING_BACKEND: "mock" | "engine" = params.get("pairing") === "mock"
+  ? "mock"
+  : "engine";
 
 /** The us-* boot cache keys (PAIRING.md §5's demotion: same keys, same
  * formats, no longer the source of truth). */
@@ -1355,7 +1353,10 @@ async function boot() {
   await tablet.engine.driver.khIngestContact(await alice.engine.driver.khContactCard());
 
   say("wire: alice ⇄ bob over the relay…");
-  await alice.engine.driver.irohBind(RELAY);
+  // Alice's endpoint id is KEPT: the post-enrollment user-system wiring
+  // (`wireUsSubduction`, far below) dials HER from the tablet, mirroring
+  // the headless smoke's direction — see the note there.
+  const aliceEp = unhex(await alice.engine.driver.irohBind(RELAY));
   const bobEp = unhex(await bob.engine.driver.irohBind(RELAY));
   const cb = await bob.engine.driver.irohStart(false, new Uint8Array(), RELAY, new Uint8Array());
   const ca = await alice.engine.driver.irohStart(true, bobEp, RELAY, bob.id);
@@ -3664,10 +3665,17 @@ async function boot() {
   // is skipped entirely: the mock's "network" is an in-page object, and
   // a relay round-trip the demo does not need is a flake the e2e suite
   // does not need either.
+  //
+  // The endpoint id the bind returns is KEPT as the proof that the bind
+  // HAPPENED: after a join enrolls, the tablet has to dial alice for the
+  // user-system sync (see `wireUsSubduction`), and an instance that
+  // never bound cannot dial at all. Without this the failure would
+  // surface as a mute connection rather than as the missing bind it is.
+  let tabletEp: Uint8Array | null = null;
   if (PAIRING_BACKEND === "engine") {
     await enqueue(async () => {
       try {
-        await tablet.engine.driver.irohBind(RELAY);
+        tabletEp = unhex(await tablet.engine.driver.irohBind(RELAY));
       } catch (e) {
         tablet.status(`pairing transport unavailable: ${err(e)}`, true);
       }
@@ -3698,10 +3706,9 @@ async function boot() {
    * colour. There is no invention here: an unset name stays the empty
    * string (the same NO-FABRICATION rule the identity record follows).
    *
-   * Failure is REPORTED, never fatal: with `?pairing=engine` this is the
-   * call that trips the guest panic recorded at PAIRING_BACKEND, and a
-   * demo that died in boot over it would take nine unrelated scenarios
-   * with it. */
+   * Failure is REPORTED, never fatal: a demo that died in boot over the
+   * user system would take nine unrelated scenarios with it, and the
+   * pane's own status line is where the failure belongs. */
   const usReady = await (async () => {
     const probe = await aliceUs.usProfileGet();
     if (probe.ok) return true;
@@ -3900,10 +3907,110 @@ async function boot() {
       true,
     );
   });
+  /** POST-ENROLLMENT SYNC — the embedder's half of PAIRING.md §2 step 7.
+   *
+   * Pairing grants MEMBERSHIP. It does not, by itself, wire subduction
+   * between the two devices: the engine leaves that to whoever is
+   * embedding it, because only the embedder knows which transport the
+   * two ends should meet on. The native act battery does exactly this
+   * (engine/host/src/pairing_acts.rs:187 `wire_us` — connect, then
+   * sync-start with `subscribe` in BOTH directions), and so does the
+   * headless smoke (host/pairing-bringup.ts). Without it the joiner
+   * holds a membership and an EMPTY user-system doc, and nothing the
+   * laptop writes — a petname, a pet icon, a profile change — can ever
+   * reach it.
+   *
+   * DIRECTION MATTERS, and it is the smoke's: the WRITER accepts and the
+   * reader dials — alice `iroh-start`s as the acceptor and the tablet
+   * dials her published endpoint (host/pairing-bringup.ts wires the
+   * add side as acceptor and the join side as dialler). Measured, not
+   * assumed: with the roles reversed the handshake still reports
+   * connected on both sides and both sync handles still report ready,
+   * but nothing ever reaches the tablet — its user-system replica sits
+   * at revision 0 forever while alice's advances. Flagged as a
+   * dispatcher-level finding; the demo takes the direction that
+   * delivers.
+   *
+   * Then both sides `sync-start` the enrollment's partition with
+   * `subscribe`, so a LATER write on either side is pushed rather than
+   * waited for.
+   *
+   * EXACTLY ONCE PER ENROLLMENT. A second wiring would open a second
+   * connection and a second subscription for the same pair, which is
+   * pure cost — so the guard is set before the first await, not after
+   * the last one. Mock mode never gets here: its "network" is an in-page
+   * object with nothing to wire. */
+  let usWired = false;
+  let usSynced = false;
+  let usWireAttempts = 0;
+  const US_WIRE_ATTEMPTS = 3;
+  const wireUsSubduction = async () => {
+    if (PAIRING_BACKEND !== "engine" || usWired) return;
+    usWired = true;
+    usWireAttempts++;
+    try {
+      // The enrollment payload is the JOIN side's: `pair-join-status`
+      // keeps answering `enrolled` once it has, so reading it back here
+      // is a poll rather than a race with the UI's own tick.
+      const enrollment = await until("the tablet's enrollment", async () => {
+        const res = await tabletUs.pairJoinStatus();
+        return res.ok && res.value.tag === "enrolled" ? res.value.enrollment : false;
+      }, 30_000, 200);
+      const partition = unhex(enrollment.partitionId);
+      // The tablet must be BOUND (an unbound instance cannot dial), and
+      // alice is the side that is dialled — the same direction the
+      // headless smoke proves, with the WRITER accepting and the reader
+      // dialling (host/pairing-bringup.ts).
+      if (!tabletEp) throw new Error("the tablet never bound an iroh endpoint");
+      await enqueue(async () => {
+        const ca = await alice.engine.driver.irohStart(
+          false,
+          new Uint8Array(),
+          RELAY,
+          new Uint8Array(),
+        );
+        const ct = await tablet.engine.driver.irohStart(true, aliceEp, RELAY, alice.id);
+        await until(
+          "us subduction handshake",
+          async () =>
+            (await alice.engine.driver.connStatus(ca)) &&
+            (await tablet.engine.driver.connStatus(ct)),
+          30_000,
+        );
+        for (const [who, e, peer] of [
+          ["alice", alice, tablet.id] as const,
+          ["tablet", tablet, alice.id] as const,
+        ]) {
+          const h = await e.engine.driver.syncStart(peer, partition, true);
+          await until(
+            `${who} subscribes to the user-system doc`,
+            () => e.engine.driver.syncStatus(h),
+            30_000,
+          );
+        }
+      });
+      usSynced = true;
+      // The user-visible half of this beat is already on the strip (the
+      // adoption announcement the join pane made); this line is for the
+      // console, where a wiring that silently did not happen would
+      // otherwise look exactly like one that did.
+      console.log("[us] subduction wired: alice ⇄ tablet on the user-system partition");
+    } catch (e) {
+      // A transient relay hiccup is worth a second attempt; an endless
+      // one would just rewrite the tablet's status line forever, so the
+      // retries are counted and the last one is the one that SAYS so.
+      if (usWireAttempts < US_WIRE_ATTEMPTS) usWired = false;
+      else tablet.status(`could not sync this device with your account: ${err(e)}`, true);
+      console.warn(`[us] post-enrollment wiring failed (attempt ${usWireAttempts}): ${err(e)}`);
+    }
+  };
+
   // The join pane polls its driver on the ONE chain like everything else
-  // (mountJoinPane's `tick` is a single driver read per call).
+  // (mountJoinPane's `tick` is a single driver read per call). Its `true`
+  // is the JOIN-COMPLETED edge, which is the moment the embedder owes
+  // the pair a sync path.
   const joinTick = poll("pair-join", 250, async () => {
-    await joinHandle.tick();
+    if (await joinHandle.tick()) void wireUsSubduction();
   });
 
   // Debug/validation handles (the paseo browser driver uses these).
@@ -4317,6 +4424,11 @@ async function boot() {
         return res.ok;
       },
       usReady: () => usReady,
+      /** Whether the embedder has finished wiring subduction between
+       * this account's two devices (engine path only — the mock has no
+       * transport to wire, so it is never true there). Diagnostics: the
+       * write-through beats converge only once this is up. */
+      usSynced: () => usSynced,
     },
     /** The app's own row in the trust table, as the visor registered it at
      * boot: provenance key, self-declared nickname, assigned mark, the

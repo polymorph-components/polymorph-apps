@@ -36,6 +36,31 @@ export interface FreshOptions {
   /** Let the demo pick (and ANNOUNCE) a fresh anchor colour. Off by
    * default: see `seedHue`. */
   freshAnchor?: boolean;
+  /** Extra URL query parameters for this scenario's page — e.g.
+   * `{ pairing: "mock" }`. MERGED over the harness's own base query (see
+   * `pageUrl`), which is how every page in the suite gets the local
+   * relay without a scenario having to know the relay exists. A
+   * scenario may override a base parameter by naming it here; that is a
+   * deliberate escape hatch, not an accident, so nothing hides it. */
+  query?: Record<string, string>;
+}
+
+/** The URL a scenario's page is opened at: the served site, plus the
+ * harness's base query (the ephemeral local relay), plus whatever the
+ * scenario asked for. ONE place, so a new world-level parameter reaches
+ * all thirteen scenarios by being added to the base — the alternative
+ * was editing every scenario, which is how a suite ends up half
+ * hermetic. */
+export function pageUrl(
+  baseUrl: string,
+  baseQuery: Record<string, string>,
+  opts: FreshOptions = {},
+): string {
+  const url = new URL(baseUrl);
+  for (const [k, v] of Object.entries({ ...baseQuery, ...(opts.query ?? {}) })) {
+    url.searchParams.set(k, v);
+  }
+  return url.toString();
 }
 
 /** The demo's own storage keys, mirrored from host/demo.ts. Duplicated

@@ -389,3 +389,56 @@ but the real path cannot complete a ceremony yet:
 So the remaining integration work is Track A's: `user-create` is the one
 call standing between this UI and a live ceremony.
 
+### Status — the live ceremony is the default (2026-08-22)
+
+Both blockers named in the 2026-08-20 note are CLOSED, and the demo's
+default pairing backend is now the real engine. `?pairing=mock` selects
+the in-page mock; there is no longer any `?pairing=engine` to opt into.
+
+- **`user-create` no longer traps.** The panic was a SCHEDULER
+  MISATTRIBUTION in the runtime's async support — the context a resumed
+  task was attributed to was not instance-scoped — fixed upstream as
+  polyengine#213 and shipped in `@polyengine/runtime` 0.3.1, which this
+  tree pins. (The Deno-side `resumeWith: parked thread's instance is
+  not enterable from the host` that the baseline `just bringup wire`
+  reproduced was the OTHER #49 trap, closed earlier by the 0.2.1
+  jspi hop-quiescence gate, deltic#82.)
+- **The add side's post-grant linger is a real await**, not a yield
+  spin. The spin never let the joiner's ingest run, so a ceremony that
+  had gone all the way to the grant could still fail to ENROLL.
+
+What is gated now:
+
+- `demo/e2e`'s `device-pairing` runs the FULL ceremony against the
+  composite — offer code, SAS on both surfaces, arming delay, grant,
+  ENROLL, and the marks write-through reaching the joined device — in a
+  real headless Chromium, over a relay the harness spawns itself
+  (`iroh-relay --dev` with an ephemeral `http_bind_addr`, so the suite
+  no longer touches the public relay at all). 15 acts.
+- `device-pairing-mock` runs the SAME acts (shared
+  `e2e/scenarios/device-pairing-acts.ts`) against the in-page mock. The
+  mock is retained deliberately: it is the visor-only regression
+  harness — no wasm, no transport, no convergence waits — and it is what
+  separates "the visor's ceremonies broke" from "the engine, the
+  transport or the embedder's sync broke". It is not a fallback for the
+  real path.
+- `just pairing-bringup` (headless, Deno) and `cd engine && just pair`
+  (native acts) both pass unchanged.
+
+**The embedder owes the pair a sync path.** §2 step 7 ends the ceremony
+with "sync", and the engine leaves that to whoever embeds it: pairing
+grants MEMBERSHIP and nothing more. So `demo/host/demo.ts` wires
+subduction when a join completes — connect, then `sync-start` with
+`subscribe` in both directions on the enrollment's partition — exactly
+as `engine/host/src/pairing_acts.rs:187`'s `wire_us` and
+`demo/host/pairing-bringup.ts` do. Without it the joined device holds a
+membership and an empty user-system doc.
+
+One finding worth recording for whoever wires the next embedder: the
+DIRECTION is not symmetric in practice. With the writer accepting and
+the reader dialling (the direction both existing harnesses use) the doc
+converges in about a second. With the roles reversed, the handshake
+still reports connected on both sides and both sync handles still report
+ready — and nothing ever arrives: the reader's replica stays at revision
+0 while the writer's advances. Measured in the browser over a local
+relay, 2026-08-22.

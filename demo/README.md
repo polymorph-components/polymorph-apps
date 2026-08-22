@@ -369,20 +369,37 @@ PAIRING.md §5 puts them:
   The localStorage keys and formats are unchanged — that IS the
   demotion: the same bytes, no longer the source of truth.
 
-**Which driver.** The in-page ceremony runs against the MOCK by default;
-`?pairing=engine` selects the real composite (`../runtime/pairing-engine.ts`).
+**Which driver.** The in-page ceremony runs against the REAL ENGINE by
+default (`../runtime/pairing-engine.ts`, one composite instance per
+pane, over iroh); `?pairing=mock` overrides it with the in-page mock.
 Everything above the driver is the same code either way. The engine path
-does not complete a ceremony yet: `user-create` traps the guest
-(a wit-bindgen async-support panic), so there is no user group to enroll
-into — measured, with the details and what DOES work over the real
-engine, in PAIRING.md §6's status note. The page says which backend is
-live rather than pretending: with `?pairing=engine` the laptop pane
-reads "user-system unavailable (engine): …".
+completes a full ceremony now — code, SAS, grant, ENROLL — since the
+`user-create` guest trap (a scheduler misattribution in the runtime's
+async support, polyengine#213) and the add side's yield-spinning linger
+were both fixed; PAIRING.md §6 carries the dated status. The page still
+says which backend is live rather than pretending, and a user-system
+that fails to come up is reported on the laptop pane rather than being
+fatal.
 
-e2e coverage: `just e2e device-pairing` (both ceremonies, SAS equality
-across the two surfaces, the arming delay, the empty device-name field,
-the adoption announcement, and a petname written on the laptop arriving
-on the tablet).
+**Pairing grants membership; the embedder wires sync.** When a join
+completes, `host/demo.ts` connects the two panes and `sync-start`s the
+enrollment's partition with `subscribe` in both directions — otherwise
+the joined device holds a membership and an empty user-system doc, and
+no petname written on the laptop could ever reach it.
+
+e2e coverage, two scenarios over the same acts
+(`e2e/scenarios/device-pairing-acts.ts`):
+
+- `just e2e device-pairing` — the LIVE ceremony over the engine, against
+  a relay the harness spawns itself on an ephemeral port (the suite
+  never touches the public relay);
+- `just e2e device-pairing-mock` — the same acts against the mock: fast,
+  transport-free, and the half that says whether a failure is the
+  visor's or the engine's.
+
+Both assert both ceremonies, SAS equality across the two surfaces, the
+arming delay, the empty device-name field, the adoption announcement,
+and a petname written on the laptop arriving on the tablet.
 
 ## Deployment
 

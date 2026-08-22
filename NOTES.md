@@ -1770,6 +1770,55 @@ fail the suite. The definition of identical is the restructure round's:
 zero behavioral scenario edits (two comment-only wit-path citations),
 invariants 8/8, e2e 12/12 unchanged.
 
+**Real pairing becomes the demo default** (2026-08-22, closing #49 —
+the milestone "todomvc as a real sandboxed app on the real engine and
+real visor with real pairing"; the first three clauses were already
+true, so the round is the fourth). The gap analysis found exactly one
+mock left in the demo (the pairing driver) behind exactly one blocker
+(#49 trap 1), and the investigation root-caused that trap NOT to
+wit-bindgen or the engine guest but to the runtime's scheduler: a JSPI
+continuation chunk — wit-bindgen's callback epilogue restoring its task
+pointer via `context.set` — runs outside the thread-stack bracket with
+no re-anchoring edge, and ambient attribution handed the restore to the
+newest SIBLING claim. Deterministic in Chromium (a wider settle-to-
+resume gap than Deno's V8), captured with the runtime's own context-
+slot trace, and fixed upstream as polyengine#213: context intrinsics
+resolve their thread BY DECLARING INSTANCE — sound because one instance
+has at most one activation mid-frame at a time, so racing activations
+are necessarily of different instances; static because the plan already
+names the declaring instance. Shipped in `@polyengine/runtime` 0.3.1
+(the deltic→polyengine rename landed in between; this tree migrated to
+the new scope, ports to 0.3.0 under their plain names, one runtime copy
+in the graph — the webrtc port stays a sibling checkout, re-verified:
+its published graph still breaks the `--external` bundling trick).
+Behind the trap sat two more embedding-layer bugs, both ground out by
+the headless smoke: the pairing adapter decoded WIT variants by a
+`{tag,val}` shape the wire never had (runtime/engine.ts's types now
+state the real `{kind,value}` convention), and the add side's
+post-grant linger was a `yield` SPIN that never let the composed iroh
+endpoint's I/O run — ENROLL bytes sat untransmitted for the whole
+linger while the joiner idle-timed out (invisible natively, where
+wasmtime drives the endpoint outside the guest's scheduler; a real
+`wait-closed` await now, [engine/guest/src/pairing.rs]). Pairing grants
+membership only, so the embedder wires the sync it owes (§2 step 7):
+demo.ts's `wireUsSubduction` mirrors the native acts' `wire_us` —
+writer accepts, reader dials, `subscribe` both ways on the enrollment's
+partition (direction measured, not assumed: reversed, the handshake
+reports connected and the reader's replica stays at revision 0
+forever — recorded in PAIRING.md §6 for the next embedder). The e2e
+suite went hermetic in the same round: the harness spawns its own
+pinned iroh-relay on an ephemeral port (config-file bind; `--dev`
+hard-codes 3340) next to MinIO, every page rides `?relay=…`, and
+nothing in the suite touches the public relay any more. The ceremony
+scenario runs TWICE off one shared act module — `device-pairing` drives
+the full live ceremony (code, SAS both surfaces, arming delay, grant,
+ENROLL, marks write-through reaching the joined device) against the
+composite, `device-pairing-mock` drives the same acts against the
+in-page mock, kept deliberately as the visor-only regression harness
+that separates "the visor's ceremonies broke" from "the engine or the
+transport broke". 13/13 scenarios, `just pairing-bringup` and the
+native `just pair` battery green, invariants 8/8.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic
