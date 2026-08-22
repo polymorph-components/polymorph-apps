@@ -14,7 +14,7 @@ import {
   artifactsFromEnvelope,
   ComponentException,
   instantiate,
-} from "@deltic/runtime/embedder";
+} from "@polyengine/runtime/embedder";
 import { createRunner, type Runner } from "../../visor/surface/runner.ts";
 import { createFrameBackend } from "../../visor/frame/frame-backend.ts";
 import { createSurface } from "../../visor/surface/surface.ts";

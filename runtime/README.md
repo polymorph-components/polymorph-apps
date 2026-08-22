@@ -8,9 +8,9 @@ itself is not visor-specific). It began life inside `demo/host/` and
 entrypoints) is still its one consumer, importing these modules by
 relative path.
 
-- **`engine.ts`** — the deltic embedding adapter for the engine
+- **`engine.ts`** — the polyengine embedding adapter for the engine
   composite: envelope loading, import-record assembly (WASI batteries,
-  a fetch-backed `wasi:http`, deltic ports, a sockets stub), typed
+  a fetch-backed `wasi:http`, polymorph ports, a sockets stub), typed
   `driver`/`tasks` views over the composite's exports, and the
   per-instance import-fragment freshness bookkeeping that makes
   repeated instantiation cheap.
@@ -39,7 +39,7 @@ relative path.
 
 ## Resolution model
 
-These modules import `@deltic/*` and `@polymorph/*` packages by BARE
+These modules import `@polyengine/*` and `@polymorph/*` packages by BARE
 specifier. They are not resolved here — the EMBEDDER's own deno config
 maps them (see `demo/deno.json`'s module-identity comment for why: the
 mapping has to live with the consumer, not the runtime, or two

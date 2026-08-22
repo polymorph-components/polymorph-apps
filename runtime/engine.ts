@@ -1,18 +1,18 @@
-// The engine composite under deltic: load the pre-translated envelope,
+// The engine composite under polyengine: load the pre-translated envelope,
 // assemble the import record (WASI batteries + the fetch-backed
-// wasi:http fragment + the sibling deltic ports + the browser-profile
+// wasi:http fragment + the polymorph ports + the browser-profile
 // sockets stub), and hand back typed views of the two exports.
 //
 // Every instance gets FRESH import fragments: the port modules' resource
 // classes carry per-instance registry identity (polymorph-iroh
 // host-deltic finding).
 
-import { artifactsFromEnvelope, instantiate } from "@deltic/runtime/embedder";
-import { wasi } from "@deltic/wasi";
-import { http } from "@deltic/wasi/http";
-import { webcryptoImports } from "@polymorph/webcrypto-deltic";
-import { websocketImports } from "@polymorph/websocket-deltic";
-import { webrtcImports } from "@polymorph/webrtc-deltic";
+import { artifactsFromEnvelope, instantiate } from "@polyengine/runtime/embedder";
+import { wasi } from "@polyengine/wasi";
+import { http } from "@polyengine/wasi/http";
+import { webcryptoImports } from "@polymorph/webcrypto";
+import { websocketImports } from "@polymorph/websocket";
+import { webrtcImports } from "@polymorph/webrtc-datachannels";
 import { socketsImports } from "./stubs.ts";
 
 const DRIVER = "polyvisor:engine/driver@0.1.0";
@@ -133,7 +133,7 @@ export interface Driver {
 // to Uint8Array, `u64` to bigint, `u16`/`u32` to number, `tuple<A, B>` to
 // `[A, B]`, and a WIT variant/result case lowers to `{ kind: "case-name";
 // value?: payload }` (no `value` key when the case has no payload) — the
-// @deltic/runtime value-mapping convention (embedder/values.ts, the
+// @polyengine/runtime value-mapping convention (embedder/values.ts, the
 // authority; verified empirically against this composite, e.g.
 // `driver.pairJoinStatus()` resolving `{"kind":"waiting"}`) — same
 // convention the existing `StoreConfig` type above already uses.
