@@ -192,6 +192,29 @@ interface driver {
     record pair-enrollment {
         user-group-id: list<u8>,
         partition-id: list<u8>,
+        /// THE ADDER'S IDS, AS THE JOINER OBSERVED THEM in this ceremony.
+        ///
+        /// Pairing grants MEMBERSHIP; it does not wire subduction. The
+        /// embedder must do that (§2 step 7), and to dial it needs the
+        /// other end's endpoint id and the agent id to expect there.
+        /// Before this, a joiner had a membership and no way to name the
+        /// device that granted it — so every embedder had to smuggle the
+        /// adder's ids in out of band, which a real two-page deployment
+        /// cannot do.
+        ///
+        /// BOTH ARE OBSERVED, NEVER ASSERTED BY THE PEER. The endpoint id
+        /// is the transport-authenticated dialer (`connection.peer()`:
+        /// iroh proved the holder of that key before the connection was
+        /// delivered). The agent id is the ISSUER of the delegation in
+        /// the ENROLL card that made this device a member — a signature
+        /// over the grant itself, not a self-declared field. Neither can
+        /// be a name the peer merely claimed.
+        ///
+        /// Empty = not observed (an ENROLL card carrying no delegation to
+        /// this device would be a broken ceremony, so an empty agent id
+        /// is a fault to report, never a value to dial with).
+        peer-agent-id: list<u8>,
+        peer-endpoint-id: list<u8>,
     }
 
     variant pair-join-state {
@@ -272,6 +295,30 @@ interface driver {
     us-mark-put:     async func(mark: us-mark) -> result<_, string>;
     us-mark-forget:  async func(provenance: string) -> result<_, string>;
     us-mark-confirm: async func(provenance: string) -> result<_, string>;
+
+    /// A named pointer to one of the account's data partitions. The map
+    /// lives in the user-system document, so it SYNCS: a device that was
+    /// just paired learns the account's tasks partition (and any later
+    /// one) by reading it, rather than needing the id handed to it out of
+    /// band. The id is a keyhive doc id, opaque here; the name is the
+    /// account's own short label ("tasks").
+    record us-partition {
+        name: string,
+        id: list<u8>,
+    }
+
+    /// Upsert the pointer under `name`. Requires an existing user system
+    /// — same error convention as `us-profile-set` when there is none.
+    ///
+    /// DELIBERATELY WITHOUT a `us-event` case: consumers poll
+    /// `us-partitions` (a joiner reads it once, at adoption time), and a
+    /// new event case would force a fresh arm through every adapter's
+    /// exhaustive match for a signal nobody edge-triggers on. Keeping the
+    /// event enum stable is the cheaper contract.
+    us-partition-put: async func(name: string, id: list<u8>) -> result<_, string>;
+
+    /// Every pointer the account has published, name-ordered.
+    us-partitions: async func() -> result<list<us-partition>, string>;
 
     us-contacts-list: async func() -> result<list<tuple<list<u8>, string>>, string>;
     us-contact-put:   async func(card: list<u8>, petname: string) -> result<_, string>;

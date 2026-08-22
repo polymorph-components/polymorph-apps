@@ -21,6 +21,7 @@ use wasmtime::{bail, format_err, Result};
 use crate::bindings::exports::polyvisor::engine::driver::{
     Guest as Driver, PairAddState, PairJoinState, UsEvent, UsMark, UsProfile,
 };
+use crate::bindings::exports::polyvisor::tasks::tasks::Guest as Tasks;
 use crate::Ctx;
 
 const POLLS: u32 = 4000;
@@ -99,11 +100,21 @@ fn describe_add(s: &PairAddState) -> String {
 
 /// Run one pairing ceremony to completion and return
 /// `(sas, user-group-id, user-system-partition-id)`.
+///
+/// `expect_adder`, when given, is `(adder agent id, adder endpoint id
+/// hex)` and gates the enrollment's two OBSERVED peer id fields against
+/// what the adder actually is. Those fields exist so an embedder can
+/// wire subduction after the ceremony (PAIRING.md §2 step 7) without
+/// smuggling the adder's ids in out of band, and a WRONG id there fails
+/// the way a missing one does not: the dial succeeds against the wrong
+/// expectations and nothing ever flows. Only the caller that holds the
+/// adder's real ids can check it, so it passes them in.
 async fn pair(
     acc: &Accessor<Ctx>,
     adder: &Driver,
     joiner: &Driver,
     device_name: &str,
+    expect_adder: Option<(&[u8], &str)>,
 ) -> Result<(String, Vec<u8>, Vec<u8>)> {
     let offer = joiner
         .call_pair_join_start(acc)
@@ -175,6 +186,31 @@ async fn pair(
         matches!(s, PairAddState::Enrolled | PairAddState::Failed(_))
     })
     .await?;
+    if let Some((want_agent, want_ep)) = expect_adder {
+        // Observed, not asserted: the endpoint id is the dialer iroh
+        // authenticated, and the agent id is the ISSUER of the delegation
+        // in the ENROLL card (guest/src/pairing.rs's
+        // `adder_agent_from_enroll_card`).
+        if enrollment.peer_agent_id != want_agent {
+            bail!(
+                "pair-enrollment.peer-agent-id is not the adder's agent id \
+                 (got {} bytes, {}; want {})",
+                enrollment.peer_agent_id.len(),
+                hex::encode(&enrollment.peer_agent_id),
+                hex::encode(want_agent)
+            );
+        }
+        if hex::encode(&enrollment.peer_endpoint_id) != want_ep {
+            bail!(
+                "pair-enrollment.peer-endpoint-id is not the adder's endpoint id \
+                 (got {}; want {want_ep})",
+                hex::encode(&enrollment.peer_endpoint_id)
+            );
+        }
+        println!(
+            "            enrollment carries the adder's observed agent + endpoint ids"
+        );
+    }
     Ok((
         sas_j.clone(),
         enrollment.user_group_id,
@@ -195,6 +231,32 @@ async fn wire_us(
     let (m, m_name, m_id) = member;
     crate::connect(acc, (m, m_name, h_id), (h, h_name, h_ep), relay).await?;
     for (d, name, peer) in [(m, m_name, h_id), (h, h_name, m_id)] {
+        let handle = d
+            .call_sync_start(acc, peer.to_vec(), tree.to_vec(), true)
+            .await?
+            .map_err(|e| format_err!("{name} sync-start: {e}"))?;
+        for _ in 0..POLLS {
+            match d.call_sync_status(acc, handle).await? {
+                Ok(Some(_)) => break,
+                Ok(None) => tokio::time::sleep(Duration::from_millis(3)).await,
+                Err(e) => bail!("{name} sync: {e}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Subscribe both ends of an ALREADY-wired pair to one more tree. The
+/// iroh connection is `wire_us`'s; only the per-tree subscription is new.
+async fn sync_tree(
+    acc: &Accessor<Ctx>,
+    a: (&Driver, &str, &[u8]),
+    b: (&Driver, &str, &[u8]),
+    tree: &[u8],
+) -> Result<()> {
+    let (ad, a_name, a_id) = a;
+    let (bd, b_name, b_id) = b;
+    for (d, name, peer) in [(ad, a_name, b_id), (bd, b_name, a_id)] {
         let handle = d
             .call_sync_start(acc, peer.to_vec(), tree.to_vec(), true)
             .await?
@@ -306,7 +368,7 @@ pub(crate) async fn positive_acts(
     let mut results: Vec<(&str, std::result::Result<(), String>)> = Vec::new();
 
     // --- gates 1+2: the ceremony itself, and the SAS agreeing ---
-    let (sas, joined_group, partition) = pair(acc, l, p, "alice phone").await?;
+    let (sas, joined_group, partition) = pair(acc, l, p, "alice phone", Some((&l_bytes, &l_ep))).await?;
     results.push(("full pair over the local relay", Ok(())));
     // `pair` compares the two sides' strings and bails on any mismatch,
     // on a non-six-digit string, or on a non-numeric one, so reaching
@@ -386,6 +448,25 @@ pub(crate) async fn positive_acts(
         results.push((
             "concurrent same-petname and same-icon repairs identically on both devices",
             Err("not reached: the joiner never became a reader of the partition".into()),
+        ));
+    }
+
+    if adopted {
+        results.push((
+            "partition pointer syncs; group-delegated partition is readable by the joiner",
+            act_partition_pointer(
+                acc,
+                (l, laptop.polyvisor_tasks_tasks(), &l_bytes),
+                (p, phone.polyvisor_tasks_tasks(), &p_bytes),
+                &group,
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        ));
+    } else {
+        results.push((
+            "partition pointer syncs; group-delegated partition is readable by the joiner",
+            Err("not reached: the joiner never became a reader of the user-system partition".into()),
         ));
     }
 
@@ -715,6 +796,116 @@ async fn act_repair(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()> {
     Ok(())
 }
 
+/// The partition-pointer map, and the group-delegation path the solo
+/// page depends on (#36).
+///
+/// Two beats, in the order a real account performs them:
+///
+///  1. **The pointer syncs.** The founder publishes
+///     `us-partition-put("tasks", id)` into the user-system doc; the
+///     joined device reads it back out of `us-partitions` after sync.
+///     Without this the joiner has membership and no name for the data.
+///  2. **The group delegation actually grants access.** The partition is
+///     delegated to the USER GROUP — `kh-add-member(partition, group,
+///     "edit")`, the group id, never the joiner's individual — and the
+///     joiner, which is a member of that group by enrollment alone,
+///     adopts the partition it learned in beat 1 and READS content the
+///     founder wrote. That is the whole premise of "every enrolled
+///     device sees the todo list": transitive membership, no per-device
+///     delegation.
+///
+/// Ordering is the same load-bearing create -> add-member -> seal the
+/// WIT documents: epoch membership at seal time is what decides
+/// readability.
+async fn act_partition_pointer(
+    acc: &Accessor<Ctx>,
+    l: (&Driver, &Tasks, &[u8]),
+    p: (&Driver, &Tasks, &[u8]),
+    group: &[u8],
+) -> Result<()> {
+    let (l, lt, l_bytes) = l;
+    let (p, pt, p_bytes) = p;
+
+    let partition = l
+        .call_create_partition(acc)
+        .await?
+        .map_err(|e| format_err!("create-partition: {e}"))?;
+    // The GROUP, not an individual: this is the delegation the joiner's
+    // access has to come through.
+    l.call_kh_add_member(acc, partition.clone(), group.to_vec(), "edit".to_string())
+        .await?
+        .map_err(|e| format_err!("kh-add-member(partition, USER GROUP, edit): {e}"))?;
+    l.call_seal_partition(acc, partition.clone())
+        .await?
+        .map_err(|e| format_err!("seal-partition: {e}"))?;
+    println!("            tasks partition created, delegated to the user group, sealed");
+
+    // Beat 1: publish the pointer, and read it back on the other device.
+    l.call_us_partition_put(acc, "tasks".to_string(), partition.clone())
+        .await?
+        .map_err(|e| format_err!("us-partition-put: {e}"))?;
+    let mine = l.call_us_partitions(acc).await?.map_err(|e| format_err!("{e}"))?;
+    if !mine.iter().any(|x| x.name == "tasks" && x.id == partition) {
+        bail!(
+            "the writer does not read back its own pointer: {:?}",
+            mine.iter().map(|x| x.name.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    let t = Instant::now();
+    let mut seen = None;
+    for _ in 0..POLLS {
+        let listed = p.call_us_partitions(acc).await?.map_err(|e| format_err!("{e}"))?;
+        if let Some(entry) = listed.iter().find(|x| x.name == "tasks") {
+            seen = Some(entry.id.clone());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    let Some(seen) = seen else {
+        bail!("the partition pointer never reached the joined device");
+    };
+    if seen != partition {
+        bail!("the joined device read a DIFFERENT partition id than was published");
+    }
+    ok("joined device discovers the tasks partition via us-partitions", t);
+
+    // Beat 2: adopt what was discovered, and read through the group
+    // delegation alone.
+    p.call_adopt_partition(acc, seen.clone())
+        .await?
+        .map_err(|e| format_err!("adopt-partition (as a GROUP member): {e}"))?;
+    sync_tree(acc, (l, "laptop", l_bytes), (p, "phone", p_bytes), &partition).await?;
+
+    lt.call_add(acc, "milk (written by the founder)".to_string())
+        .await?
+        .map_err(|e| format_err!("tasks-add: {e}"))?;
+
+    let t = Instant::now();
+    let mut last = String::new();
+    for _ in 0..POLLS {
+        match pt.call_items(acc).await? {
+            Ok(snap) => {
+                if snap.items.iter().any(|i| i.title == "milk (written by the founder)") {
+                    ok(
+                        "joined device READS the group-delegated partition (no per-device delegation)",
+                        t,
+                    );
+                    return Ok(());
+                }
+            }
+            Err(e) => last = e,
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    bail!(
+        "GROUP-DELEGATION FINDING: the joined device adopted the partition it \
+         discovered but never read the founder's content. The partition was \
+         delegated to the USER GROUP only; the device is a member of that group \
+         by enrollment. Last tasks error on the joiner: {last:?}"
+    )
+}
+
 /// A code that reaches a second party has leaked, so the offer dies
 /// rather than continuing under a claim the user cannot audit.
 async fn act_second_claim(
@@ -781,7 +972,7 @@ async fn act_revoke_and_repair(
     }
     println!("            phone revoked from the user group and marked in the devices list");
 
-    let (_sas, group2, partition2) = pair(acc, l, rejoin, "alice phone (re-paired)").await?;
+    let (_sas, group2, partition2) = pair(acc, l, rejoin, "alice phone (re-paired)", None).await?;
     if group2 != group {
         bail!("the re-pair enrolled into a different account");
     }
@@ -956,7 +1147,7 @@ pub(crate) async fn post_seal_add_act(
     .map_err(|e| format_err!("pre-join mark: {e}"))?;
 
     // Enrollment: same doc, joiner added long after the seal.
-    let (_sas, _group, partition) = pair(acc, l, p, "late device").await?;
+    let (_sas, _group, partition) = pair(acc, l, p, "late device", None).await?;
     wire_us(
         acc,
         (l, "founder", &l_bytes, l_ep.as_str()),
@@ -1160,7 +1351,7 @@ pub(crate) async fn full_history_act(
     .await?
     .map_err(|e| format_err!("pre-join profile edit: {e}"))?;
 
-    let (_sas, _group, partition) = pair(acc, l, p, "late device").await?;
+    let (_sas, _group, partition) = pair(acc, l, p, "late device", None).await?;
 
     // Order variation: does the founder write again before the joiner is
     // wired, or after?
@@ -1302,7 +1493,7 @@ pub(crate) async fn partitioned_writer_act(
     }
 
     // The second device joins and catches up.
-    let (_s, _g, partition) = pair(acc, l, b, "second device").await?;
+    let (_s, _g, partition) = pair(acc, l, b, "second device", None).await?;
     wire_us(
         acc,
         (l, "founder", &l_bytes, l_ep.as_str()),
@@ -1361,7 +1552,7 @@ pub(crate) async fn partitioned_writer_act(
         if founder_had_merged { "" } else { " NOT" }
     );
 
-    let (_s2, _g2, partition2) = pair(acc, l, c, "third device").await?;
+    let (_s2, _g2, partition2) = pair(acc, l, c, "third device", None).await?;
     if partition2 != partition {
         bail!("the second enrollment moved the partition");
     }

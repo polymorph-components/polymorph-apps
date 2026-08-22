@@ -1,11 +1,11 @@
 // The engine composite under polyengine: load the pre-translated envelope,
 // assemble the import record (WASI batteries + the fetch-backed
-// wasi:http fragment + the sibling polyengine ports + the browser-profile
+// wasi:http fragment + the polymorph ports + the browser-profile
 // sockets stub), and hand back typed views of the two exports.
 //
 // Every instance gets FRESH import fragments: the port modules' resource
 // classes carry per-instance registry identity (polymorph-iroh
-// host-polyengine finding).
+// host-deltic finding).
 
 import { artifactsFromEnvelope, instantiate } from "@polyengine/runtime/embedder";
 import { wasi } from "@polyengine/wasi";
@@ -18,12 +18,12 @@ import { socketsImports } from "./stubs.ts";
 const DRIVER = "polyvisor:engine/driver@0.1.0";
 const TASKS = "polyvisor:tasks/tasks@0.1.0";
 
-/** `store-config` — a WIT variant; `{tag, val}` per the value-mapping
- * table. ADDRESSING ONLY (#7/#11): no credential crosses this boundary
- * any more. Whether an instance can write, whose account it acts as, and
- * whether it can sign at all are properties of what its three storage
- * imports were WIRED to below — which config cannot see and must not
- * second-guess. The S3 access key stays because it is a public
+/** `store-config` — a WIT variant; `{kind, value}` per the value-mapping
+ * convention below. ADDRESSING ONLY (#7/#11): no credential crosses this
+ * boundary any more. Whether an instance can write, whose account it acts
+ * as, and whether it can sign at all are properties of what its three
+ * storage imports were WIRED to below — which config cannot see and must
+ * not second-guess. The S3 access key stays because it is a public
  * identifier that travels in the Authorization header in clear. */
 export type StoreConfig =
   | {
@@ -114,6 +114,12 @@ export interface Driver {
   usMarkForget(provenance: string): Promise<void>;
   usMarkConfirm(provenance: string): Promise<void>;
 
+  /** Publish/refresh the account's pointer to a data partition. The map
+   * lives in the user-system doc, so it syncs; a freshly paired device
+   * discovers the tasks partition by reading `usPartitions()`. */
+  usPartitionPut(name: string, id: Uint8Array): Promise<void>;
+  usPartitions(): Promise<UsPartition[]>;
+
   usContactsList(): Promise<Array<[Uint8Array, string]>>;
   usContactPut(card: Uint8Array, petname: string): Promise<void>;
 
@@ -131,8 +137,12 @@ export interface Driver {
 // --- device-pairing + user-system WIT record/variant mirrors
 // (engine.wit ~214-280). `option<T>` lowers to `T | undefined`, `list<u8>`
 // to Uint8Array, `u64` to bigint, `u16`/`u32` to number, `tuple<A, B>` to
-// `[A, B]`, and a no-payload variant case to `{ tag: "case-name" }` — same
-// conventions the existing Driver/Tasks types above already use.
+// `[A, B]`, and a WIT variant/result case lowers to `{ kind: "case-name";
+// value?: payload }` (no `value` key when the case has no payload) — the
+// @polyengine/runtime value-mapping convention (embedder/values.ts, the
+// authority; verified empirically against this composite, e.g.
+// `driver.pairJoinStatus()` resolving `{"kind":"waiting"}`) — same
+// convention the existing `StoreConfig` type above already uses.
 
 export interface PairOffer {
   code: string;
@@ -142,22 +152,38 @@ export interface PairOffer {
 export interface PairEnrollment {
   userGroupId: Uint8Array;
   partitionId: Uint8Array;
+  /** THE ADDER'S IDS, AS THIS DEVICE OBSERVED THEM (engine.wit's
+   * `pair-enrollment`). Pairing grants membership and stops; the
+   * EMBEDDER owes the pair a sync path (PAIRING.md §2 step 7), and these
+   * two are what it needs to dial: `irohStart(true, peerEndpointId,
+   * relay, peerAgentId)` from the joiner.
+   *
+   * Neither is a name the peer claimed. The endpoint id is the
+   * transport-authenticated dialer; the agent id is the issuer of the
+   * signed delegation in the ENROLL card that made this device a member.
+   *
+   * They are NOT carried into the visor's `PairingDriver` contract
+   * (visor/ui/pairing-driver.ts): the visor has no business dialling
+   * anything, so the embedder reads them from the raw driver instead —
+   * see runtime/pairing-engine.ts's `toMockJoinState`. */
+  peerAgentId: Uint8Array;
+  peerEndpointId: Uint8Array;
 }
 
 export type PairJoinState =
-  | { tag: "waiting" }
-  | { tag: "claimed"; val: string } // SAS — display, await pairJoinConfirm
-  | { tag: "confirmed-waiting" }
-  | { tag: "enrolled"; val: PairEnrollment }
-  | { tag: "expired" }
-  | { tag: "failed"; val: string };
+  | { kind: "waiting" }
+  | { kind: "claimed"; value: string } // SAS — display, await pairJoinConfirm
+  | { kind: "confirmed-waiting" }
+  | { kind: "enrolled"; value: PairEnrollment }
+  | { kind: "expired" }
+  | { kind: "failed"; value: string };
 
 export type PairAddState =
-  | { tag: "connecting" }
-  | { tag: "sas-ready"; val: string } // SAS — display, await pairAddConfirm
-  | { tag: "waiting-peer" }
-  | { tag: "enrolled" }
-  | { tag: "failed"; val: string };
+  | { kind: "connecting" }
+  | { kind: "sas-ready"; value: string } // SAS — display, await pairAddConfirm
+  | { kind: "waiting-peer" }
+  | { kind: "enrolled" }
+  | { kind: "failed"; value: string };
 
 export interface UsProfile {
   displayName: string;
@@ -178,6 +204,15 @@ export interface UsMark {
   needsReconfirm: boolean; // set by conflict repair; cleared by usMarkConfirm
 }
 
+/** `us-partition` — a record, so it lowers to a plain object (the
+ * `{kind, value}` variant convention above does not apply). `id` is a
+ * keyhive doc id as raw bytes, matching every other `list<u8>` here;
+ * `hex()`/`unhex()` below convert when a string is wanted. */
+export interface UsPartition {
+  name: string;
+  id: Uint8Array;
+}
+
 export interface UsDevice {
   agentId: Uint8Array;
   name: string;
@@ -186,12 +221,12 @@ export interface UsDevice {
 }
 
 export type UsEvent =
-  | { tag: "profile-changed" }
-  | { tag: "mark-added"; val: string } // provenance
-  | { tag: "mark-changed"; val: string }
-  | { tag: "mark-conflict-repaired"; val: [string, string] } // (provenance, "petname"|"icon")
-  | { tag: "device-added"; val: string } // name
-  | { tag: "device-revoked"; val: string };
+  | { kind: "profile-changed" }
+  | { kind: "mark-added"; value: string } // provenance
+  | { kind: "mark-changed"; value: string }
+  | { kind: "mark-conflict-repaired"; value: [string, string] } // (provenance, "petname"|"icon")
+  | { kind: "device-added"; value: string } // name
+  | { kind: "device-revoked"; value: string };
 
 export interface TodoItem {
   id: string;

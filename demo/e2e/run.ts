@@ -21,9 +21,12 @@
 //
 // The harness owns the world the scenarios run in: a static server for
 // the built `serve/` directory, a MinIO with CORS open (the credential
-// beats need a real S3 to talk to, and one of them needs it DOWN), and
-// one browser. Each scenario gets a fresh browser context, so no
-// scenario can pass because of something another one left in storage.
+// beats need a real S3 to talk to, and one of them needs it DOWN), an
+// iroh relay (every engine instance binds an endpoint through one, and
+// the pairing ceremony actually crosses it), and one browser. Each
+// scenario gets a fresh browser context, so no scenario can pass because
+// of something another one left in storage — and nothing here reaches
+// off this machine.
 
 import { chromium } from "npm:playwright@1.57.0";
 import type { Browser, Page } from "npm:playwright@1.57.0";
@@ -33,6 +36,7 @@ import {
   type Ctx,
   type FreshOptions,
   newContext,
+  pageUrl,
   RendererGoneError,
   resetActs,
   waitForBoot,
@@ -49,6 +53,8 @@ import storagePageNavigation from "./scenarios/storage-page-navigation.ts";
 import storagePicker from "./scenarios/storage-picker.ts";
 import stripOwnership from "./scenarios/strip-ownership.ts";
 import devicePairing from "./scenarios/device-pairing.ts";
+import devicePairingMock from "./scenarios/device-pairing-mock.ts";
+import soloPairing from "./scenarios/solo-pairing.ts";
 import visorReset from "./scenarios/visor-reset.ts";
 
 // Re-exported so a scenario imports its whole contract from one place:
@@ -84,10 +90,24 @@ const SCENARIOS: Scenario[] = [
   tenantPrecedence,
   storagePicker,
   storagePageNavigation,
-  // The two pairing ceremonies. It runs against the in-page mock driver
-  // (see the scenario's own header for why, and PAIRING.md §6), so it
-  // needs no relay and no store.
+  // The two pairing ceremonies, run TWICE against the two
+  // implementations of the same `PairingDriver` seam (shared acts in
+  // scenarios/device-pairing-acts.ts).
+  //
+  // The mock goes first: it is fast, needs no transport at all, and a
+  // failure in it means the fault is in the visor's own ceremonies
+  // rather than in the engine or the relay. The real one follows and is
+  // the claim the demo actually ships — a live engine ceremony over the
+  // harness's own relay, ENROLL included.
+  devicePairingMock,
   devicePairing,
+  // THE SOLO PAGE: the same ceremony again, but across TWO INDEPENDENT
+  // PAGES in two isolated contexts. It runs after the one-page pairing
+  // scenarios on purpose — a failure here with those two green says the
+  // fault is in what a real second device has to do for itself (dial the
+  // enrollment's peer ids, discover the tasks partition through the
+  // account), not in the ceremony.
+  soloPairing,
   // The erase ceremony: seeds a name, a petname and a storage sentinel,
   // then reloads the page (twice) as part of its own claim. It runs
   // after the other identity/naming scenarios and before the one that
@@ -217,6 +237,92 @@ class Minio {
   }
 }
 
+// --- the local relay -------------------------------------------------------
+//
+// HERMETIC, like MinIO. Every engine instance in this demo binds an iroh
+// endpoint through a relay, and until this existed that relay was n0's
+// PUBLIC one: the boot wire step (alice ⇄ bob) and now the real pairing
+// ceremony both went out over the internet, so the suite's result
+// depended on a third party's availability and latency. That is not a
+// regression test either.
+//
+// So the harness owns a relay too — the same pinned binary the engine
+// spike installs (`cd engine && just relay-bin`, iroh-relay@1.0.3), on
+// an EPHEMERAL port, and every page URL carries `?relay=…` pointing at
+// it (see `baseQuery` below).
+//
+// THE PORT COMES FROM A CONFIG FILE, not a flag: the CLI offers exactly
+// `--dev` and `-c/--config-path` (iroh-relay 1.0.3 src/main.rs), and
+// `--dev` hard-codes 3340 — which two suites running side by side would
+// fight over. `--dev` is still passed, because it is what turns TLS off;
+// an explicit `http_bind_addr` in the config wins over its default (main.rs:
+// `if cfg.http_bind_addr.is_none()`). `enable_metrics = false` matters
+// for the same collision reason: the metrics listener otherwise defaults
+// to :9090 and a second relay would fail to bind it.
+const RELAY_BIN = `${demoRoot}../engine/.deps/relay/bin/iroh-relay`;
+
+class Relay {
+  #proc: Deno.ChildProcess | null = null;
+  #dir: string | null = null;
+  readonly url: string;
+  readonly #port: number;
+
+  constructor(port: number) {
+    this.#port = port;
+    this.url = `http://127.0.0.1:${port}`;
+  }
+
+  async start(): Promise<void> {
+    if (this.#proc) return;
+    try {
+      await Deno.stat(RELAY_BIN);
+    } catch {
+      console.error(
+        `no iroh-relay at ${RELAY_BIN} — run \`cd engine && just relay-bin\` ` +
+          `(the suite runs its own relay; it no longer uses the public one).`,
+      );
+      Deno.exit(2);
+    }
+    this.#dir ??= await Deno.makeTempDir({ prefix: "pm-e2e-relay." });
+    const cfg = `${this.#dir}/relay.toml`;
+    await Deno.writeTextFile(
+      cfg,
+      `http_bind_addr = "127.0.0.1:${this.#port}"\nenable_metrics = false\n`,
+    );
+    this.#proc = new Deno.Command(RELAY_BIN, {
+      args: ["--dev", "--config-path", cfg],
+      stdout: "null",
+      stderr: "null",
+    }).spawn();
+    // `/generate_204` is the relay's own net-report probe endpoint
+    // (iroh-relay src/server.rs) — answering it is the relay saying it
+    // is serving, which is stronger than the port being open.
+    for (let i = 0; i < 120; i++) {
+      try {
+        const r = await fetch(`${this.url}/generate_204`, {
+          signal: AbortSignal.timeout(2_000),
+        });
+        await r.body?.cancel();
+        if (r.status === 204 || r.ok) return;
+      } catch { /* not up yet */ }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    throw new Error(`the local relay never answered on ${this.url}`);
+  }
+
+  async dispose(): Promise<void> {
+    const proc = this.#proc;
+    this.#proc = null;
+    if (proc) {
+      try {
+        proc.kill("SIGKILL");
+      } catch { /* already dead */ }
+      await proc.status;
+    }
+    if (this.#dir) await Deno.remove(this.#dir, { recursive: true }).catch(() => {});
+  }
+}
+
 // --- the run ---------------------------------------------------------------
 
 async function main() {
@@ -235,6 +341,13 @@ async function main() {
   const baseUrl = `http://127.0.0.1:${sitePort}`;
   const minio = new Minio(await freePort());
   await minio.start();
+  const relay = new Relay(await freePort());
+  await relay.start();
+  console.log(`local relay: ${relay.url}`);
+  /** What EVERY page in the suite gets, before any scenario's own
+   * `query`. The suite is hermetic: no page here talks to the public
+   * relay, including the boot wire step. */
+  const baseQuery: Record<string, string> = { relay: relay.url };
 
   // The browser comes from playwright's own cache — `~/.cache/ms-playwright`
   // by default, or wherever PLAYWRIGHT_BROWSERS_PATH points (CI sets it to
@@ -305,14 +418,14 @@ async function main() {
       (page as unknown as { __log: string[] }).__log = lines;
       (page as unknown as { __crashed: () => boolean }).__crashed = () => crashed;
       setPhase("goto");
-      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      await page.goto(pageUrl(baseUrl, baseQuery, opts), { waitUntil: "domcontentloaded" });
       if (!opts.noWait) {
         setPhase("waitForBoot");
         // No crash race here any more: waitForBoot is itself crash-aware
         // (it reads the flag above through `__crashed` and attaches — and
         // REMOVES — its own listener), so racing one here would only leak
         // a `crash` listener per boot.
-        await waitForBoot(page);
+        await waitForBoot(page, opts.bootGlobal);
       }
       return page;
     },
@@ -625,6 +738,7 @@ async function main() {
     new Promise((r) => setTimeout(r, 5_000)),
   ]);
   await minio.dispose();
+  await relay.dispose();
   await server.shutdown();
 
   const wall = ((performance.now() - started) / 1000).toFixed(1);

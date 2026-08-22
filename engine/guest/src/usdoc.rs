@@ -30,7 +30,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 
 use crate::exports::polyvisor::engine::driver::{
-    UsDevice, UsEvent, UsMark, UsProfile,
+    UsDevice, UsEvent, UsMark, UsPartition, UsProfile,
 };
 use crate::{arr32, with_state, Partition};
 
@@ -78,6 +78,18 @@ const PROFILE: &str = "profile";
 const MARKS: &str = "marks";
 const CONTACTS: &str = "contacts";
 const DEVICES: &str = "devices";
+/// The PARTITION-POINTER map (#36): `name -> partition id (raw bytes)`,
+/// a flat top-level map beside the other families so it syncs exactly
+/// like them. ADDITIVE: a document written before this key existed has
+/// no `partitions` entry, and every read path below turns a missing map
+/// into an empty list rather than an error.
+const PARTITIONS: &str = "partitions";
+/// THE WALK-ANCHOR MAP a data partition carries: `agent id (hex) ->
+/// enrolled-at`. Written into every account partition when a device is
+/// enrolled (see `anchor_data_partitions`). It lives at the document
+/// ROOT beside the app's own keys and is invisible to the app — the
+/// tasks service reads `ROOT."todos"` and nothing else (lib.rs:2270).
+const ENROLLED: &str = "_enrolled";
 
 fn map_at(am: &AutoCommit, key: &str) -> Option<ObjId> {
     match am.get(ROOT, key) {
@@ -216,6 +228,24 @@ fn read_contacts(am: &AutoCommit) -> BTreeMap<String, (Vec<u8>, String)> {
                 get_str(am, &c, "petname").unwrap_or_default(),
             ),
         );
+    }
+    out
+}
+
+/// Name-ordered (`am.keys` yields a map's keys sorted), so two devices
+/// that read the same doc state render the same list.
+fn read_partitions(am: &AutoCommit) -> Vec<(String, Vec<u8>)> {
+    let Some(partitions) = map_at(am, PARTITIONS) else {
+        // Old document, written before the key existed: empty, not an
+        // error. Same tolerance every other family read has.
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for key in am.keys(&partitions) {
+        let Some(id) = get_bytes(am, &partitions, &key) else {
+            continue;
+        };
+        out.push((key.to_string(), id));
     }
     out
 }
@@ -554,7 +584,7 @@ pub(crate) async fn create(profile: UsProfile) -> Result<Vec<u8>, String> {
     if let Some(icon) = profile.icon.clone() {
         am.put(&p, "icon", icon).map_err(|e| format!("icon: {e}"))?;
     }
-    for family in [MARKS, CONTACTS, DEVICES] {
+    for family in [MARKS, CONTACTS, DEVICES, PARTITIONS] {
         am.put_object(ROOT, family, ObjType::Map)
             .map_err(|e| format!("{family} map: {e}"))?;
     }
@@ -624,6 +654,72 @@ pub(crate) async fn adopt(partition_id: &[u8], user_group_id: &[u8]) -> Result<(
     crate::flush_keyhive().await
 }
 
+/// A WALK ANCHOR IN EVERY ACCOUNT DATA PARTITION.
+///
+/// PAIRING.md §4b: a joining device reads a document's pre-join history
+/// by CAUSAL WALK, and a walk has to start from a chunk the joiner can
+/// actually open. BeeKEM adds are not retroactive, so every chunk sealed
+/// before the joiner existed is sealed under an epoch it does not hold;
+/// what makes the rest reachable is one chunk under the NEW epoch, from
+/// which the whole ancestry can be walked.
+///
+/// `enroll_device` has always written that anchor for the user-system
+/// doc — the devices entry, flagged as the walk anchor in step 5 below.
+/// The account's DATA partitions had no equivalent, and the gap is not
+/// theoretical: measured in the browser across two pages, a device that
+/// joined an account whose todo list had been created and written BEFORE
+/// the ceremony synced all of that partition's chunks and could decrypt
+/// none of them — `chunk-stats` agreed on both sides while the joiner's
+/// materialized view stayed empty, indefinitely. One post-enrollment
+/// write on the adder's side made the whole history readable at once.
+///
+/// So the anchor is written here, for the same reason and by the same
+/// mechanism. It goes in `_enrolled` rather than in any app-owned key:
+/// the anchor must not be app-visible data, and inventing a todo item to
+/// carry it would put a row in the user's list that the user did not
+/// write.
+///
+/// Only partitions the account NAMES (the pointer map) and this device
+/// actually HOLDS are touched — the ones a joiner can discover and will
+/// try to read. Failure is reported per partition rather than aborting
+/// the enrollment: the membership grant has already landed and is
+/// correct, and losing it over an anchor would be the worse trade.
+async fn anchor_data_partitions(agent: &[u8]) -> Result<(), String> {
+    let us = doc_id()?;
+    let named = read_us(read_partitions)?;
+    let agent_key = hex::encode(agent);
+    let enrolled_at = crate::now_ms_u64();
+    for (name, id) in named {
+        // The us doc gets its anchor from the devices entry; anchoring it
+        // twice would be a second write for nothing.
+        if id == us {
+            continue;
+        }
+        if !with_state(|s| s.partitions.contains_key(&id))? {
+            // Named but not held on this device: nothing to seal a chunk
+            // from, and nothing this device could anchor honestly.
+            continue;
+        }
+        let agent_key = agent_key.clone();
+        let write = crate::author(&id, move |am| {
+            let enrolled = match map_at(am, ENROLLED) {
+                Some(e) => e,
+                None => am
+                    .put_object(ROOT, ENROLLED, ObjType::Map)
+                    .map_err(|e| format!("enrolled map: {e}"))?,
+            };
+            am.put(&enrolled, agent_key.as_str(), enrolled_at as i64)
+                .map_err(|e| format!("enrolled entry: {e}"))?;
+            Ok(())
+        })
+        .await;
+        if let Err(e) = write {
+            eprintln!("[enroll] could not anchor partition {name:?} for the new device: {e}");
+        }
+    }
+    Ok(())
+}
+
 /// The adder's enrollment writes, in the order PAIRING.md §2 pins.
 pub(crate) async fn enroll_device(
     joiner: &[u8],
@@ -667,6 +763,12 @@ pub(crate) async fn enroll_device(
     // guaranteed to be a chunk the joiner can open directly — and from a
     // chunk it can open, the whole ancestry is reachable (§2, §4b).
     device_entry(joiner, name).await?;
+    // 6. The same anchor, for the account's DATA partitions — the
+    // devices entry only covers this document (see
+    // `anchor_data_partitions`). AFTER the rotation in step 2, so the
+    // chunk is sealed under an epoch the joiner holds; that ordering is
+    // the whole mechanism.
+    anchor_data_partitions(joiner).await?;
     crate::flush_keyhive().await?;
     Ok((group, card, partition))
 }
@@ -852,6 +954,39 @@ pub(crate) async fn contact_put(card: Vec<u8>, petname: String) -> Result<(), St
         Ok(())
     })
     .await
+}
+
+/// Upsert the pointer under `name`. Names are short UTF-8 strings and
+/// are the map key; ids are raw bytes stored as an automerge `Bytes`
+/// scalar, so a concurrent re-publish of the same name is an ordinary
+/// last-writer-wins register merge rather than a structural conflict.
+pub(crate) async fn partition_put(name: String, id: Vec<u8>) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("a partition pointer needs a name".into());
+    }
+    if id.is_empty() {
+        return Err("a partition pointer needs an id".into());
+    }
+    write(move |am| {
+        let partitions = match map_at(am, PARTITIONS) {
+            Some(p) => p,
+            None => am
+                .put_object(ROOT, PARTITIONS, ObjType::Map)
+                .map_err(|e| format!("partitions map: {e}"))?,
+        };
+        am.put(&partitions, name.as_str(), id)
+            .map_err(|e| format!("partition pointer: {e}"))?;
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn partitions_list() -> Result<Vec<UsPartition>, String> {
+    pump().await?;
+    Ok(read_us(read_partitions)?
+        .into_iter()
+        .map(|(name, id)| UsPartition { name, id })
+        .collect())
 }
 
 pub(crate) async fn devices_list() -> Result<Vec<UsDevice>, String> {

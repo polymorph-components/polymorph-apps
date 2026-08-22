@@ -369,20 +369,89 @@ PAIRING.md §5 puts them:
   The localStorage keys and formats are unchanged — that IS the
   demotion: the same bytes, no longer the source of truth.
 
-**Which driver.** The in-page ceremony runs against the MOCK by default;
-`?pairing=engine` selects the real composite (`../runtime/pairing-engine.ts`).
+**Which driver.** The in-page ceremony runs against the REAL ENGINE by
+default (`../runtime/pairing-engine.ts`, one composite instance per
+pane, over iroh); `?pairing=mock` overrides it with the in-page mock.
 Everything above the driver is the same code either way. The engine path
-does not complete a ceremony yet: `user-create` traps the guest
-(a wit-bindgen async-support panic), so there is no user group to enroll
-into — measured, with the details and what DOES work over the real
-engine, in PAIRING.md §6's status note. The page says which backend is
-live rather than pretending: with `?pairing=engine` the laptop pane
-reads "user-system unavailable (engine): …".
+completes a full ceremony now — code, SAS, grant, ENROLL — since the
+`user-create` guest trap (a scheduler misattribution in the runtime's
+async support, polyengine#213) and the add side's yield-spinning linger
+were both fixed; PAIRING.md §6 carries the dated status. The page still
+says which backend is live rather than pretending, and a user-system
+that fails to come up is reported on the laptop pane rather than being
+fatal.
 
-e2e coverage: `just e2e device-pairing` (both ceremonies, SAS equality
-across the two surfaces, the arming delay, the empty device-name field,
-the adoption announcement, and a petname written on the laptop arriving
-on the tablet).
+**Pairing grants membership; the embedder wires sync.** When a join
+completes, `host/demo.ts` connects the two panes and `sync-start`s the
+enrollment's partition with `subscribe` in both directions — otherwise
+the joined device holds a membership and an empty user-system doc, and
+no petname written on the laptop could ever reach it.
+
+e2e coverage, two scenarios over the same acts
+(`e2e/scenarios/device-pairing-acts.ts`):
+
+- `just e2e device-pairing` — the LIVE ceremony over the engine, against
+  a relay the harness spawns itself on an ephemeral port (the suite
+  never touches the public relay);
+- `just e2e device-pairing-mock` — the same acts against the mock: fast,
+  transport-free, and the half that says whether a failure is the
+  visor's or the engine's.
+
+Both assert both ceremonies, SAS equality across the two surfaces, the
+arming delay, the empty device-name field, the adoption announcement,
+and a petname written on the laptop arriving on the tablet.
+
+## The solo page — one device, pairing across two browser pages
+
+`serve/solo.html` (built from `web/solo.html` + `host/solo.ts`, linked
+from the demo's own control bar as "one device") is a **second, smaller
+embedder** over the same served artifacts: ONE engine instance, ONE
+visor, the todomvc app in its sandboxed frame. It is not another view of
+the three-pane demo — it is the deployment shape the demo deliberately
+is not.
+
+The demo puts a whole account on one page so both ends of every beat are
+watchable at once, which is good theatre and a poor model: the two
+"devices" share a process, a document, a storage origin and a boot, so
+several things a real second device must do for itself are simply
+variables in scope. On the solo page they are not. Two solo pages, in
+two independent browser contexts, meet only over the relay, and
+everything that crosses between them had to cross a wire:
+
+- the **adder's endpoint and agent ids**, which the joiner learns only
+  from `pair-enrollment` (the record grew `peer-agent-id` /
+  `peer-endpoint-id` for exactly this; both are OBSERVED — the endpoint
+  is the transport-authenticated dialer, the agent is the issuer of the
+  signed delegation in the ENROLL card — never a name the peer claimed);
+- the **tasks partition id**, read out of the synced user-system doc's
+  partition-pointer map (#36), which is a joined device's only channel
+  for it;
+- the todos, and the account's petnames, over the subduction the
+  embedder wires after the ceremony — **writer accepts, reader dials**
+  (reversed, everything reports healthy and nothing flows).
+
+First run offers two affordances plainly, neither dressed as the
+default: **new account** (create the user, create the tasks partition,
+delegate it to the USER GROUP — never to a device — seal, publish the
+pointer) and **join another device** (the visor's join pane, then the
+sync-and-adopt flow above). Adding a device is the same heavy ceremony
+as the demo's, reached from the visor's own settings sheet.
+
+Its storage keys are `pm-solo-*`: the two pages share an origin, and an
+identity shared between them would make the "separate device" claim
+false.
+
+**What v1 does not have**, and does not pretend to: no bucket — the
+three storage seams and the signer are wired to REFUSE, which is the
+honest wiring for an instance with no destination — and therefore no
+storage picker and no provider panels; no collaborator; no three-pane
+theatre; and no engine identity across reloads (`init` mints a fresh one
+every boot), so every visit is a first run in practice.
+
+`just e2e solo-pairing` drives the whole thing: two `ctx.fresh()`
+contexts, todos typed into the real todomvc input inside the sandboxed
+frame, SAS equality asserted across two documents, and convergence in
+both directions plus a petname.
 
 ## Deployment
 

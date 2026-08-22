@@ -106,6 +106,30 @@ jobs:
           path: engine/.deps/minio
           key: minio-${{ runner.os }}-${{ runner.arch }}-v1
 
+      - name: Read the pinned iroh-relay version
+        # Same one-place-pin discipline as the Playwright step: the
+        # version lives in engine/justfile (IROH_RELAY_VERSION), the
+        # install recipe verifies the installed binary against it, and
+        # the cache key follows it so a bump cannot restore the old
+        # build.
+        id: relay
+        working-directory: engine
+        run: |
+          version=$(sed -n 's/^IROH_RELAY_VERSION := "\(.*\)"$/\1/p' justfile)
+          test -n "$version" || { echo "could not read the iroh-relay pin from engine/justfile" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "pinned iroh-relay: $version"
+
+      - name: Cache the iroh-relay binary
+        # The e2e harness spawns its OWN relay on an ephemeral port —
+        # nothing in the suite reaches the public relay — and the binary
+        # is a `cargo install` (minutes when cold). The cache makes
+        # `just relay-bin` a version-probe no-op on every later run.
+        uses: actions/cache@v4
+        with:
+          path: engine/.deps/relay
+          key: relay-${{ runner.os }}-${{ runner.arch }}-${{ steps.relay.outputs.version }}
+
       - name: Install the browser and the store
         # Probe-then-install: a restored cache makes this a no-op beyond
         # the launch probe. `install-deps` (system libraries for Chromium)

@@ -51,7 +51,7 @@ echo "      (the visor's labels are the visor's own; a panel must never borrow t
 # framework layer grows rather than needing this list edited, which is
 # exactly the miss this check would otherwise have after the naming and
 # settings sheets moved out of host/demo.ts.
-VISOR_RENDERERS="host/demo.ts ../visor/ui/*.ts"
+VISOR_RENDERERS="host/demo.ts host/solo.ts ../visor/ui/*.ts"
 # shellcheck disable=SC2086
 prose=$(cat $VISOR_RENDERERS | sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' |
   grep -oiE '"[^"]*password[^"]*"' | grep -vx '"password"')

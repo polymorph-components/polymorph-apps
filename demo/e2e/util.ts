@@ -36,6 +36,44 @@ export interface FreshOptions {
   /** Let the demo pick (and ANNOUNCE) a fresh anchor colour. Off by
    * default: see `seedHue`. */
   freshAnchor?: boolean;
+  /** WHICH DOCUMENT to open, as a root-relative path. Defaults to the
+   * demo's own `/index.html` (i.e. the served root). The solo page
+   * (`/solo.html`) is a SECOND embedder over the same served artifacts,
+   * so the harness needs to be able to name it — the alternative was a
+   * second runner, which would have meant a second relay, a second
+   * MinIO and a second set of crash-recovery machinery for one page. */
+  path?: string;
+  /** The global the boot wait polls for. Defaults to `__demo`; the solo
+   * page installs `__solo`. Named rather than sniffed, so a page that
+   * booted the WRONG document fails the wait instead of passing on the
+   * other page's marker. */
+  bootGlobal?: string;
+  /** Extra URL query parameters for this scenario's page — e.g.
+   * `{ pairing: "mock" }`. MERGED over the harness's own base query (see
+   * `pageUrl`), which is how every page in the suite gets the local
+   * relay without a scenario having to know the relay exists. A
+   * scenario may override a base parameter by naming it here; that is a
+   * deliberate escape hatch, not an accident, so nothing hides it. */
+  query?: Record<string, string>;
+}
+
+/** The URL a scenario's page is opened at: the served site, plus the
+ * harness's base query (the ephemeral local relay), plus whatever the
+ * scenario asked for. ONE place, so a new world-level parameter reaches
+ * all thirteen scenarios by being added to the base — the alternative
+ * was editing every scenario, which is how a suite ends up half
+ * hermetic. */
+export function pageUrl(
+  baseUrl: string,
+  baseQuery: Record<string, string>,
+  opts: FreshOptions = {},
+): string {
+  const url = new URL(baseUrl);
+  if (opts.path) url.pathname = opts.path;
+  for (const [k, v] of Object.entries({ ...baseQuery, ...(opts.query ?? {}) })) {
+    url.searchParams.set(k, v);
+  }
+  return url.toString();
 }
 
 /** The demo's own storage keys, mirrored from host/demo.ts. Duplicated
@@ -49,6 +87,16 @@ export const KEYS = {
   marks: "pm-demo-surface-marks",
   storage: "pm-demo-storage",
   legacyS3: "pm-demo-s3",
+} as const;
+
+/** The SOLO page's own keys, mirrored from host/solo.ts for the same
+ * reason as `KEYS` above (a rename there fails the scenario loudly). The
+ * `pm-solo-` prefix is the whole point: two embedders on one origin must
+ * not share an identity, or the second page is not a second device. */
+export const SOLO_KEYS = {
+  hue: "pm-solo-visor-hue",
+  identity: "pm-solo-identity",
+  marks: "pm-solo-surface-marks",
 } as const;
 
 /** CONTRACT (host/demo.ts:1573-1576): a boot that finds NO stored anchor
@@ -146,7 +194,13 @@ export async function newContext(
     viewport: opts.viewport ?? { width: 1280, height: 900 },
   });
   const seed: Record<string, string> = { ...(opts.storage ?? {}) };
-  if (!opts.freshAnchor && seed[KEYS.hue] === undefined) seed[KEYS.hue] = seedHue;
+  // THE HUE SEED FOLLOWS THE PAGE. Each embedder owns its own storage
+  // keys (that is what makes two pages on one origin two devices), so
+  // seeding the demo's key on a solo page would leave the solo visor
+  // rolling a fresh anchor and ANNOUNCING it for 15s — over the very
+  // line the scenario reads.
+  const hueKey = opts.path?.includes("solo") ? SOLO_KEYS.hue : KEYS.hue;
+  if (!opts.freshAnchor && seed[hueKey] === undefined) seed[hueKey] = seedHue;
   if (Object.keys(seed).length > 0) {
     await context.addInitScript((entries: [string, string][]) => {
       // Runs before every document's own scripts, which is the only
@@ -212,7 +266,7 @@ const STALLED = Symbol("stalled");
  * ANSWER (e.g. "Execution context was destroyed", which is what an
  * ordinary mid-reload probe gets), and the mode being detected answers
  * nothing at all. Only crash/closed-shaped rejections are fatal. */
-export async function waitForBoot(page: Page): Promise<void> {
+export async function waitForBoot(page: Page, bootGlobal = "__demo"): Promise<void> {
   let crashed = false;
   const onCrash = () => {
     crashed = true;
@@ -235,11 +289,11 @@ export async function waitForBoot(page: Page): Promise<void> {
           `boot timeout: the demo did not report ready within ${BOOT_TIMEOUT / 1000}s (${last})`,
         );
       }
-      const probe = page.evaluate(() => {
-        const d = (globalThis as Record<string, unknown>).__demo;
+      const probe = page.evaluate((g: string) => {
+        const d = (globalThis as Record<string, unknown>)[g];
         const banner = document.getElementById("banner")?.textContent ?? "";
         return d !== undefined && banner.includes("ready");
-      });
+      }, bootGlobal);
       let stallTimer: number | undefined;
       const stall = new Promise<symbol>((r) => {
         stallTimer = setTimeout(() => r(STALLED), PROBE_STALL_MS);
@@ -849,17 +903,30 @@ export function namingReason(page: Page): Promise<string> {
  * exactly as a user does. */
 // deno-lint-ignore no-explicit-any
 export function hook(page: Page, path: string, ...args: any[]): Promise<any> {
+  return hookOn(page, "__demo", path, ...args);
+}
+
+/** The same, against a NAMED driving root. The solo page installs
+ * `__solo` rather than `__demo` (a second embedder, not a second copy of
+ * the first), and the root is passed explicitly rather than sniffed so a
+ * call against a page that booted the wrong document fails loudly
+ * instead of silently finding the other page's hooks. */
+// deno-lint-ignore no-explicit-any
+export function hookOn(page: Page, root: string, path: string, ...args: any[]): Promise<any> {
   return page.evaluate(
     // deno-lint-ignore no-explicit-any
-    ({ path, args }: { path: string; args: any[] }) => {
+    ({ root, path, args }: { root: string; path: string; args: any[] }) => {
       // deno-lint-ignore no-explicit-any
-      let target: any = (globalThis as any).__demo;
+      const base: any = (globalThis as any)[root];
+      if (base === undefined) throw new Error(`no ${root} on this page`);
+      // deno-lint-ignore no-explicit-any
+      let target: any = base;
       const parts = path.split(".");
       const last = parts.pop()!;
       for (const p of parts) target = target[p];
       return target[last](...args);
     },
-    { path, args },
+    { root, path, args },
   );
 }
 
