@@ -1,21 +1,21 @@
-# End-to-end TodoMVC demo (#20 G6+G7): the tasks engine under deltic in
+# End-to-end TodoMVC demo (#20 G6+G7): the tasks engine under polyengine in
 # the browser, integrated with the todomvc surface spike.
 #
 # jsr-pins branch: relay is the SAME pinned binary the tasks-engine
 # spike installs (`engine`'s `just relay-bin`,
-# iroh-relay@1.0.3, repo-local, no sibling checkout); the deltic ports
-# (webcrypto/websocket) are jsr:@polymorph/*@0.2.0 per deno.json
+# iroh-relay@1.0.3, repo-local, no sibling checkout); the polyengine ports
+# (webcrypto/websocket) are jsr:@polymorph/*@0.3.0 per deno.json
 # (webrtc-datachannels stays on a sibling checkout, see deno.json's
 # MODULE-IDENTITY comment). The endpoint wasm comes from `../engine`'s
 # default `compose` target, which is JSR-sourced
-# (jsr:@polymorph/iroh@0.1.0, see that spike's justfile PINS block) —
+# (jsr:@polymorph/iroh@0.3.0, see that spike's justfile PINS block) —
 # no IROH_CHECKOUT is needed by this justfile's default path.
 
 # Build the engine composite (delegates to the tasks-engine spike).
 engine:
     cd ../engine && just compose
 
-# Translate the composite for deltic (build-time; the browser never
+# Translate the composite for polyengine (build-time; the browser never
 # ships the translator).
 translate: engine
     mkdir -p build

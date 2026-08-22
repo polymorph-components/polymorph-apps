@@ -10,7 +10,7 @@ relative path.
 
 - **`engine.ts`** — the polyengine embedding adapter for the engine
   composite: envelope loading, import-record assembly (WASI batteries,
-  a fetch-backed `wasi:http`, polymorph ports, a sockets stub), typed
+  a fetch-backed `wasi:http`, polyengine ports, a sockets stub), typed
   `driver`/`tasks` views over the composite's exports, and the
   per-instance import-fragment freshness bookkeeping that makes
   repeated instantiation cheap.

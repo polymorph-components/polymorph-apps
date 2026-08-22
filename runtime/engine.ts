@@ -10,9 +10,9 @@
 import { artifactsFromEnvelope, instantiate } from "@polyengine/runtime/embedder";
 import { wasi } from "@polyengine/wasi";
 import { http } from "@polyengine/wasi/http";
-import { webcryptoImports } from "@polymorph/webcrypto";
-import { websocketImports } from "@polymorph/websocket";
-import { webrtcImports } from "@polymorph/webrtc-datachannels";
+import { webcryptoImports } from "@polymorph/webcrypto-polyengine";
+import { websocketImports } from "@polymorph/websocket-polyengine";
+import { webrtcImports } from "@polymorph/webrtc-polyengine";
 import { socketsImports } from "./stubs.ts";
 
 const DRIVER = "polyvisor:engine/driver@0.1.0";

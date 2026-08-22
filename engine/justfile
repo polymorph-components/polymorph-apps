@@ -7,9 +7,9 @@
 # PINS (jsr-pins branch: replaces the IROH_CHECKOUT sibling-checkout
 # convention with two independently-versioned, recorded artifacts).
 #
-#   JSR endpoint package : jsr:@polymorph/iroh@0.1.0
-#     (published from polymorph-iroh @ f3d8990, "jsr: publish
-#     @polymorph/iroh"; endpoint component ships base64-embedded in the
+#   JSR endpoint package : jsr:@polymorph/iroh@0.3.0
+#     (published from polymorph-iroh @ 97c9cd4; endpoint component
+#     ships base64-embedded in the
 #     package and is extracted verbatim by `just fetch-endpoint-wasm` —
 #     see tools/fetch-endpoint-wasm.ts for the extraction path and
 #     integrity story.)
@@ -37,7 +37,7 @@
 # Only `compose-checkout` reads this; nothing default-path does.
 IROH_CHECKOUT := env_var_or_default("IROH_CHECKOUT", "../../../polymorph-iroh")
 IROH_RELAY_VERSION := "1.0.3"
-JSR_IROH_VERSION := "0.1.0"
+JSR_IROH_VERSION := "0.3.0"
 
 # Pinned relay binary, installed once into a repo-local bin dir (no
 # sibling checkout needed). `--locked` honors iroh-relay's own Cargo.lock

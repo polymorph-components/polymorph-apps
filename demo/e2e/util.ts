@@ -65,7 +65,7 @@ export function pageUrl(
 
 /** The demo's own storage keys, mirrored from host/demo.ts. Duplicated
  * rather than imported because the browser-side module is bundled for
- * the page and importing it here would drag the whole deltic graph into
+ * the page and importing it here would drag the whole polyengine graph into
  * the harness. If a key is renamed there, the scenario that depends on
  * it fails loudly — which is the point of a tripwire. */
 export const KEYS = {
@@ -143,7 +143,7 @@ export function assertList(actual: string[], expected: string[], msg: string): v
 
 // --- page helpers ----------------------------------------------------------
 
-/** Generous but BOUNDED: a wasm component graph booting under deltic in
+/** Generous but BOUNDED: a wasm component graph booting under polyengine in
  * a cold headless browser is slow, and a scenario that hangs forever is
  * worse than one that fails. */
 export const BOOT_TIMEOUT = 90_000;

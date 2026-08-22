@@ -4,7 +4,7 @@
 //   bob     — a collaborator over the live iroh websocket relay
 //   tablet  — Alice's second device; NO connections, bucket only
 //
-// Each pane is TWO component instances under deltic: the engine
+// Each pane is TWO component instances under polyengine: the engine
 // composite (keyhive + automerge + subduction + bridge + SigV4 bucket
 // client + iroh endpoint) and the todomvc app guest. The app's
 // `polyvisor:tasks` import is wired DIRECTLY to the engine
@@ -2619,7 +2619,7 @@ async function boot() {
   let panelFrame: { destroy(): Promise<void> } | null = null;
 
   /** Drop the panel: clear its granted subtree and cut the event path.
-   * (Instance teardown proper is an OPEN deltic question — there is no
+   * (Instance teardown proper is an OPEN polyengine question — there is no
    * `drop`/`dispose` on an instantiated component yet; dropping our refs
    * and its DOM is the whole of the retirement we can express today.) */
   // Every mount takes a generation; teardown bumps it. Mounting is
