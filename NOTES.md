@@ -398,6 +398,121 @@ Investigated 2026-08-16 (subduction as the replication layer): findings
 on the [#8 thread](../../issues/8); direction in
 [Provisional plan: group crypto and sync](#provisional-plan-group-crypto-and-sync).
 
+## The content CRDT: the field, reviewed
+
+Reviewed 2026-08-22 (automerge-repo, Loro, and the field) for adoption
+or first-class support. Outcome: nothing adopted, no second CRDT gains
+first-class support; automerge stays — now a checked choice, not a
+default. Two risk-register updates at the end. Upstream facts below
+carry their as-of date; they will go stale.
+
+**The filter is the DAG spine, not CRDT quality.** The engine's unit is
+chunk = one automerge change, cref = its `ChangeHash`, chunk parents =
+`deps()` = keyhive pred-refs = sedimentree parents — a
+content-addressed causal DAG — under the TCB rule above (one Rust
+implementation, one version, in-guest). So the test a candidate must
+pass: a Rust, wasm32-wasip2-viable document CRDT whose native change
+unit is a content-addressed node in an exposed causal DAG. Only
+automerge passes it.
+
+- **automerge-repo — not a candidate; it is the co-embedder.** It is
+  the JS host-side embedding of this same stack (Repo/DocHandle,
+  storage/network adapters): adopting it moves merge and crypto out of
+  the wasm TCB, and its classic sync protocol is the thing this design
+  exists to replace (per-doc sync states, plaintext at the sync
+  server, doc-ID-as-capability). Its live roadmap is this
+  architecture: the subduction rebase ships from a parallel npm
+  channel (`2.6.0-subduction.48` as of 2026-08-20, ahead of `latest`;
+  tracking PR automerge-repo #601) with keyhive E2EE plumbing — blob
+  interceptors, application secret chains — merged on that branch.
+  Read: the provisional plan's bet is upstream's official direction,
+  and automerge-repo is now a second production embedder of the same
+  stack (subduction #274, wasm memory corruption, was reported from
+  automerge-repo 2.6.0-subduction.44 — someone else is finding bugs
+  on this path). Watch items: the application-secret-chain direction
+  (keyhive #207) is the same envelope-delivery problem the
+  `subduction_keyhive` bridge solves — re-check envelope compatibility
+  when keyhive's bincode→bijoux encoding migration lands; the wire
+  lineage stays shared, so cross-stack interop is a later option, not
+  a rewrite. The Rust ports do not change the answer: automerge-repo-rs
+  is dormant (last push 2025-10), samod is author-labeled experimental
+  with wasm runtime support an open issue (samod #29).
+- **Loro — the one credible rival, disqualified by its identity
+  model.** Credit first: Loro 1.13.x is format-stable since 1.0,
+  actively maintained, and ahead of automerge on types — movable tree,
+  movable list, mergeable containers, shallow snapshots (a native
+  strata analogue), history redaction, Peritext-criteria rich text —
+  and it compiles unpatched for wasm32-wasip2 and runs under wasmtime
+  (verified 2026-08-22; ~1.5 MB size-optimized), though upstream has
+  no wasip2 CI target or support commitment (loro #655, #881). The
+  disqualifier: change identity is (peer-id, counter); deps are OpID
+  frontiers; there is no content hash anywhere in the model; change
+  boundaries auto-merge over time (unstable units), and export bytes
+  carry no canonicality guarantee. The whole spine would move into
+  the framework — hash the emitted blob at seal time, carry an
+  OpID-span → hash index as replicated state. Worse, and decisive: no
+  Byzantine fault tolerance (Loro's own comparison table concedes the
+  row to automerge). Write grants put members in the threat model
+  (§Data services), and a member equivocating an OpID — two ops, one
+  (peer, counter), shown to different peers — diverges replicas
+  permanently; a content-address veneer can detect it (two blobs
+  claiming one span) but cannot repair merge, which consumes OpIDs
+  internally. Automerge excludes this structurally (identity = hash).
+  Adopting Loro is a security downgrade paid for in features. A
+  second first-class CRDT behind a data-service facade fails the same
+  review from the other side: it spends the one-implementation rule
+  and doubles the envelope, adapter, and cross-version-compat
+  surfaces — for features, not properties. Keep Loro as the feature
+  pressure list on automerge's roadmap: movable tree, mergeable
+  containers (the concurrent child-container-creation footgun exists
+  in automerge too), shallow snapshots, redaction.
+- **The field, one line each.** yrs: healthy (NLnet/Ably/AppFlowy
+  behind it), wrong model — state-vector deltas plus GC that rewrites
+  history; no per-change identity to address. Jazz/cojson: the
+  nearest rival *bundle* (content-addressed CoValue IDs, groups,
+  E2EE), but history is per-session hash chains, not a change DAG; it
+  replaces keyhive rather than composing, and 2.0 is an undocumented
+  alpha mid-pivot. p2panda: content-addressed hash-DAG logs — the
+  right shape — but no document CRDT at all (their own editor pairs
+  p2panda with Loro). diamond-types: text-only, bus factor 1.
+  json-joy: TS-only, now AGPL. cr-sqlite, Corrosion, Evolu,
+  Fireproof, Willow, iroh-docs: LWW/KV models without causal history.
+  DXOS: a TS platform *on* automerge — the layers it adds are the
+  ones this framework already owns in-guest.
+- **Risk-register update: the DCGKA fallback now has a shipping
+  implementation.** `p2panda-encryption` 0.7.1 (Rust, MIT/Apache-2,
+  NLnet-funded, transport-agnostic; DCGKA lineage, ~128-member
+  groups; an audit by Radically Open Security announced) is a
+  maintained group-keying crate that deliberately diverges from
+  keyhive — and cites it. The fallback price recorded in the topology
+  bullet (dropping keyhive means rebuilding op-sync and policy
+  enforcement) still stands, but the group-keying half of that branch
+  is no longer a from-scratch build. Watch item, not a dependency.
+- **Risk-register update: automerge has no peer.** Nothing surveyed
+  offers the Rust + wasm + content-addressed-causal-DAG combination,
+  so the CRDT layer is load-bearing without an understudy — the
+  conversion checkpoints gain weight accordingly. Upstream state as
+  of 2026-08-22: core automerge is the healthy layer (0.11.0 current,
+  ~6-week cadence, two funded full-time maintainers, format stable
+  across 2→3, the Hexane engine rewrite landed); every layer above it
+  is pre-release by its own authors' labels; subduction #268 (the
+  ~2,400-doc freeze, on exactly this design's doc-count profile) has
+  a candidate fix unmerged (subduction PR #273), #274 (wasm memory
+  corruption) and #283 (transient false heads) are open; keyhive
+  #136/#137/#206/#216 are open with zero comments (the first two ~15
+  months); the threat-model doc is still a heading-only stub; the
+  BeeKEM preprint ([eprint 2026/1434](https://eprint.iacr.org/2026/1434))
+  formalizes the CGKA only — the content envelope remains unreviewed;
+  and the bincode→bijoux encoding migration is announced, i.e.
+  pinned-pair migrations are scheduled work, plural.
+- **Why this stays cheap to revisit.** CRDT choice is app-invisible
+  by construction — data-service facades, the WIT surface,
+  migration-as-new-doc as the named schema tool — so a wholesale
+  migration, if the checkpoints ever fail, is a framework-internal,
+  bounded job. The option stays cheap *because* there is one CRDT;
+  first-class support for a second would spend the property that
+  keeps it cheap.
+
 ## Storage backends and the cryptographic pull layer
 
 Recorded 2026-08-16 from design discussion. Leaning, not ruling;
