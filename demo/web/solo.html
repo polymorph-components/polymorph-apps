@@ -28,6 +28,9 @@
     #first-run { display: flex; flex-direction: column; gap: 1em;
                  padding: 1.2em; background: #fff; border: 1px solid #ddd;
                  border-radius: 4px; }
+    /* An explicit `display` beats the [hidden] attribute's UA default —
+       without this rule the fork card can never actually leave. */
+    #first-run[hidden] { display: none; }
     #first-run h2 { margin: 0; font-size: 15px; font-weight: 600; color: #333; }
     #first-run .choice { display: flex; flex-direction: column; gap: .3em; }
     #first-run .choice button { align-self: flex-start; padding: .4em 1em; font-size: 14px; }
