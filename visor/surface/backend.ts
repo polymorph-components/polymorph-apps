@@ -1,6 +1,6 @@
-// A backend implements the surface's ordering spec (see wit/todomvc.wit,
-// world `lab` doc comment) for one placement. The surface front-end owns
-// ALL guest-facing validation and calls these primitives with
+// A backend implements the surface's ordering spec (see wit/surface/surface.wit,
+// the `polyvisor:surface` package header) for one placement. The surface
+// front-end owns ALL guest-facing validation and calls these primitives with
 // already-checked arguments; `Rep` is the backend's element representation
 // (an integer id for op-queue backends, the real Element for the direct
 // backend).

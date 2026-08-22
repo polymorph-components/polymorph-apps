@@ -10,14 +10,14 @@
 use std::cell::RefCell;
 
 wit_bindgen::generate!({
-    path: "../../../wit/todomvc",
-    world: "demo-app",
+    path: ["../../../wit/surface", "../../../wit/tasks", "../wit"],
+    world: "polyvisor:todomvc/demo-app@0.0.1",
     generate_all,
 });
 
-use crate::polyvisor::todomvc::dom::{create_element, Element};
-use crate::polyvisor::todomvc::events::{listen, EventKind};
-use crate::polyvisor::todomvc::shell;
+use crate::polyvisor::surface::dom::{create_element, Element};
+use crate::polyvisor::surface::events::{listen, EventKind};
+use crate::polyvisor::surface::shell;
 use crate::polyvisor::tasks::tasks;
 
 const TOK_NEW: u32 = 1;

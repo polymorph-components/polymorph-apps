@@ -88,7 +88,7 @@ async function until<T>(
   throw new Error(`timed out waiting for ${what} (last: ${JSON.stringify(last)})`);
 }
 
-/** The glyph the app guest nominates (wit/todomvc/todomvc.wit's
+/** The glyph the app guest nominates (examples/todomvc/wit/todomvc.wit's
  * `mark-nomination`, answered in guest-app/src/lib.rs): ♜ U+265C BLACK
  * CHESS ROOK. Pinned so the write-through assertions below are about a
  * specific mark rather than "whatever came out". */
