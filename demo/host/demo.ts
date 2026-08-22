@@ -59,7 +59,7 @@ import type { PairingDriver } from "../../visor/ui/pairing-driver.ts";
 // The two PairingDriver implementations. Which one this page uses is a
 // URL choice — see PAIRING_BACKEND below for why the default is the
 // mock and what is blocking the engine path.
-import { createEnginePairingDriver } from "./pairing-engine.ts";
+import { createEnginePairingDriver } from "../../runtime/pairing-engine.ts";
 import { createMockDriver, MockPairingNetwork } from "./pairing-mock.ts";
 import type { UiEvent } from "../../visor/surface/events.ts";
 import {
@@ -73,7 +73,7 @@ import {
   type StoreSign,
   unhex,
   until,
-} from "./engine.ts";
+} from "../../runtime/engine.ts";
 import {
   eraseKeystore,
   getSigningKey,
@@ -81,7 +81,7 @@ import {
   putSigningKey,
   refusingSigner,
   type Signer,
-} from "./keystore.ts";
+} from "../../runtime/keystore.ts";
 
 // The live path rides n0's PUBLIC relay by default (interop proven in
 // polymorph-iroh's `just interop-prod`); override with ?relay=… — e.g.
@@ -92,7 +92,7 @@ const RELAY = params.get("relay") ?? "https://use1-1.relay.n0.iroh.link";
 // --- which pairing backend this page drives (PAIRING.md §5/§6) ---------------
 //
 // `?pairing=engine` runs the ceremony against the REAL engine composite
-// (host/pairing-engine.ts over each pane's own instance); the default
+// (../../runtime/pairing-engine.ts over each pane's own instance); the default
 // runs it against the in-page mock (host/pairing-mock.ts). The UI, the
 // wiring, the announcements and the write-through below are IDENTICAL
 // either way — the only difference is which object implements

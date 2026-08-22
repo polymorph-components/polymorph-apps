@@ -266,7 +266,7 @@ export interface EngineNet {
    * what makes recipient anonymity structural — the user's bearer is
    * wired elsewhere and cannot reach this path. */
   sharedFetch: StoreFetch;
-  /** SigV4 over an escrowed non-extractable key (host/keystore.ts). */
+  /** SigV4 over an escrowed non-extractable key (./keystore.ts). */
   signer: StoreSign;
 }
 

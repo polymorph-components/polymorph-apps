@@ -16,7 +16,7 @@
 // WHAT IS NOT HERE: any backend. The UI is written against
 // `./pairing-driver.ts`'s `PairingDriver` and nothing wider; the demo
 // supplies either a mock (demo/host/pairing-mock.ts) or an
-// engine adapter (demo/host/pairing-engine.ts). Nor does it own
+// engine adapter (runtime/pairing-engine.ts). Nor does it own
 // any pane's own chrome: a consumer passes in the container, the
 // announcement sink, and the storage keys, exactly as the rest of
 // visor/ui/ takes its consumer's keys.

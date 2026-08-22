@@ -19,7 +19,7 @@ engine:
 # ships the translator).
 translate: engine
     mkdir -p build
-    deno run --allow-read --allow-write tools/translate.ts \
+    deno run --allow-read --allow-write --config deno.json ../runtime/tools/translate.ts \
         ../engine/target/composed.wasm build/engine.plan.json
 
 # Local infra: iroh relay (ws on 3340) + MinIO (9000) with CORS open.
@@ -56,7 +56,7 @@ app:
     wasm-tools component new \
         ../examples/todomvc/guest/target/wasm32-unknown-unknown/release/demo_app_guest.wasm \
         -o build/app.component.wasm
-    deno run --allow-read --allow-write tools/translate.ts \
+    deno run --allow-read --allow-write --config deno.json ../runtime/tools/translate.ts \
         build/app.component.wasm build/app.plan.json
 
 # Build the storage-provider config panels (#19 × #22: provider config
@@ -70,9 +70,9 @@ panels:
     wasm-tools component new \
         ../providers/dropbox/panel/target/wasm32-unknown-unknown/release/demo_panel_dropbox_guest.wasm \
         -o build/panel-dropbox.component.wasm
-    deno run --allow-read --allow-write tools/translate.ts \
+    deno run --allow-read --allow-write --config deno.json ../runtime/tools/translate.ts \
         build/panel-s3.component.wasm build/panel-s3.plan.json
-    deno run --allow-read --allow-write tools/translate.ts \
+    deno run --allow-read --allow-write --config deno.json ../runtime/tools/translate.ts \
         build/panel-dropbox.component.wasm build/panel-dropbox.plan.json
 
 # Build + serve the device-pairing visor demo (Track B, PAIRING.md):

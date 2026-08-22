@@ -3,7 +3,7 @@
 //! dom/events/shell, no network capability at all (the #21
 //! capability-profile contrast against its dropbox sibling).
 //!
-//! Protocol (todomvc.wit:174-177): the visor calls `seed(config-json)` then
+//! Protocol (see panel.wit's storage-provider panels header): the visor calls `seed(config-json)` then
 //! `run()`; pumps `on-event`; polls `outcome()` after each event.
 //! `outcome` is none while the session is live, some("") for cancelled,
 //! some(json) for completed.
@@ -16,16 +16,16 @@ use std::cell::RefCell;
 #[allow(clippy::too_many_arguments)]
 mod bindings {
     wit_bindgen::generate!({
-        path: "../../../wit/todomvc",
-        world: "s3-panel",
+        path: ["../../../wit/surface", "../../../wit/fetch", "../../../wit/panel"],
+        world: "polyvisor:panel/s3-panel@0.1.0",
         generate_all,
     });
 }
 use bindings::*;
 
-use crate::polyvisor::todomvc::dom::{create_element, Element};
-use crate::polyvisor::todomvc::events::{listen, EventKind};
-use crate::polyvisor::todomvc::shell;
+use crate::polyvisor::surface::dom::{create_element, Element};
+use crate::polyvisor::surface::events::{listen, EventKind};
+use crate::polyvisor::surface::shell;
 
 use serde::{Deserialize, Serialize};
 

@@ -84,7 +84,7 @@ echo "      (--visor-bg is scoped to the visor's own elements; inheriting it wou
 # `applyVisorHue` lives in the framework core now, so the scan follows
 # it there; host/*.ts stays in the list because a consumer painting the
 # anchor colour itself would be exactly the regression this catches.
-HUE_PAINTERS="host/*.ts ../visor/ui/*.ts"
+HUE_PAINTERS="host/*.ts ../runtime/*.ts ../visor/ui/*.ts"
 # shellcheck disable=SC2086
 ambient=$(grep -nE '(documentElement|:root)[^\n]*--visor-bg' $HUE_PAINTERS 2>/dev/null)
 if [ -n "$ambient" ]; then
@@ -109,23 +109,23 @@ done
 
 # --- (d) no key is ever exported from the visor ------------------------------
 # An escrowed signing credential is stored as a NON-EXTRACTABLE WebCrypto
-# handle (host/keystore.ts): `crypto.subtle.exportKey` on it throws by
+# handle (../runtime/keystore.ts): `crypto.subtle.exportKey` on it throws by
 # construction, so the guarantee is the platform's rather than ours. What
 # this check defends is the *construction* — a later "just for debugging"
 # export path, or an import that quietly passes extractable: true and a
 # matching read-back, would turn the handle back into a bearer string.
-# Banning the verb outright from host code keeps the property one grep
-# wide instead of a review argument. Comments are exempt: they explain
-# the rule rather than perform it.
+# Banning the verb outright from host and runtime code keeps the property
+# one grep wide instead of a review argument. Comments are exempt: they
+# explain the rule rather than perform it.
 echo "[4/8] the visor never exports a key"
 echo "      (escrowed signing keys are non-extractable; nothing reads them back)"
-exported=$(grep -n "exportKey" host/*.ts 2>/dev/null |
+exported=$(grep -n "exportKey" host/*.ts ../runtime/*.ts 2>/dev/null |
   grep -vE "^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)")
 if [ -n "$exported" ]; then
-  bad "exportKey appears in host code:"
+  bad "exportKey appears in host or runtime code:"
   printf '%s\n' "$exported" | sed 's/^/       /'
 else
-  ok "no host/*.ts line calls exportKey"
+  ok "no host/*.ts or ../runtime/*.ts line calls exportKey"
 fi
 
 # --- (e) the user's identity never crosses the frame seam -------------------
@@ -181,7 +181,7 @@ else
 fi
 # shellcheck disable=SC2086
 definers=$(grep -rl "^function renderPairingCode(\|^function renderSas(" \
-  host/*.ts ../visor/ui/*.ts 2>/dev/null | grep -v '/visor/ui/pairing.ts$')
+  host/*.ts ../runtime/*.ts ../visor/ui/*.ts 2>/dev/null | grep -v '/visor/ui/pairing.ts$')
 if [ -n "$definers" ]; then
   bad "renderPairingCode()/renderSas() defined somewhere other than ../visor/ui/pairing.ts:"
   printf '%s\n' "$definers" | sed 's/^/       /'
@@ -269,7 +269,7 @@ fi
 # Any `markNomination()` read that is NOT inside the funnel: strip the
 # interface DECLARATIONS (which end in `;`), then require a
 # `readMarkNomination(` within the six lines above each survivor.
-raw=$(grep -n "markNomination()" host/*.ts |
+raw=$(grep -n "markNomination()" host/*.ts ../runtime/*.ts |
   grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)' |
   grep -vE 'markNomination\(\): Promise')
 unguarded=""
@@ -318,7 +318,7 @@ echo "      (foreignToken() in ../visor/ui/visor.ts is the only door to the \"fo
 # A class ASSIGNMENT mentioning foreign, in any of the shapes the DOM
 # offers: className =, classList.add(...), setAttribute("class", ...).
 FOREIGN_ASSIGN='(className[[:space:]]*=|classList\.(add|toggle)\(|setAttribute\([[:space:]]*"class")[^\n]*foreign'
-VOICE_RENDERERS=$(ls host/*.ts ../visor/ui/*.ts 2>/dev/null | grep -v '/visor/ui/visor\.ts$')
+VOICE_RENDERERS=$(ls host/*.ts ../runtime/*.ts ../visor/ui/*.ts 2>/dev/null | grep -v '/visor/ui/visor\.ts$')
 handmade=""
 for f in $VOICE_RENDERERS; do
   hit=$(sed -E 's@^[[:space:]]*(//|\*|/\*).*@@' "$f" | grep -nE "$FOREIGN_ASSIGN")
@@ -328,7 +328,7 @@ done
 if [ -n "$handmade" ]; then
   bad "the \"foreign\" class is assigned outside the constructor:$handmade"
 else
-  ok "no host/*.ts or ../visor/ui/*.ts file outside visor.ts assigns the \"foreign\" class"
+  ok "no host/*.ts, ../runtime/*.ts or ../visor/ui/*.ts file outside visor.ts assigns the \"foreign\" class"
 fi
 # And inside visor.ts: EXACTLY ONE. Zero would mean the door was renamed
 # or removed (and the check silently stopped meaning anything); two would

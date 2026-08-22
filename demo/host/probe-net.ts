@@ -2,7 +2,7 @@
 // table-probe) — not part of the browser bundle.
 //
 // The browser demo wires the real thing: grants held by the visor and a
-// signer over an escrowed non-extractable key (host/keystore.ts). A CLI
+// signer over an escrowed non-extractable key (../../runtime/keystore.ts). A CLI
 // probe has no visor, no IndexedDB and no user to type a secret, so it
 // wires the same three seams over a credential passed on the command
 // line. This mirrors the native rig's `Egress`
@@ -11,7 +11,7 @@
 // what each seam will refuse, not per-user authority.
 
 import { ComponentException } from "@polyengine/runtime/embedder";
-import type { EngineNet, StoreFetch, StoreSign } from "./engine.ts";
+import type { EngineNet, StoreFetch, StoreSign } from "../../runtime/engine.ts";
 
 function refuse(message: string): never {
   throw new ComponentException(message);

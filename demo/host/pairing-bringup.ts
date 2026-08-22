@@ -1,6 +1,6 @@
 // Headless smoke of the real engine's pairing + user-system surface
 // (Track A -> Track B integration), through THIS track's own adapter
-// (host/pairing-engine.ts) rather than calling `driver.pair-*` directly —
+// (../../runtime/pairing-engine.ts) rather than calling `driver.pair-*` directly —
 // the point is to exercise the exact seam the visor UI will use.
 //
 //   deno run -A host/pairing-bringup.ts
@@ -15,8 +15,8 @@
 // Crypto-adjacent content-filter hygiene (per dispatch): SAS/ids are
 // reported by LENGTH/prefix only, never printed in full.
 
-import { type Engine, newEngine, until } from "./engine.ts";
-import { createEnginePairingDriver } from "./pairing-engine.ts";
+import { type Engine, newEngine, until } from "../../runtime/engine.ts";
+import { createEnginePairingDriver } from "../../runtime/pairing-engine.ts";
 import { probeNoNet } from "./probe-net.ts";
 import type { PairAddState, PairJoinState } from "../../visor/ui/pairing-driver.ts";
 
