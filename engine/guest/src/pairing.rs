@@ -867,7 +867,7 @@ async fn add_session(
     out_tx.close();
     let _ = flushed.recv().await;
     set_add(generation, PairAddState::Enrolled);
-    linger_until_peer_closes(&conn).await;
+    linger_until_peer_closes(&conn, &ev_rx).await;
     Ok(())
 }
 
@@ -877,18 +877,36 @@ async fn add_session(
 /// already `Enrolled` and latched before this runs, so overshooting or
 /// giving up early is invisible to the visor either way. What it prevents
 /// is a joiner that vanishes leaving this task alive for the life of the
-/// instance. The bound is wall-clock-checked between yields rather than
-/// timer-driven — the guest holds no clock capability in this world.
-async fn linger_until_peer_closes(conn: &Connection) {
-    const LINGER_MS: u64 = 30_000;
-    let deadline = now_ms() + LINGER_MS;
+/// instance.
+///
+/// The bound must be a real await, never a wall-clock spin. An earlier
+/// version polled `now-ms` between `yield`s, and that DELETED the
+/// enrollment it had just written: the iroh endpoint is a component
+/// composed into this instance, so it shares this guest's cooperative
+/// scheduler, and a task that only yields to the guest's own queue never
+/// lets the endpoint's I/O progress. Measured under the browser-profile
+/// embedding: with the spin in place ZERO bytes left this side for the
+/// whole linger — the joiner never received ENROLL and its connection
+/// idle-timed out; with the spin removed, ENROLL arrived in ~78 ms.
+/// (Native `just pair` hid it: there the endpoint is driven by the host
+/// outside this instance's scheduler.)
+///
+/// Both arms of the select are awaits that resolve when the connection
+/// ends, for any reason: `wait-closed` for the peer's close, and the
+/// session's event channel reporting `Closed` when the read side ends —
+/// which covers a peer that vanishes without closing, since QUIC's idle
+/// timeout terminates that connection on its own. So the bound comes
+/// from the transport rather than from a clock the guest does not hold.
+async fn linger_until_peer_closes(conn: &Connection, ev_rx: &async_channel::Receiver<Ev>) {
     let closed = Box::pin(conn.wait_closed());
-    let budget = Box::pin(async move {
-        while now_ms() < deadline {
-            crate::breathe().await;
+    let stream_ended = Box::pin(async move {
+        while let Ok(ev) = ev_rx.recv().await {
+            if matches!(ev, Ev::Closed) {
+                return;
+            }
         }
     });
-    let _ = futures::future::select(closed, budget).await;
+    let _ = futures::future::select(closed, stream_ended).await;
 }
 
 pub(crate) fn add_status() -> Result<PairAddState, String> {
