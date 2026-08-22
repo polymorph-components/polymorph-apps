@@ -212,8 +212,11 @@ e2e-deps:
         fi
     fi
     # The store the credential scenarios talk to (and that one of them
-    # deliberately stops): same binary the tasks-engine spike fetches.
-    cd ../engine && just minio
+    # deliberately stops), plus the relay the suite's own hermetic iroh
+    # rides (run.ts spawns it on an ephemeral port; nothing reaches the
+    # public relay). Same pinned installs the engine's own recipes use —
+    # both idempotent after the first run.
+    cd ../engine && just minio relay-bin
 
 # Run the scenarios against a freshly built site. The harness owns the
 # world: a static server for serve/, a MinIO with CORS open on an
