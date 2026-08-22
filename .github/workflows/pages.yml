@@ -47,7 +47,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Deno (the deltic host; stock, no flags)
+      - name: Install Deno (the polyengine host; stock, no flags)
         uses: denoland/setup-deno@v2
         with:
           deno-version: "2.9.5"
