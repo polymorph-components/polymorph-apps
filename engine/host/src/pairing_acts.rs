@@ -21,6 +21,7 @@ use wasmtime::{bail, format_err, Result};
 use crate::bindings::exports::polyvisor::engine::driver::{
     Guest as Driver, PairAddState, PairJoinState, UsEvent, UsMark, UsProfile,
 };
+use crate::bindings::exports::polyvisor::tasks::tasks::Guest as Tasks;
 use crate::Ctx;
 
 const POLLS: u32 = 4000;
@@ -195,6 +196,32 @@ async fn wire_us(
     let (m, m_name, m_id) = member;
     crate::connect(acc, (m, m_name, h_id), (h, h_name, h_ep), relay).await?;
     for (d, name, peer) in [(m, m_name, h_id), (h, h_name, m_id)] {
+        let handle = d
+            .call_sync_start(acc, peer.to_vec(), tree.to_vec(), true)
+            .await?
+            .map_err(|e| format_err!("{name} sync-start: {e}"))?;
+        for _ in 0..POLLS {
+            match d.call_sync_status(acc, handle).await? {
+                Ok(Some(_)) => break,
+                Ok(None) => tokio::time::sleep(Duration::from_millis(3)).await,
+                Err(e) => bail!("{name} sync: {e}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Subscribe both ends of an ALREADY-wired pair to one more tree. The
+/// iroh connection is `wire_us`'s; only the per-tree subscription is new.
+async fn sync_tree(
+    acc: &Accessor<Ctx>,
+    a: (&Driver, &str, &[u8]),
+    b: (&Driver, &str, &[u8]),
+    tree: &[u8],
+) -> Result<()> {
+    let (ad, a_name, a_id) = a;
+    let (bd, b_name, b_id) = b;
+    for (d, name, peer) in [(ad, a_name, b_id), (bd, b_name, a_id)] {
         let handle = d
             .call_sync_start(acc, peer.to_vec(), tree.to_vec(), true)
             .await?
@@ -386,6 +413,25 @@ pub(crate) async fn positive_acts(
         results.push((
             "concurrent same-petname and same-icon repairs identically on both devices",
             Err("not reached: the joiner never became a reader of the partition".into()),
+        ));
+    }
+
+    if adopted {
+        results.push((
+            "partition pointer syncs; group-delegated partition is readable by the joiner",
+            act_partition_pointer(
+                acc,
+                (l, laptop.polyvisor_tasks_tasks(), &l_bytes),
+                (p, phone.polyvisor_tasks_tasks(), &p_bytes),
+                &group,
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        ));
+    } else {
+        results.push((
+            "partition pointer syncs; group-delegated partition is readable by the joiner",
+            Err("not reached: the joiner never became a reader of the user-system partition".into()),
         ));
     }
 
@@ -713,6 +759,116 @@ async fn act_repair(acc: &Accessor<Ctx>, l: &Driver, p: &Driver) -> Result<()> {
         println!("            {name}: {:?}", describe_events(&announced));
     }
     Ok(())
+}
+
+/// The partition-pointer map, and the group-delegation path the solo
+/// page depends on (#36).
+///
+/// Two beats, in the order a real account performs them:
+///
+///  1. **The pointer syncs.** The founder publishes
+///     `us-partition-put("tasks", id)` into the user-system doc; the
+///     joined device reads it back out of `us-partitions` after sync.
+///     Without this the joiner has membership and no name for the data.
+///  2. **The group delegation actually grants access.** The partition is
+///     delegated to the USER GROUP — `kh-add-member(partition, group,
+///     "edit")`, the group id, never the joiner's individual — and the
+///     joiner, which is a member of that group by enrollment alone,
+///     adopts the partition it learned in beat 1 and READS content the
+///     founder wrote. That is the whole premise of "every enrolled
+///     device sees the todo list": transitive membership, no per-device
+///     delegation.
+///
+/// Ordering is the same load-bearing create -> add-member -> seal the
+/// WIT documents: epoch membership at seal time is what decides
+/// readability.
+async fn act_partition_pointer(
+    acc: &Accessor<Ctx>,
+    l: (&Driver, &Tasks, &[u8]),
+    p: (&Driver, &Tasks, &[u8]),
+    group: &[u8],
+) -> Result<()> {
+    let (l, lt, l_bytes) = l;
+    let (p, pt, p_bytes) = p;
+
+    let partition = l
+        .call_create_partition(acc)
+        .await?
+        .map_err(|e| format_err!("create-partition: {e}"))?;
+    // The GROUP, not an individual: this is the delegation the joiner's
+    // access has to come through.
+    l.call_kh_add_member(acc, partition.clone(), group.to_vec(), "edit".to_string())
+        .await?
+        .map_err(|e| format_err!("kh-add-member(partition, USER GROUP, edit): {e}"))?;
+    l.call_seal_partition(acc, partition.clone())
+        .await?
+        .map_err(|e| format_err!("seal-partition: {e}"))?;
+    println!("            tasks partition created, delegated to the user group, sealed");
+
+    // Beat 1: publish the pointer, and read it back on the other device.
+    l.call_us_partition_put(acc, "tasks".to_string(), partition.clone())
+        .await?
+        .map_err(|e| format_err!("us-partition-put: {e}"))?;
+    let mine = l.call_us_partitions(acc).await?.map_err(|e| format_err!("{e}"))?;
+    if !mine.iter().any(|x| x.name == "tasks" && x.id == partition) {
+        bail!(
+            "the writer does not read back its own pointer: {:?}",
+            mine.iter().map(|x| x.name.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    let t = Instant::now();
+    let mut seen = None;
+    for _ in 0..POLLS {
+        let listed = p.call_us_partitions(acc).await?.map_err(|e| format_err!("{e}"))?;
+        if let Some(entry) = listed.iter().find(|x| x.name == "tasks") {
+            seen = Some(entry.id.clone());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    let Some(seen) = seen else {
+        bail!("the partition pointer never reached the joined device");
+    };
+    if seen != partition {
+        bail!("the joined device read a DIFFERENT partition id than was published");
+    }
+    ok("joined device discovers the tasks partition via us-partitions", t);
+
+    // Beat 2: adopt what was discovered, and read through the group
+    // delegation alone.
+    p.call_adopt_partition(acc, seen.clone())
+        .await?
+        .map_err(|e| format_err!("adopt-partition (as a GROUP member): {e}"))?;
+    sync_tree(acc, (l, "laptop", l_bytes), (p, "phone", p_bytes), &partition).await?;
+
+    lt.call_add(acc, "milk (written by the founder)".to_string())
+        .await?
+        .map_err(|e| format_err!("tasks-add: {e}"))?;
+
+    let t = Instant::now();
+    let mut last = String::new();
+    for _ in 0..POLLS {
+        match pt.call_items(acc).await? {
+            Ok(snap) => {
+                if snap.items.iter().any(|i| i.title == "milk (written by the founder)") {
+                    ok(
+                        "joined device READS the group-delegated partition (no per-device delegation)",
+                        t,
+                    );
+                    return Ok(());
+                }
+            }
+            Err(e) => last = e,
+        }
+        tokio::time::sleep(Duration::from_millis(POLL_MS)).await;
+    }
+    bail!(
+        "GROUP-DELEGATION FINDING: the joined device adopted the partition it \
+         discovered but never read the founder's content. The partition was \
+         delegated to the USER GROUP only; the device is a member of that group \
+         by enrollment. Last tasks error on the joiner: {last:?}"
+    )
 }
 
 /// A code that reaches a second party has leaked, so the offer dies

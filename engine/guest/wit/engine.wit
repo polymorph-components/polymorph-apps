@@ -273,6 +273,30 @@ interface driver {
     us-mark-forget:  async func(provenance: string) -> result<_, string>;
     us-mark-confirm: async func(provenance: string) -> result<_, string>;
 
+    /// A named pointer to one of the account's data partitions. The map
+    /// lives in the user-system document, so it SYNCS: a device that was
+    /// just paired learns the account's tasks partition (and any later
+    /// one) by reading it, rather than needing the id handed to it out of
+    /// band. The id is a keyhive doc id, opaque here; the name is the
+    /// account's own short label ("tasks").
+    record us-partition {
+        name: string,
+        id: list<u8>,
+    }
+
+    /// Upsert the pointer under `name`. Requires an existing user system
+    /// — same error convention as `us-profile-set` when there is none.
+    ///
+    /// DELIBERATELY WITHOUT a `us-event` case: consumers poll
+    /// `us-partitions` (a joiner reads it once, at adoption time), and a
+    /// new event case would force a fresh arm through every adapter's
+    /// exhaustive match for a signal nobody edge-triggers on. Keeping the
+    /// event enum stable is the cheaper contract.
+    us-partition-put: async func(name: string, id: list<u8>) -> result<_, string>;
+
+    /// Every pointer the account has published, name-ordered.
+    us-partitions: async func() -> result<list<us-partition>, string>;
+
     us-contacts-list: async func() -> result<list<tuple<list<u8>, string>>, string>;
     us-contact-put:   async func(card: list<u8>, petname: string) -> result<_, string>;
 

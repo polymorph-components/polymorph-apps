@@ -15,7 +15,7 @@
 // Crypto-adjacent content-filter hygiene (per dispatch): SAS/ids are
 // reported by LENGTH/prefix only, never printed in full.
 
-import { type Engine, newEngine, unhex, until } from "../../runtime/engine.ts";
+import { type Engine, hex, newEngine, unhex, until } from "../../runtime/engine.ts";
 import { createEnginePairingDriver } from "../../runtime/pairing-engine.ts";
 import { probeNoNet } from "./probe-net.ts";
 import type { PairAddState, PairJoinState } from "../../visor/ui/pairing-driver.ts";
@@ -160,6 +160,51 @@ async function main() {
     if (!events.some((e) => e.tag === "profile-changed")) {
       throw new Error("expected a profile-changed event on the join side");
     }
+
+    // --- the partition-pointer map (#36) ---
+    //
+    // Beat 1: the founder publishes the account's tasks partition into
+    // the user-system doc, and the joined device DISCOVERS it — a paired
+    // device has no other way to learn the id.
+    //
+    // Beat 2: the partition is delegated to the USER GROUP (never to the
+    // joiner's individual), so the joiner's read is the transitive
+    // membership pairing already gave it. That is the property the solo
+    // page rests on, so the smoke gates it and not just the native acts.
+    const tasksPartition = await add.driver.createPartition();
+    await add.driver.khAddMember(tasksPartition, unhex(userGroupId), "edit");
+    await add.driver.sealPartition(tasksPartition);
+    await add.driver.usPartitionPut("tasks", tasksPartition);
+    step(`tasks partition created, delegated to the user group, pointer published`);
+
+    const discovered = await until("join discovers the tasks partition", async () => {
+      const list = await join.driver.usPartitions();
+      return list.find((x) => x.name === "tasks") ?? false;
+    });
+    if (hex(discovered.id) !== hex(tasksPartition)) {
+      throw new Error("the joined device read a different partition id than was published");
+    }
+    step(`us-partitions round trip: name=${discovered.name} id len=${discovered.id.length}`);
+
+    await join.driver.adoptPartition(discovered.id);
+    for (const [who, e, peer] of [
+      ["join", join, addId] as const,
+      ["add", add, joinId] as const,
+    ]) {
+      const h = await e.driver.syncStart(peer, discovered.id, true);
+      await until(`${who} subscribes to the tasks partition`, () => e.driver.syncStatus(h));
+    }
+    await add.tasks.add("milk (written by the founder)");
+    await until("join reads the group-delegated partition", async () => {
+      try {
+        const snap = await join.tasks.items();
+        return snap.items.some((i) => i.title === "milk (written by the founder)");
+      } catch {
+        // Epoch material still in flight — not ready, not a failure.
+        return false;
+      }
+    });
+    step("joined device READS the group-delegated tasks partition");
 
     console.log("\nPAIRING BRINGUP PASS");
   } catch (e) {

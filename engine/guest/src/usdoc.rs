@@ -30,7 +30,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 
 use crate::exports::polyvisor::engine::driver::{
-    UsDevice, UsEvent, UsMark, UsProfile,
+    UsDevice, UsEvent, UsMark, UsPartition, UsProfile,
 };
 use crate::{arr32, with_state, Partition};
 
@@ -78,6 +78,12 @@ const PROFILE: &str = "profile";
 const MARKS: &str = "marks";
 const CONTACTS: &str = "contacts";
 const DEVICES: &str = "devices";
+/// The PARTITION-POINTER map (#36): `name -> partition id (raw bytes)`,
+/// a flat top-level map beside the other families so it syncs exactly
+/// like them. ADDITIVE: a document written before this key existed has
+/// no `partitions` entry, and every read path below turns a missing map
+/// into an empty list rather than an error.
+const PARTITIONS: &str = "partitions";
 
 fn map_at(am: &AutoCommit, key: &str) -> Option<ObjId> {
     match am.get(ROOT, key) {
@@ -216,6 +222,24 @@ fn read_contacts(am: &AutoCommit) -> BTreeMap<String, (Vec<u8>, String)> {
                 get_str(am, &c, "petname").unwrap_or_default(),
             ),
         );
+    }
+    out
+}
+
+/// Name-ordered (`am.keys` yields a map's keys sorted), so two devices
+/// that read the same doc state render the same list.
+fn read_partitions(am: &AutoCommit) -> Vec<(String, Vec<u8>)> {
+    let Some(partitions) = map_at(am, PARTITIONS) else {
+        // Old document, written before the key existed: empty, not an
+        // error. Same tolerance every other family read has.
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for key in am.keys(&partitions) {
+        let Some(id) = get_bytes(am, &partitions, &key) else {
+            continue;
+        };
+        out.push((key.to_string(), id));
     }
     out
 }
@@ -554,7 +578,7 @@ pub(crate) async fn create(profile: UsProfile) -> Result<Vec<u8>, String> {
     if let Some(icon) = profile.icon.clone() {
         am.put(&p, "icon", icon).map_err(|e| format!("icon: {e}"))?;
     }
-    for family in [MARKS, CONTACTS, DEVICES] {
+    for family in [MARKS, CONTACTS, DEVICES, PARTITIONS] {
         am.put_object(ROOT, family, ObjType::Map)
             .map_err(|e| format!("{family} map: {e}"))?;
     }
@@ -852,6 +876,39 @@ pub(crate) async fn contact_put(card: Vec<u8>, petname: String) -> Result<(), St
         Ok(())
     })
     .await
+}
+
+/// Upsert the pointer under `name`. Names are short UTF-8 strings and
+/// are the map key; ids are raw bytes stored as an automerge `Bytes`
+/// scalar, so a concurrent re-publish of the same name is an ordinary
+/// last-writer-wins register merge rather than a structural conflict.
+pub(crate) async fn partition_put(name: String, id: Vec<u8>) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("a partition pointer needs a name".into());
+    }
+    if id.is_empty() {
+        return Err("a partition pointer needs an id".into());
+    }
+    write(move |am| {
+        let partitions = match map_at(am, PARTITIONS) {
+            Some(p) => p,
+            None => am
+                .put_object(ROOT, PARTITIONS, ObjType::Map)
+                .map_err(|e| format!("partitions map: {e}"))?,
+        };
+        am.put(&partitions, name.as_str(), id)
+            .map_err(|e| format!("partition pointer: {e}"))?;
+        Ok(())
+    })
+    .await
+}
+
+pub(crate) async fn partitions_list() -> Result<Vec<UsPartition>, String> {
+    pump().await?;
+    Ok(read_us(read_partitions)?
+        .into_iter()
+        .map(|(name, id)| UsPartition { name, id })
+        .collect())
 }
 
 pub(crate) async fn devices_list() -> Result<Vec<UsDevice>, String> {

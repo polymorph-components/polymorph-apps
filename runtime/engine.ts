@@ -114,6 +114,12 @@ export interface Driver {
   usMarkForget(provenance: string): Promise<void>;
   usMarkConfirm(provenance: string): Promise<void>;
 
+  /** Publish/refresh the account's pointer to a data partition. The map
+   * lives in the user-system doc, so it syncs; a freshly paired device
+   * discovers the tasks partition by reading `usPartitions()`. */
+  usPartitionPut(name: string, id: Uint8Array): Promise<void>;
+  usPartitions(): Promise<UsPartition[]>;
+
   usContactsList(): Promise<Array<[Uint8Array, string]>>;
   usContactPut(card: Uint8Array, petname: string): Promise<void>;
 
@@ -180,6 +186,15 @@ export interface UsMark {
   nickname?: string;
   createdAt: bigint;
   needsReconfirm: boolean; // set by conflict repair; cleared by usMarkConfirm
+}
+
+/** `us-partition` — a record, so it lowers to a plain object (the
+ * `{kind, value}` variant convention above does not apply). `id` is a
+ * keyhive doc id as raw bytes, matching every other `list<u8>` here;
+ * `hex()`/`unhex()` below convert when a string is wanted. */
+export interface UsPartition {
+  name: string;
+  id: Uint8Array;
 }
 
 export interface UsDevice {

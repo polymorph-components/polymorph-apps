@@ -103,7 +103,7 @@ use subduction_keyhive::storage::MemoryKeyhiveStorage;
 
 use exports::polyvisor::engine::driver::{
     Guest as DriverGuest, PairAddState, PairJoinState, PairOffer, StoreConfig, UsDevice, UsEvent,
-    UsMark, UsProfile,
+    UsMark, UsPartition, UsProfile,
 };
 use exports::polyvisor::tasks::tasks::{Guest as TasksGuest, Snapshot, TodoItem};
 use polymorph::iroh::endpoint::{Endpoint, EndpointOptions, RecvStream, SendStream};
@@ -3309,6 +3309,14 @@ impl DriverGuest for Component {
 
     async fn us_mark_confirm(provenance: String) -> Result<(), String> {
         usdoc::mark_confirm(provenance).await
+    }
+
+    async fn us_partition_put(name: String, id: Vec<u8>) -> Result<(), String> {
+        usdoc::partition_put(name, id).await
+    }
+
+    async fn us_partitions() -> Result<Vec<UsPartition>, String> {
+        usdoc::partitions_list().await
     }
 
     async fn us_contacts_list() -> Result<Vec<(Vec<u8>, String)>, String> {
