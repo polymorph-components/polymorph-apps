@@ -54,6 +54,7 @@ import storagePicker from "./scenarios/storage-picker.ts";
 import stripOwnership from "./scenarios/strip-ownership.ts";
 import devicePairing from "./scenarios/device-pairing.ts";
 import devicePairingMock from "./scenarios/device-pairing-mock.ts";
+import soloPairing from "./scenarios/solo-pairing.ts";
 import visorReset from "./scenarios/visor-reset.ts";
 
 // Re-exported so a scenario imports its whole contract from one place:
@@ -100,6 +101,13 @@ const SCENARIOS: Scenario[] = [
   // harness's own relay, ENROLL included.
   devicePairingMock,
   devicePairing,
+  // THE SOLO PAGE: the same ceremony again, but across TWO INDEPENDENT
+  // PAGES in two isolated contexts. It runs after the one-page pairing
+  // scenarios on purpose — a failure here with those two green says the
+  // fault is in what a real second device has to do for itself (dial the
+  // enrollment's peer ids, discover the tasks partition through the
+  // account), not in the ceremony.
+  soloPairing,
   // The erase ceremony: seeds a name, a petname and a storage sentinel,
   // then reloads the page (twice) as part of its own claim. It runs
   // after the other identity/naming scenarios and before the one that
@@ -417,7 +425,7 @@ async function main() {
         // (it reads the flag above through `__crashed` and attaches — and
         // REMOVES — its own listener), so racing one here would only leak
         // a `crash` listener per boot.
-        await waitForBoot(page);
+        await waitForBoot(page, opts.bootGlobal);
       }
       return page;
     },

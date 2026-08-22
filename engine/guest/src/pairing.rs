@@ -29,6 +29,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use data_encoding::BASE32_NOPAD_VISUAL;
+use keyhive_core::event::static_event::StaticEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::exports::polyvisor::engine::driver::{
@@ -200,6 +201,66 @@ fn sas_digits(
             .expect("BLAKE3 output is 32 bytes"),
     );
     format!("{:06}", head % 1_000_000)
+}
+
+// --- the adder's agent id, read out of the ENROLL card ---
+
+/// WHO GRANTED US MEMBERSHIP, taken from the grant itself.
+///
+/// `pair-enrollment.peer-agent-id` must be the adder's AGENT id, and the
+/// joiner has no other name for it at this point in the ceremony: the
+/// transport authenticates an ENDPOINT key (a different key), the
+/// us-doc's `devices` map is keyed by agent id but has not synced yet
+/// (that sync is the very thing this field exists to enable), and no
+/// wire message carries a self-declared identity — deliberately, since a
+/// field the peer fills in is a name it merely claimed.
+///
+/// The honest source is the ENROLL card. `usdoc::enroll_device` adds the
+/// joiner to the user group BEFORE exporting the card (its step 1, so
+/// the card carries the delegation), and a delegation is
+/// `Signed<StaticDelegation<T>>` — `issuer` is the ed25519 verifying key
+/// that signed it, i.e. the adder's individual, which is exactly what
+/// `own-agent-id` is on the other side (lib.rs:1972 — `my_peer`, built
+/// from the identity's verifying key at lib.rs:2318). So we look for the
+/// delegation whose `delegate` is US and report its issuer.
+///
+/// The signature is VERIFIED here rather than assumed. Ingest verifies
+/// too, but this read must not depend on that: `PM_SKIP_ENROLL_CARD`
+/// suppresses the ingest entirely, and a value derived from an
+/// unverified blob would be a peer-asserted name wearing a proof's
+/// clothes.
+///
+/// Sources: keyhive_crypto/src/signed.rs (`issuer`, `try_verify`),
+/// keyhive_core/src/principal/group/delegation.rs:154
+/// (`StaticDelegation.delegate`),
+/// keyhive_core/src/event/static_event.rs:29 (`Delegated`).
+fn adder_agent_from_enroll_card(card: &[u8], me: &[u8]) -> Option<Vec<u8>> {
+    let me = crate::identifier(me).ok()?;
+    let events: Vec<StaticEvent<crate::T>> = bincode::deserialize(card).ok()?;
+    for ev in events {
+        let StaticEvent::Delegated(signed) = ev else {
+            continue;
+        };
+        if signed.payload.delegate != me {
+            continue;
+        }
+        if signed.try_verify().is_err() {
+            // A delegation naming us that does not verify is not evidence
+            // of anything; keep looking rather than trusting it.
+            continue;
+        }
+        let issuer = signed.issuer().to_bytes().to_vec();
+        // A self-delegation would name US, not the adder. It cannot arise
+        // from `enroll_device` (the joiner is not yet a member and so
+        // cannot have issued its own grant), but reporting our own id as
+        // "the peer" would send the embedder dialling itself, so the case
+        // is excluded explicitly rather than argued away.
+        if issuer == crate::own_agent_id().ok()? {
+            continue;
+        }
+        return Some(issuer);
+    }
+    None
 }
 
 // --- session state ---
@@ -653,6 +714,21 @@ async fn join_session(
 
     // 7. Ingest the card (it carries the delegation that makes this
     // device a member), adopt the user-system partition, sync.
+    //
+    // The adder's agent id is read from the card FIRST, so it is
+    // available even under `PM_SKIP_ENROLL_CARD` (which suppresses only
+    // the ingest) and so the read is over the bytes as they arrived.
+    let peer_agent_id =
+        adder_agent_from_enroll_card(&group_card, &crate::own_agent_id()?).unwrap_or_default();
+    if peer_agent_id.is_empty() {
+        // Not fatal to the ceremony — the membership is real either way —
+        // but the embedder cannot wire subduction without it, and a
+        // silent empty field would surface later as a mute connection.
+        eprintln!(
+            "[pair] ENROLL card carried no verifiable delegation to this device; \
+             pair-enrollment.peer-agent-id is empty and post-enrollment sync cannot be wired"
+        );
+    }
     if std::env::var("PM_SKIP_ENROLL_CARD").is_ok() {
         // Verification hook: suppress the hand-delivered card so the act
         // measures what the BRIDGE delivers on its own.
@@ -667,6 +743,10 @@ async fn join_session(
     set_join(generation, PairJoinState::Enrolled(PairEnrollment {
         user_group_id,
         partition_id,
+        peer_agent_id,
+        // Transport-authenticated, and bound at the top of this function:
+        // the dialer iroh delivered is the adder by construction.
+        peer_endpoint_id: add_ep.to_vec(),
     }));
     Ok(())
 }

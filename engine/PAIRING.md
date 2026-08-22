@@ -424,6 +424,12 @@ What is gated now:
   real path.
 - `just pairing-bringup` (headless, Deno) and `cd engine && just pair`
   (native acts) both pass unchanged.
+- `demo/e2e`'s `solo-pairing` runs the ceremony ACROSS TWO INDEPENDENT
+  BROWSER PAGES (`demo/host/solo.ts`, two isolated contexts meeting only
+  over the harness's relay) — the case a one-page suite cannot fail,
+  since the joiner there has no out-of-band access to the adder's ids or
+  to the account's tasks partition. It is what `pair-enrollment`'s
+  `peer-agent-id`/`peer-endpoint-id` exist for. 10 acts.
 
 **The embedder owes the pair a sync path.** §2 step 7 ends the ceremony
 with "sync", and the engine leaves that to whoever embeds it: pairing

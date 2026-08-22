@@ -84,6 +84,12 @@ const DEVICES: &str = "devices";
 /// no `partitions` entry, and every read path below turns a missing map
 /// into an empty list rather than an error.
 const PARTITIONS: &str = "partitions";
+/// THE WALK-ANCHOR MAP a data partition carries: `agent id (hex) ->
+/// enrolled-at`. Written into every account partition when a device is
+/// enrolled (see `anchor_data_partitions`). It lives at the document
+/// ROOT beside the app's own keys and is invisible to the app — the
+/// tasks service reads `ROOT."todos"` and nothing else (lib.rs:2270).
+const ENROLLED: &str = "_enrolled";
 
 fn map_at(am: &AutoCommit, key: &str) -> Option<ObjId> {
     match am.get(ROOT, key) {
@@ -648,6 +654,72 @@ pub(crate) async fn adopt(partition_id: &[u8], user_group_id: &[u8]) -> Result<(
     crate::flush_keyhive().await
 }
 
+/// A WALK ANCHOR IN EVERY ACCOUNT DATA PARTITION.
+///
+/// PAIRING.md §4b: a joining device reads a document's pre-join history
+/// by CAUSAL WALK, and a walk has to start from a chunk the joiner can
+/// actually open. BeeKEM adds are not retroactive, so every chunk sealed
+/// before the joiner existed is sealed under an epoch it does not hold;
+/// what makes the rest reachable is one chunk under the NEW epoch, from
+/// which the whole ancestry can be walked.
+///
+/// `enroll_device` has always written that anchor for the user-system
+/// doc — the devices entry, flagged as the walk anchor in step 5 below.
+/// The account's DATA partitions had no equivalent, and the gap is not
+/// theoretical: measured in the browser across two pages, a device that
+/// joined an account whose todo list had been created and written BEFORE
+/// the ceremony synced all of that partition's chunks and could decrypt
+/// none of them — `chunk-stats` agreed on both sides while the joiner's
+/// materialized view stayed empty, indefinitely. One post-enrollment
+/// write on the adder's side made the whole history readable at once.
+///
+/// So the anchor is written here, for the same reason and by the same
+/// mechanism. It goes in `_enrolled` rather than in any app-owned key:
+/// the anchor must not be app-visible data, and inventing a todo item to
+/// carry it would put a row in the user's list that the user did not
+/// write.
+///
+/// Only partitions the account NAMES (the pointer map) and this device
+/// actually HOLDS are touched — the ones a joiner can discover and will
+/// try to read. Failure is reported per partition rather than aborting
+/// the enrollment: the membership grant has already landed and is
+/// correct, and losing it over an anchor would be the worse trade.
+async fn anchor_data_partitions(agent: &[u8]) -> Result<(), String> {
+    let us = doc_id()?;
+    let named = read_us(read_partitions)?;
+    let agent_key = hex::encode(agent);
+    let enrolled_at = crate::now_ms_u64();
+    for (name, id) in named {
+        // The us doc gets its anchor from the devices entry; anchoring it
+        // twice would be a second write for nothing.
+        if id == us {
+            continue;
+        }
+        if !with_state(|s| s.partitions.contains_key(&id))? {
+            // Named but not held on this device: nothing to seal a chunk
+            // from, and nothing this device could anchor honestly.
+            continue;
+        }
+        let agent_key = agent_key.clone();
+        let write = crate::author(&id, move |am| {
+            let enrolled = match map_at(am, ENROLLED) {
+                Some(e) => e,
+                None => am
+                    .put_object(ROOT, ENROLLED, ObjType::Map)
+                    .map_err(|e| format!("enrolled map: {e}"))?,
+            };
+            am.put(&enrolled, agent_key.as_str(), enrolled_at as i64)
+                .map_err(|e| format!("enrolled entry: {e}"))?;
+            Ok(())
+        })
+        .await;
+        if let Err(e) = write {
+            eprintln!("[enroll] could not anchor partition {name:?} for the new device: {e}");
+        }
+    }
+    Ok(())
+}
+
 /// The adder's enrollment writes, in the order PAIRING.md §2 pins.
 pub(crate) async fn enroll_device(
     joiner: &[u8],
@@ -691,6 +763,12 @@ pub(crate) async fn enroll_device(
     // guaranteed to be a chunk the joiner can open directly — and from a
     // chunk it can open, the whole ancestry is reachable (§2, §4b).
     device_entry(joiner, name).await?;
+    // 6. The same anchor, for the account's DATA partitions — the
+    // devices entry only covers this document (see
+    // `anchor_data_partitions`). AFTER the rotation in step 2, so the
+    // chunk is sealed under an epoch the joiner holds; that ordering is
+    // the whole mechanism.
+    anchor_data_partitions(joiner).await?;
     crate::flush_keyhive().await?;
     Ok((group, card, partition))
 }

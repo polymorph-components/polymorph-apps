@@ -192,6 +192,29 @@ interface driver {
     record pair-enrollment {
         user-group-id: list<u8>,
         partition-id: list<u8>,
+        /// THE ADDER'S IDS, AS THE JOINER OBSERVED THEM in this ceremony.
+        ///
+        /// Pairing grants MEMBERSHIP; it does not wire subduction. The
+        /// embedder must do that (§2 step 7), and to dial it needs the
+        /// other end's endpoint id and the agent id to expect there.
+        /// Before this, a joiner had a membership and no way to name the
+        /// device that granted it — so every embedder had to smuggle the
+        /// adder's ids in out of band, which a real two-page deployment
+        /// cannot do.
+        ///
+        /// BOTH ARE OBSERVED, NEVER ASSERTED BY THE PEER. The endpoint id
+        /// is the transport-authenticated dialer (`connection.peer()`:
+        /// iroh proved the holder of that key before the connection was
+        /// delivered). The agent id is the ISSUER of the delegation in
+        /// the ENROLL card that made this device a member — a signature
+        /// over the grant itself, not a self-declared field. Neither can
+        /// be a name the peer merely claimed.
+        ///
+        /// Empty = not observed (an ENROLL card carrying no delegation to
+        /// this device would be a broken ceremony, so an empty agent id
+        /// is a fault to report, never a value to dial with).
+        peer-agent-id: list<u8>,
+        peer-endpoint-id: list<u8>,
     }
 
     variant pair-join-state {

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>polymorph — one device</title>
+  <!-- Same discipline as index.html: todomvc-app.css is loaded by
+       frame.html INSIDE the app frame, never on the shell document. -->
+  <style>
+    body { margin: 0; background: #f5f5f5; font: 14px 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    :root { --content-max: 46rem; }
+    .bar-inner { max-width: var(--content-max); margin: 0 auto; width: 100%;
+                 box-sizing: border-box; }
+  </style>
+  <link rel="stylesheet" href="./visor.css">
+  <style>
+    #banner { padding: .6em 0; background: #1a1a2e; color: #eee; font-size: 13px; }
+    #banner .bar-inner { padding: 0 1em; box-sizing: border-box; }
+    #page { max-width: var(--content-max); margin: 0 auto; width: 100%;
+            box-sizing: border-box; padding: 12px; }
+    #solo-status { font-size: 11px; color: #777; margin: 4px 0; min-height: 1.4em;
+                   font-family: ui-monospace, monospace; word-break: break-all; }
+    /* THE FIRST-RUN FORK. Two affordances, stated plainly and weighted
+       the same: neither "new account" nor "join another device" is the
+       recommended one, because which is right depends on a fact only the
+       user has (whether they already have this account somewhere else).
+       A visually preferred default here would be the page guessing. */
+    #first-run { display: flex; flex-direction: column; gap: 1em;
+                 padding: 1.2em; background: #fff; border: 1px solid #ddd;
+                 border-radius: 4px; }
+    #first-run h2 { margin: 0; font-size: 15px; font-weight: 600; color: #333; }
+    #first-run .choice { display: flex; flex-direction: column; gap: .3em; }
+    #first-run .choice button { align-self: flex-start; padding: .4em 1em; font-size: 14px; }
+    #first-run .note { font-size: 12px; color: #666; line-height: 1.4; }
+    #solo-app { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <!-- The visor assembly, identical in SHAPE to index.html's: the ids are
+       part of the visor's contract (visor/ui/visor.ts's `initVisor` looks
+       them up by name and says so), not page decoration, so a second
+       embedder reproduces them exactly rather than inventing its own. -->
+  <div id="visor-zone">
+    <div id="visor-drawer" hidden><div id="visor-drawer-inner"></div></div>
+    <div id="visor-strip">
+      <div class="bar-inner">
+        <span id="visor-context">
+          <span class="ctx-top"></span>
+          <span class="ctx-bottom"></span>
+        </span>
+        <span id="visor-identity"></span>
+      </div>
+    </div>
+  </div>
+  <div id="visor-dim" hidden></div>
+  <div id="banner"><div class="bar-inner">booting…</div></div>
+  <div id="page">
+    <div class="status" id="solo-status">…</div>
+    <!-- THE FIRST-RUN FORK. Page furniture, so it is markup — the same
+         division index.html keeps (the page's own chrome is HTML; only
+         the visor's ceremonies are built in TS). Two affordances,
+         weighted the same: neither is the recommended one, because which
+         is right depends on a fact only the user has. host/solo.ts
+         unhides this when the device holds no account, and hides it once
+         one exists. -->
+    <div id="first-run" hidden>
+      <h2>This device has no account yet</h2>
+      <div class="choice">
+        <button type="button" id="solo-new-account">New account</button>
+        <p class="note">Start fresh here. This device becomes the first device of a
+          new account, and you can add more devices to it later.</p>
+      </div>
+      <div class="choice">
+        <button type="button" id="solo-join-account">Join another device</button>
+        <p class="note">You already have this account on another device. This one shows
+          a code; you enter it there, and both of you check the same six digits.</p>
+      </div>
+    </div>
+    <!-- The join pane is the VISOR's UI (visor/ui/pairing.ts) and is
+         mounted into here: this page never draws a pairing code or a
+         SAS itself. -->
+    <div id="solo-join"></div>
+    <div id="solo-app"></div>
+  </div>
+  <meta name="pm-build" content="__BUILD__">
+  <script type="module" src="./solo.js?v=__BUILD__"></script>
+</body>
+</html>

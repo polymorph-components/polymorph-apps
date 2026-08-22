@@ -99,8 +99,27 @@ check:
 # Assemble the servable demo directory.
 site: translate app panels check
     mkdir -p serve
-    deno check host/demo.ts ../visor/frame/frame.ts ../visor/frame/frame-backend.ts
+    deno check host/demo.ts host/solo.ts ../visor/frame/frame.ts ../visor/frame/frame-backend.ts
     deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/demo.js host/demo.ts
+    # THE SOLO PAGE: the same served artifacts, a second and much smaller
+    # embedder (host/solo.ts).
+    #
+    # SAME --external SET AS demo.js, and for the same reason: the solo
+    # page builds on runtime/engine.ts, which imports the webrtc port,
+    # whose graph reaches node-datachannel/werift. Those are the port's
+    # NODE-side backends and are never evaluated in a browser — but only
+    # if they are left as bare specifiers. Bundled, deno resolves their
+    # node: builtins into fetchable URLs, and the browser then fails to
+    # load `node:url` and friends before boot ever starts. (Observed:
+    # the first solo e2e run died in the boot wait with five CORS errors
+    # and nothing else.) The `just check`-adjacent scan below is the
+    # tripwire on it.
+    deno bundle --platform browser --minify --external node-datachannel --external "node-datachannel/polyfill" --external werift -o serve/solo.js host/solo.ts
+    # NO node: BUILTIN MAY SURVIVE INTO EITHER BUNDLE. A bare specifier
+    # for a node PACKAGE is fine (it is never evaluated); a `node:`
+    # builtin is not, because the browser tries to fetch it as a URL.
+    ! grep -q 'node:' serve/solo.js || { echo "serve/solo.js imports a node: builtin — check the --external set" >&2; exit 1; }
+    ! grep -q 'node:' serve/demo.js || { echo "serve/demo.js imports a node: builtin — check the --external set" >&2; exit 1; }
     # The sandboxed surface frame (#16): its own entry, its own document.
     # No --external flags needed — the frame imports only the applier and
     # never touches a node backend.
@@ -112,6 +131,7 @@ site: translate app panels check
     cp ../engine/target/composed.wasm serve/engine.component.wasm
     cp build/engine.plan.json serve/engine.plan.json
     sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/index.html > serve/index.html
+    sed "s/__BUILD__/$(git rev-parse --short HEAD)-$(date +%s)/g" web/solo.html > serve/solo.html
     cp ../examples/todomvc/todomvc-app.css serve/
     cp ../visor/ui/visor.css serve/
 

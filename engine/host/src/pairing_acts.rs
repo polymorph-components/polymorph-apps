@@ -100,11 +100,21 @@ fn describe_add(s: &PairAddState) -> String {
 
 /// Run one pairing ceremony to completion and return
 /// `(sas, user-group-id, user-system-partition-id)`.
+///
+/// `expect_adder`, when given, is `(adder agent id, adder endpoint id
+/// hex)` and gates the enrollment's two OBSERVED peer id fields against
+/// what the adder actually is. Those fields exist so an embedder can
+/// wire subduction after the ceremony (PAIRING.md §2 step 7) without
+/// smuggling the adder's ids in out of band, and a WRONG id there fails
+/// the way a missing one does not: the dial succeeds against the wrong
+/// expectations and nothing ever flows. Only the caller that holds the
+/// adder's real ids can check it, so it passes them in.
 async fn pair(
     acc: &Accessor<Ctx>,
     adder: &Driver,
     joiner: &Driver,
     device_name: &str,
+    expect_adder: Option<(&[u8], &str)>,
 ) -> Result<(String, Vec<u8>, Vec<u8>)> {
     let offer = joiner
         .call_pair_join_start(acc)
@@ -176,6 +186,31 @@ async fn pair(
         matches!(s, PairAddState::Enrolled | PairAddState::Failed(_))
     })
     .await?;
+    if let Some((want_agent, want_ep)) = expect_adder {
+        // Observed, not asserted: the endpoint id is the dialer iroh
+        // authenticated, and the agent id is the ISSUER of the delegation
+        // in the ENROLL card (guest/src/pairing.rs's
+        // `adder_agent_from_enroll_card`).
+        if enrollment.peer_agent_id != want_agent {
+            bail!(
+                "pair-enrollment.peer-agent-id is not the adder's agent id \
+                 (got {} bytes, {}; want {})",
+                enrollment.peer_agent_id.len(),
+                hex::encode(&enrollment.peer_agent_id),
+                hex::encode(want_agent)
+            );
+        }
+        if hex::encode(&enrollment.peer_endpoint_id) != want_ep {
+            bail!(
+                "pair-enrollment.peer-endpoint-id is not the adder's endpoint id \
+                 (got {}; want {want_ep})",
+                hex::encode(&enrollment.peer_endpoint_id)
+            );
+        }
+        println!(
+            "            enrollment carries the adder's observed agent + endpoint ids"
+        );
+    }
     Ok((
         sas_j.clone(),
         enrollment.user_group_id,
@@ -333,7 +368,7 @@ pub(crate) async fn positive_acts(
     let mut results: Vec<(&str, std::result::Result<(), String>)> = Vec::new();
 
     // --- gates 1+2: the ceremony itself, and the SAS agreeing ---
-    let (sas, joined_group, partition) = pair(acc, l, p, "alice phone").await?;
+    let (sas, joined_group, partition) = pair(acc, l, p, "alice phone", Some((&l_bytes, &l_ep))).await?;
     results.push(("full pair over the local relay", Ok(())));
     // `pair` compares the two sides' strings and bails on any mismatch,
     // on a non-six-digit string, or on a non-numeric one, so reaching
@@ -937,7 +972,7 @@ async fn act_revoke_and_repair(
     }
     println!("            phone revoked from the user group and marked in the devices list");
 
-    let (_sas, group2, partition2) = pair(acc, l, rejoin, "alice phone (re-paired)").await?;
+    let (_sas, group2, partition2) = pair(acc, l, rejoin, "alice phone (re-paired)", None).await?;
     if group2 != group {
         bail!("the re-pair enrolled into a different account");
     }
@@ -1112,7 +1147,7 @@ pub(crate) async fn post_seal_add_act(
     .map_err(|e| format_err!("pre-join mark: {e}"))?;
 
     // Enrollment: same doc, joiner added long after the seal.
-    let (_sas, _group, partition) = pair(acc, l, p, "late device").await?;
+    let (_sas, _group, partition) = pair(acc, l, p, "late device", None).await?;
     wire_us(
         acc,
         (l, "founder", &l_bytes, l_ep.as_str()),
@@ -1316,7 +1351,7 @@ pub(crate) async fn full_history_act(
     .await?
     .map_err(|e| format_err!("pre-join profile edit: {e}"))?;
 
-    let (_sas, _group, partition) = pair(acc, l, p, "late device").await?;
+    let (_sas, _group, partition) = pair(acc, l, p, "late device", None).await?;
 
     // Order variation: does the founder write again before the joiner is
     // wired, or after?
@@ -1458,7 +1493,7 @@ pub(crate) async fn partitioned_writer_act(
     }
 
     // The second device joins and catches up.
-    let (_s, _g, partition) = pair(acc, l, b, "second device").await?;
+    let (_s, _g, partition) = pair(acc, l, b, "second device", None).await?;
     wire_us(
         acc,
         (l, "founder", &l_bytes, l_ep.as_str()),
@@ -1517,7 +1552,7 @@ pub(crate) async fn partitioned_writer_act(
         if founder_had_merged { "" } else { " NOT" }
     );
 
-    let (_s2, _g2, partition2) = pair(acc, l, c, "third device").await?;
+    let (_s2, _g2, partition2) = pair(acc, l, c, "third device", None).await?;
     if partition2 != partition {
         bail!("the second enrollment moved the partition");
     }

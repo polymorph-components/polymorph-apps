@@ -401,6 +401,58 @@ Both assert both ceremonies, SAS equality across the two surfaces, the
 arming delay, the empty device-name field, the adoption announcement,
 and a petname written on the laptop arriving on the tablet.
 
+## The solo page — one device, pairing across two browser pages
+
+`serve/solo.html` (built from `web/solo.html` + `host/solo.ts`, linked
+from the demo's own control bar as "one device") is a **second, smaller
+embedder** over the same served artifacts: ONE engine instance, ONE
+visor, the todomvc app in its sandboxed frame. It is not another view of
+the three-pane demo — it is the deployment shape the demo deliberately
+is not.
+
+The demo puts a whole account on one page so both ends of every beat are
+watchable at once, which is good theatre and a poor model: the two
+"devices" share a process, a document, a storage origin and a boot, so
+several things a real second device must do for itself are simply
+variables in scope. On the solo page they are not. Two solo pages, in
+two independent browser contexts, meet only over the relay, and
+everything that crosses between them had to cross a wire:
+
+- the **adder's endpoint and agent ids**, which the joiner learns only
+  from `pair-enrollment` (the record grew `peer-agent-id` /
+  `peer-endpoint-id` for exactly this; both are OBSERVED — the endpoint
+  is the transport-authenticated dialer, the agent is the issuer of the
+  signed delegation in the ENROLL card — never a name the peer claimed);
+- the **tasks partition id**, read out of the synced user-system doc's
+  partition-pointer map (#36), which is a joined device's only channel
+  for it;
+- the todos, and the account's petnames, over the subduction the
+  embedder wires after the ceremony — **writer accepts, reader dials**
+  (reversed, everything reports healthy and nothing flows).
+
+First run offers two affordances plainly, neither dressed as the
+default: **new account** (create the user, create the tasks partition,
+delegate it to the USER GROUP — never to a device — seal, publish the
+pointer) and **join another device** (the visor's join pane, then the
+sync-and-adopt flow above). Adding a device is the same heavy ceremony
+as the demo's, reached from the visor's own settings sheet.
+
+Its storage keys are `pm-solo-*`: the two pages share an origin, and an
+identity shared between them would make the "separate device" claim
+false.
+
+**What v1 does not have**, and does not pretend to: no bucket — the
+three storage seams and the signer are wired to REFUSE, which is the
+honest wiring for an instance with no destination — and therefore no
+storage picker and no provider panels; no collaborator; no three-pane
+theatre; and no engine identity across reloads (`init` mints a fresh one
+every boot), so every visit is a first run in practice.
+
+`just e2e solo-pairing` drives the whole thing: two `ctx.fresh()`
+contexts, todos typed into the real todomvc input inside the sandboxed
+frame, SAS equality asserted across two documents, and convergence in
+both directions plus a petname.
+
 ## Deployment
 
 The hosted build is **continuously deployed**: `.github/workflows/pages.yml`

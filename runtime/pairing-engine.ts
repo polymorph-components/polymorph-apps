@@ -156,6 +156,14 @@ function toMockJoinState(s: PairJoinState): MockPairJoinState {
     case "failed":
       return { tag: "failed", message: s.value };
     case "enrolled": {
+      // TWO FIELDS, DELIBERATELY. The engine's `pair-enrollment` also
+      // carries the adder's observed agent and endpoint ids, and they
+      // are dropped here: the visor's contract has no place for them and
+      // must not grow one, because dialling a peer is the EMBEDDER's
+      // act, not the trusted surface's. An embedder that needs them
+      // reads `driver.pairJoinStatus()` on the raw engine driver
+      // (runtime/engine.ts's `PairEnrollment`) — demo/host/solo.ts does
+      // exactly that.
       const enrollment: MockPairEnrollment = {
         userGroupId: hex(s.value.userGroupId),
         partitionId: hex(s.value.partitionId),

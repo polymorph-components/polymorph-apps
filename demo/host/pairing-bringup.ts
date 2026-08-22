@@ -80,6 +80,31 @@ async function main() {
     );
     step(`user-create: userGroupId len=${userGroupId.length} chars`);
 
+    // --- the account's TASKS PARTITION, created BEFORE anyone pairs ---
+    //
+    // ORDER IS THE POINT. The founder makes a todo list the moment it
+    // makes an account (demo/host/solo.ts's first-run path does exactly
+    // this), so by the time a second device joins, that partition has
+    // been created, delegated, sealed and WRITTEN TO — all under epochs
+    // the joiner does not hold, because it did not exist yet.
+    //
+    // Reading it afterwards is therefore the PRE-JOIN case (PAIRING.md
+    // §4b's causal walk), not the easy one. This used to be exercised
+    // the other way round — the partition was created after the
+    // ceremony, so every chunk was already under an epoch the joiner
+    // held — and the difference was invisible here while being fatal in
+    // a real two-page embedding: the joiner synced every chunk and
+    // decrypted none of them, for ever. What closes it is the walk
+    // anchor `enroll-device` now writes into each account partition
+    // (engine/guest/src/usdoc.rs's `anchor_data_partitions`), and this
+    // ordering is what gates it.
+    const tasksPartition = await add.driver.createPartition();
+    await add.driver.khAddMember(tasksPartition, unhex(userGroupId), "edit");
+    await add.driver.sealPartition(tasksPartition);
+    await add.driver.usPartitionPut("tasks", tasksPartition);
+    await add.tasks.add("milk (written by the founder, before anyone paired)");
+    step("tasks partition created, delegated to the user group, written to, pointer published");
+
     const offer = unwrap(await joinDriver.pairJoinStart());
     step(`pair-join-start: code len=${offer.code.length}, expiresMs=${offer.expiresMs}`);
 
@@ -118,6 +143,43 @@ async function main() {
       throw new Error("enrolled into the wrong user group");
     }
 
+    // --- the enrollment's OBSERVED peer ids (engine.wit's
+    // `pair-enrollment`) ---
+    //
+    // These two are what makes the cross-page solo embedding possible at
+    // all: a joiner in its own browser page has no out-of-band channel
+    // to learn which device just enrolled it, so without them it holds a
+    // membership it can never sync. This harness DOES have both sides in
+    // scope, which is exactly why the assertion belongs here — it is the
+    // only place that can tell "the adder's real ids" from "some
+    // plausible 32 bytes".
+    //
+    // Read from the RAW driver, not the adapter: the visor's
+    // `PairingDriver` contract carries the two-field shape on purpose
+    // (runtime/pairing-engine.ts's `toMockJoinState`), because dialling
+    // is the embedder's act.
+    const raw = await join.driver.pairJoinStatus();
+    if (raw.kind !== "enrolled") {
+      throw new Error(`raw join status is ${raw.kind}, expected enrolled`);
+    }
+    const observed = raw.value;
+    if (hex(observed.peerAgentId) !== hex(addId)) {
+      throw new Error(
+        `pair-enrollment.peer-agent-id is not the add side's agent id ` +
+          `(got ${observed.peerAgentId.length} bytes)`,
+      );
+    }
+    if (hex(observed.peerEndpointId) !== hex(addEp)) {
+      throw new Error(
+        `pair-enrollment.peer-endpoint-id is not the add side's endpoint id ` +
+          `(got ${observed.peerEndpointId.length} bytes)`,
+      );
+    }
+    step(
+      `enrollment carries the ADD side's observed ids: agent len=${observed.peerAgentId.length}, ` +
+        `endpoint len=${observed.peerEndpointId.length} (values redacted)`,
+    );
+
     await until("add side sees enrolled", async () => {
       const s = unwrap(await addDriver.pairAddStatus()) as PairAddState;
       return s.tag === "enrolled" || false;
@@ -132,8 +194,21 @@ async function main() {
     // `subscribe` both ways), so the headless smoke does too. Without
     // it the joiner has a membership and an empty doc, and nothing the
     // adder writes can reach it.
+    //
+    // DIALLED FROM THE ENROLLMENT'S OWN FIELDS, not from the `addEp`/
+    // `addId` this harness happens to hold. Both are asserted equal
+    // above, so the two are interchangeable HERE — and that is precisely
+    // why using the enrollment is worth doing: it makes this the same
+    // code path a real embedder with no other channel has to walk
+    // (demo/host/solo.ts), so a regression in those fields breaks the
+    // sync here instead of only in a browser.
     const ca = await add.driver.irohStart(false, new Uint8Array(), RELAY, new Uint8Array());
-    const cb = await join.driver.irohStart(true, addEp, RELAY, addId);
+    const cb = await join.driver.irohStart(
+      true,
+      observed.peerEndpointId,
+      RELAY,
+      observed.peerAgentId,
+    );
     await until(
       "subduction handshake",
       async () => (await join.driver.connStatus(cb)) && (await add.driver.connStatus(ca)),
@@ -171,12 +246,6 @@ async function main() {
     // joiner's individual), so the joiner's read is the transitive
     // membership pairing already gave it. That is the property the solo
     // page rests on, so the smoke gates it and not just the native acts.
-    const tasksPartition = await add.driver.createPartition();
-    await add.driver.khAddMember(tasksPartition, unhex(userGroupId), "edit");
-    await add.driver.sealPartition(tasksPartition);
-    await add.driver.usPartitionPut("tasks", tasksPartition);
-    step(`tasks partition created, delegated to the user group, pointer published`);
-
     const discovered = await until("join discovers the tasks partition", async () => {
       const list = await join.driver.usPartitions();
       return list.find((x) => x.name === "tasks") ?? false;
@@ -194,17 +263,35 @@ async function main() {
       const h = await e.driver.syncStart(peer, discovered.id, true);
       await until(`${who} subscribes to the tasks partition`, () => e.driver.syncStatus(h));
     }
-    await add.tasks.add("milk (written by the founder)");
-    await until("join reads the group-delegated partition", async () => {
+    // THE PRE-JOIN READ. This content was written before the joiner
+    // existed; reaching it is the causal walk working from the anchor
+    // enrollment left in this partition.
+    await until("join reads the PRE-JOIN content of the group-delegated partition", async () => {
       try {
         const snap = await join.tasks.items();
-        return snap.items.some((i) => i.title === "milk (written by the founder)");
+        return snap.items.some((i) =>
+          i.title === "milk (written by the founder, before anyone paired)"
+        );
       } catch {
         // Epoch material still in flight — not ready, not a failure.
         return false;
       }
     });
-    step("joined device READS the group-delegated tasks partition");
+    step("joined device READS pre-join content of the group-delegated tasks partition");
+
+    // And the ordinary case still works: a write made AFTER the join
+    // lands too, so the anchor did not somehow freeze the partition at
+    // the enrollment boundary.
+    await add.tasks.add("bread (written after the join)");
+    await until("join reads a post-join write", async () => {
+      try {
+        const snap = await join.tasks.items();
+        return snap.items.some((i) => i.title === "bread (written after the join)");
+      } catch {
+        return false;
+      }
+    });
+    step("joined device READS a post-join write on the same partition");
 
     console.log("\nPAIRING BRINGUP PASS");
   } catch (e) {

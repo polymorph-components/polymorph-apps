@@ -152,6 +152,22 @@ export interface PairOffer {
 export interface PairEnrollment {
   userGroupId: Uint8Array;
   partitionId: Uint8Array;
+  /** THE ADDER'S IDS, AS THIS DEVICE OBSERVED THEM (engine.wit's
+   * `pair-enrollment`). Pairing grants membership and stops; the
+   * EMBEDDER owes the pair a sync path (PAIRING.md §2 step 7), and these
+   * two are what it needs to dial: `irohStart(true, peerEndpointId,
+   * relay, peerAgentId)` from the joiner.
+   *
+   * Neither is a name the peer claimed. The endpoint id is the
+   * transport-authenticated dialer; the agent id is the issuer of the
+   * signed delegation in the ENROLL card that made this device a member.
+   *
+   * They are NOT carried into the visor's `PairingDriver` contract
+   * (visor/ui/pairing-driver.ts): the visor has no business dialling
+   * anything, so the embedder reads them from the raw driver instead —
+   * see runtime/pairing-engine.ts's `toMockJoinState`. */
+  peerAgentId: Uint8Array;
+  peerEndpointId: Uint8Array;
 }
 
 export type PairJoinState =
