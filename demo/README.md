@@ -370,7 +370,7 @@ PAIRING.md §5 puts them:
   demotion: the same bytes, no longer the source of truth.
 
 **Which driver.** The in-page ceremony runs against the MOCK by default;
-`?pairing=engine` selects the real composite (`host/pairing-engine.ts`).
+`?pairing=engine` selects the real composite (`../runtime/pairing-engine.ts`).
 Everything above the driver is the same code either way. The engine path
 does not complete a ceremony yet: `user-create` traps the guest
 (a wit-bindgen async-support panic), so there is no user group to enroll

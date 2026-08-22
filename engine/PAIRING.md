@@ -368,7 +368,7 @@ ceremonies plus the marks write-through (`device-pairing`, 14 acts).
 
 **The demo's in-page ceremony runs against the MOCK driver by default.**
 `?pairing=engine` selects the real composite through
-`host/pairing-engine.ts`, and everything above the driver is identical —
+`runtime/pairing-engine.ts`, and everything above the driver is identical —
 but the real path cannot complete a ceremony yet:
 
 - `user-create` **traps the guest** in a real browser: a panic inside

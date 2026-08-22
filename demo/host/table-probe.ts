@@ -1,6 +1,6 @@
 // Which guest table grows under a pull loop? Prints the engine's own
 // table sizes alongside process RSS.
-import { type Engine, newEngine, unhex, until } from "./engine.ts";
+import { type Engine, newEngine, unhex, until } from "../../runtime/engine.ts";
 import { probeNoNet } from "./probe-net.ts";
 const RELAY = "http://127.0.0.1:3340";
 const artifacts = {

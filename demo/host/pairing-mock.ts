@@ -44,7 +44,7 @@
 // here. They now live in the VISOR, because they are what the visor's
 // pairing UI requires of a backend, not what this mock happens to
 // offer; this file is one of two implementations (the other is
-// host/pairing-engine.ts). They are re-exported so this module's
+// ../../runtime/pairing-engine.ts). They are re-exported so this module's
 // existing consumers keep one import for "the mock and its types".
 export type {
   PairAddState,

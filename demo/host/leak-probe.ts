@@ -6,7 +6,7 @@
 //
 //   deno run -A host/leak-probe.ts [idleSeconds]
 
-import { type Engine, newEngine, unhex, until } from "./engine.ts";
+import { type Engine, newEngine, unhex, until } from "../../runtime/engine.ts";
 import { probeNoNet } from "./probe-net.ts";
 
 const RELAY = "http://127.0.0.1:3340";

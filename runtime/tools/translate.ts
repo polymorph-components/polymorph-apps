@@ -1,6 +1,6 @@
 // Build-time translation: component.wasm -> envelope (plan + FACT adapters).
 // Uses the packaged translator so nothing needs building from the deltic repo.
-// Usage: deno run --allow-read --allow-write tools/translate.ts in.wasm out.plan.json
+// Usage: deno run --allow-read --allow-write translate.ts in.wasm out.plan.json
 import { defaultTranslator } from "@deltic/translator";
 
 const [input, output] = Deno.args;
