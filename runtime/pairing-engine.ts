@@ -1,10 +1,10 @@
 // Engine-backed PairingDriver adapter (Track A -> Track B integration
 // step, per pairing-mock.ts's own header comment: "Swapping this module
 // for a thin adapter over the real `driver` export is the whole
-// integration step — nothing in ../../visor/ui/pairing.ts is aware this is
+// integration step — nothing in ../visor/ui/pairing.ts is aware this is
 // a mock.").
 //
-// Wraps one `Engine.driver` (host/engine.ts, itself a typed view over
+// Wraps one `Engine.driver` (./engine.ts, itself a typed view over
 // the composite's `polyvisor:engine/driver@0.1.0` export) as the
 // `PairingDriver` shape the visor pairing UI consumes. The TYPE stays
 // imported from visor/ui/pairing-driver.ts (the visor owns the
@@ -66,7 +66,7 @@ import type {
   UsEvent as MockUsEvent,
   UsMark as MockUsMark,
   UsProfile as MockUsProfile,
-} from "../../visor/ui/pairing-driver.ts";
+} from "../visor/ui/pairing-driver.ts";
 
 function ok<T>(value: T): { ok: true; value: T } {
   return { ok: true, value };

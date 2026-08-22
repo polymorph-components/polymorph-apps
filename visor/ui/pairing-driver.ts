@@ -7,12 +7,13 @@
 // runs from the trusted surface downwards, not from whichever backend
 // happens to be plugged in today.
 //
-// Implementations live with their consumers, deliberately:
+// Implementations live outside the visor, deliberately:
 //   - demo/host/pairing-mock.ts — a demo test double (in-page
 //     "network", SHA-256 transcript hash) for developing and gating the
 //     visor without the engine;
-//   - demo/host/pairing-engine.ts — demo glue adapting a real
-//     engine instance (host/engine.ts's typed `Driver`) to this shape.
+//   - runtime/pairing-engine.ts — embedding-runtime glue adapting a
+//     real engine instance (runtime/engine.ts's typed `Driver`) to this
+//     shape.
 // Neither is visor code, and this file imports neither. Nothing here
 // touches the DOM.
 //

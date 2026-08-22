@@ -1730,6 +1730,46 @@ and the citations of the archived probe suites keep their words. The
 GitHub repo renames polymorph-apps → polyvisor to match (in-tree URLs
 already point at the new name; old links redirect).
 
+**The contracts split and the embedding runtime graduates**
+(2026-08-21, #74 × #73 — the two structural debts the restructure round
+deliberately deferred). The spike-era single WIT package splits along
+its three owners: [wit/surface/](wit/surface/) is `polyvisor:surface@0.1.0`
+(dom/events/shell — the visor's curated DOM surface, the package #15's
+WebIDL-mirroring bet applies to; the backend ordering spec moved into
+its header, since it binds every implementation of the contract, not
+the lab harness that exercises it); [wit/panel/](wit/panel/) is
+`polyvisor:panel@0.1.0` (credentials, oauth-broker, the s3-panel and
+dropbox-panel worlds, importing the surface package); and
+`polyvisor:todomvc@0.0.1` keeps only the example app's worlds and moves
+to [examples/todomvc/wit/](examples/todomvc/wit/), so wit/ now holds
+only framework-owned contracts — tasks and fetch graduate out of the
+old `deps/` tree to [wit/tasks/](wit/tasks/) and [wit/fetch/](wit/fetch/)
+with ids unchanged. No vendored WIT copies: guests build through
+wit-bindgen 0.59's multi-path `generate!` (dependencies listed first,
+worlds fully qualified now that the resolve holds several packages).
+The embedding runtime then graduates out of the demo (the last
+"framework code lives in the demo" cleanup): `engine.ts` (the deltic
+embedding adapter), `keystore.ts` (the #11 escrow slice),
+`pairing-engine.ts` (the real PairingDriver; the mock stays with the
+demo it exists to serve), `stubs.ts` and the build-time
+`tools/translate.ts` move to a new top-level [runtime/](runtime/) —
+the naming ruling from #73's open question, chosen over `host/` (which
+already means two other things) and `visor/embed/` (a headless embedder
+needs none of the visor). Floor scope on purpose: `demo/host/demo.ts`
+keeps consuming the moved modules by import path, and its own
+embedder-wiring/demo-content split waits for a second consumer to
+force the seam honestly. The runtime's bare `@deltic/*`/`@polymorph/*`
+specifiers stay peer-resolved by the EMBEDDER's deno config
+(demo/deno.json's module-identity constraint); the justfile's translate
+invocations pass `--config deno.json` explicitly because deno discovers
+config from the entrypoint's directory, which the move changed. Every
+check-invariants.sh grep follows the moved code — canary-tested per the
+visor-extraction precedent: a planted `exportKey` in runtime/keystore.ts
+and a planted `renderSas` definition in runtime/pairing-engine.ts both
+fail the suite. The definition of identical is the restructure round's:
+zero behavioral scenario edits (two comment-only wit-path citations),
+invariants 8/8, e2e 12/12 unchanged.
+
 ## Parked and candidate non-goals
 
 - **Metadata privacy**: relays, push services, and origins see traffic

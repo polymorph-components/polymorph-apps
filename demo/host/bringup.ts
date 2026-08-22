@@ -9,7 +9,7 @@
 //
 // Infra (relay, MinIO) is started by the justfile.
 
-import { type Engine, hex, newEngine, unhex, until } from "./engine.ts";
+import { type Engine, hex, newEngine, unhex, until } from "../../runtime/engine.ts";
 import { probeNet, probeNoNet, probeReaderNet } from "./probe-net.ts";
 
 const RELAY = "http://127.0.0.1:3340";

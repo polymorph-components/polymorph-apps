@@ -36,7 +36,7 @@ import {
 
 const PETNAME = "tasks board";
 
-/** WHAT THE GUESTS ASK TO WEAR (wit/todomvc/todomvc.wit's
+/** WHAT THE GUESTS ASK TO WEAR (examples/todomvc/wit/todomvc.wit's
  * `mark-nomination`, implemented in each guest's lib.rs). Pinned here
  * because the whole nomination path is only testable against a component
  * that actually nominates something: the app asks for the chess rook,
